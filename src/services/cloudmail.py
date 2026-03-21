@@ -8,7 +8,7 @@ import random
 import re
 import string
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .base import BaseEmailService, EmailServiceError, EmailServiceType
@@ -140,12 +140,43 @@ class CloudMailService(BaseEmailService):
         if isinstance(value, (int, float)):
             return float(value)
         text = str(value).strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).timestamp()
+        except Exception:
+            pass
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
             try:
-                return datetime.strptime(text, fmt).timestamp()
+                return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc).timestamp()
             except Exception:
                 continue
         return None
+
+    def _message_timestamp(self, message: Dict[str, Any]) -> float:
+        created_at = self._parse_time(message.get("createTime"))
+        if created_at is not None:
+            return created_at
+        return 0.0
+
+    def _normalize_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(message or {})
+        created_at = self._message_timestamp(normalized)
+        if created_at > 0:
+            local_time = datetime.fromtimestamp(created_at, tz=timezone.utc).astimezone()
+            normalized.setdefault("received_at", local_time.isoformat())
+            normalized.setdefault("created_at", local_time.isoformat())
+
+        message_id = str(normalized.get("emailId") or normalized.get("id") or "").strip()
+        if message_id:
+            normalized.setdefault("id", message_id)
+
+        sender = str(normalized.get("sendEmail") or normalized.get("from") or "").strip()
+        if sender:
+            normalized.setdefault("from", sender)
+
+        return normalized
 
     def _generate_local_part(self, length: int = 10) -> str:
         first = random.choice(string.ascii_lowercase)
@@ -261,7 +292,9 @@ class CloudMailService(BaseEmailService):
         )
         payload = (data or {}).get("data") or {}
         messages = payload.get("list") or []
-        return messages if isinstance(messages, list) else []
+        if not isinstance(messages, list):
+            return []
+        return [self._normalize_message(message) for message in messages]
 
     def get_verification_code(
         self,
@@ -285,22 +318,22 @@ class CloudMailService(BaseEmailService):
                 messages = self.get_email_messages(account.get("accountId") or account.get("service_id"))
                 messages = sorted(
                     messages,
-                    key=lambda item: str(item.get("createTime") or ""),
+                    key=self._message_timestamp,
                     reverse=True,
                 )
 
                 for message in messages:
-                    message_id = str(message.get("emailId") or "").strip()
+                    message_id = str(message.get("emailId") or message.get("id") or "").strip()
                     if not message_id or message_id in seen_message_ids:
                         continue
 
-                    created_at = self._parse_time(message.get("createTime"))
+                    created_at = self._message_timestamp(message)
                     if otp_sent_at and created_at and created_at + 1 < otp_sent_at:
                         continue
 
                     seen_message_ids.add(message_id)
 
-                    sender = str(message.get("sendEmail") or "")
+                    sender = str(message.get("sendEmail") or message.get("from") or "")
                     subject = str(message.get("subject") or "")
                     text = str(message.get("text") or "")
                     content = str(message.get("content") or "")
