@@ -374,3 +374,75 @@ def test_batch_import_proxies_uses_asyncio_to_thread_for_geolocation(route_db, m
 
     assert result["success"] == 1
     assert tracker["called"] is True
+
+
+def test_update_proxy_item_recomputes_location_when_host_changes(route_db, monkeypatch):
+    proxy = crud.create_proxy(
+        route_db,
+        name="旧位置代理",
+        type="http",
+        host="1.1.1.1",
+        port=8080,
+        country="美国",
+        city="西雅图",
+    )
+    tracker = {"called": False}
+
+    async def fake_to_thread(func, *args, **kwargs):
+        tracker["called"] = True
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(settings_routes, "asyncio", SimpleNamespace(to_thread=fake_to_thread))
+    monkeypatch.setattr(settings_routes, "lookup_locations", lambda hosts, **_: {
+        "2.2.2.2": IPLocation(ip="2.2.2.2", country="日本", city="东京"),
+    })
+
+    result = asyncio.run(settings_routes.update_proxy_item(
+        proxy.id,
+        settings_routes.ProxyUpdateRequest(host="2.2.2.2"),
+    ))
+
+    route_db.expire_all()
+    updated = crud.get_proxy_by_id(route_db, proxy.id)
+
+    assert tracker["called"] is True
+    assert result["proxy"]["host"] == "2.2.2.2"
+    assert result["proxy"]["country"] == "日本"
+    assert result["proxy"]["city"] == "东京"
+    assert updated.country == "日本"
+    assert updated.city == "东京"
+
+
+def test_update_proxy_item_clears_stale_location_when_lookup_fails(route_db, monkeypatch):
+    proxy = crud.create_proxy(
+        route_db,
+        name="旧位置代理",
+        type="http",
+        host="1.1.1.1",
+        port=8080,
+        country="美国",
+        city="西雅图",
+    )
+
+    async def fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    def broken_lookup(hosts, **_):
+        raise RuntimeError("lookup failed")
+
+    monkeypatch.setattr(settings_routes, "asyncio", SimpleNamespace(to_thread=fake_to_thread))
+    monkeypatch.setattr(settings_routes, "lookup_locations", broken_lookup)
+
+    result = asyncio.run(settings_routes.update_proxy_item(
+        proxy.id,
+        settings_routes.ProxyUpdateRequest(host="3.3.3.3"),
+    ))
+
+    route_db.expire_all()
+    updated = crud.get_proxy_by_id(route_db, proxy.id)
+
+    assert result["proxy"]["host"] == "3.3.3.3"
+    assert result["proxy"]["country"] is None
+    assert result["proxy"]["city"] is None
+    assert updated.country is None
+    assert updated.city is None

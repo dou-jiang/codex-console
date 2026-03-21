@@ -490,6 +490,19 @@ class ProxyBatchDeleteRequest(BaseModel):
     ids: list[int]
 
 
+async def _resolve_proxy_location_fields(host: str) -> dict[str, Optional[str]]:
+    try:
+        locations = await asyncio.to_thread(lookup_locations, [host])
+    except Exception:
+        locations = {}
+
+    location = locations.get(host)
+    return {
+        "country": location.country or None if location else None,
+        "city": location.city or None if location else None,
+    }
+
+
 @router.get("/proxies")
 async def get_proxies_list(
     enabled: Optional[bool] = None,
@@ -683,6 +696,11 @@ async def get_proxy_item(proxy_id: int):
 async def update_proxy_item(proxy_id: int, request: ProxyUpdateRequest):
     """更新代理"""
     with get_db() as db:
+        current_proxy = crud.get_proxy_by_id(db, proxy_id)
+        if not current_proxy:
+            raise HTTPException(status_code=404, detail="代理不存在")
+
+    with get_db() as db:
         update_data = {}
         if request.name is not None:
             update_data["name"] = request.name
@@ -690,6 +708,8 @@ async def update_proxy_item(proxy_id: int, request: ProxyUpdateRequest):
             update_data["type"] = request.type
         if request.host is not None:
             update_data["host"] = request.host
+            if request.host != current_proxy.host:
+                update_data.update(await _resolve_proxy_location_fields(request.host))
         if request.port is not None:
             update_data["port"] = request.port
         if request.username is not None:

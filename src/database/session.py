@@ -4,7 +4,7 @@
 
 from contextlib import contextmanager
 from typing import Generator
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 import os
@@ -13,6 +13,24 @@ import logging
 from .models import Base
 
 logger = logging.getLogger(__name__)
+
+
+SQLITE_MIGRATIONS = [
+    ("accounts", "cpa_uploaded", "BOOLEAN DEFAULT 0"),
+    ("accounts", "cpa_uploaded_at", "DATETIME"),
+    ("accounts", "source", "VARCHAR(20) DEFAULT 'register'"),
+    ("accounts", "subscription_type", "VARCHAR(20)"),
+    ("accounts", "subscription_at", "DATETIME"),
+    ("accounts", "cookies", "TEXT"),
+    ("proxies", "is_default", "BOOLEAN DEFAULT 0"),
+    ("proxies", "country", "VARCHAR(100)"),
+    ("proxies", "city", "VARCHAR(100)"),
+]
+
+POSTGRESQL_MIGRATIONS = [
+    ("proxies", "country", "VARCHAR(100)"),
+    ("proxies", "city", "VARCHAR(100)"),
+]
 
 
 def _build_sqlalchemy_url(database_url: str) -> str:
@@ -97,26 +115,10 @@ class DatabaseSessionManager:
         数据库迁移 - 添加缺失的列
         用于在不删除数据的情况下更新表结构
         """
-        if not self.database_url.startswith("sqlite"):
-            logger.info("非 SQLite 数据库，跳过自动迁移")
-            return
-
-        # 需要检查和添加的新列
-        migrations = [
-            # (表名, 列名, 列类型)
-            ("accounts", "cpa_uploaded", "BOOLEAN DEFAULT 0"),
-            ("accounts", "cpa_uploaded_at", "DATETIME"),
-            ("accounts", "source", "VARCHAR(20) DEFAULT 'register'"),
-            ("accounts", "subscription_type", "VARCHAR(20)"),
-            ("accounts", "subscription_at", "DATETIME"),
-            ("accounts", "cookies", "TEXT"),
-            ("proxies", "is_default", "BOOLEAN DEFAULT 0"),
-            ("proxies", "country", "VARCHAR(100)"),
-            ("proxies", "city", "VARCHAR(100)"),
-        ]
-
         # 确保新表存在（create_tables 已处理，此处兜底）
         Base.metadata.create_all(bind=self.engine)
+
+        dialect_name = self.engine.dialect.name
 
         with self.engine.connect() as conn:
             # 数据迁移：将旧的 custom_domain 记录统一为 moe_mail
@@ -127,22 +129,56 @@ class DatabaseSessionManager:
             except Exception as e:
                 logger.warning(f"迁移 custom_domain -> moe_mail 时出错: {e}")
 
-            for table_name, column_name, column_type in migrations:
-                try:
-                    # 检查列是否存在
-                    result = conn.execute(text(
-                        f"SELECT * FROM pragma_table_info('{table_name}') WHERE name='{column_name}'"
+            if dialect_name == "sqlite":
+                self._migrate_sqlite_columns(conn)
+            elif dialect_name == "postgresql":
+                self._migrate_postgresql_columns(conn)
+            else:
+                logger.info(f"数据库类型 {dialect_name} 暂不支持自动列迁移，已跳过")
+
+    def _migrate_sqlite_columns(self, conn) -> None:
+        for table_name, column_name, column_type in SQLITE_MIGRATIONS:
+            try:
+                result = conn.execute(text(
+                    f"SELECT * FROM pragma_table_info('{table_name}') WHERE name='{column_name}'"
+                ))
+                if result.fetchone() is None:
+                    logger.info(f"添加列 {table_name}.{column_name}")
+                    conn.execute(text(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
                     ))
-                    if result.fetchone() is None:
-                        # 列不存在，添加它
-                        logger.info(f"添加列 {table_name}.{column_name}")
-                        conn.execute(text(
-                            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
-                        ))
-                        conn.commit()
-                        logger.info(f"成功添加列 {table_name}.{column_name}")
-                except Exception as e:
-                    logger.warning(f"迁移列 {table_name}.{column_name} 时出错: {e}")
+                    conn.commit()
+                    logger.info(f"成功添加列 {table_name}.{column_name}")
+            except Exception as e:
+                logger.warning(f"迁移列 {table_name}.{column_name} 时出错: {e}")
+
+    def _migrate_postgresql_columns(self, conn) -> None:
+        inspector = inspect(conn)
+        existing_columns_by_table: dict[str, set[str]] = {}
+
+        for table_name, column_name, column_type in POSTGRESQL_MIGRATIONS:
+            try:
+                if table_name not in existing_columns_by_table:
+                    existing_columns_by_table[table_name] = {
+                        column["name"] for column in inspector.get_columns(table_name)
+                    }
+
+                if column_name in existing_columns_by_table[table_name]:
+                    continue
+
+                logger.info(f"添加 PostgreSQL 列 {table_name}.{column_name}")
+                conn.execute(text(
+                    f'ALTER TABLE "{table_name}" ADD COLUMN IF NOT EXISTS "{column_name}" {column_type}'
+                ))
+                conn.commit()
+                existing_columns_by_table[table_name].add(column_name)
+                logger.info(f"成功添加 PostgreSQL 列 {table_name}.{column_name}")
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.warning(f"迁移 PostgreSQL 列 {table_name}.{column_name} 时出错: {e}")
 
 
 # 全局数据库会话管理器实例
