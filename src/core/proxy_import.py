@@ -175,3 +175,23 @@ def _normalize_protocol(value: str) -> str:
     if normalized not in _PROTOCOLS:
         raise ValueError("unsupported protocol")
     return normalized
+
+
+def allocate_proxy_names(prefixes_in_db: dict[str, int], locations: list[dict[str, str]]) -> dict[str, str]:
+    counters = {prefix: max(0, int(value)) for prefix, value in prefixes_in_db.items()}
+    names: dict[str, str] = {}
+
+    for location in locations:
+        host = str(location.get("host", "")).strip()
+        if not host:
+            continue
+
+        country = str(location.get("country", "")).strip()
+        city = str(location.get("city", "")).strip()
+        prefix = f"{country}-{city}" if country and city else "代理"
+
+        sequence = counters.get(prefix, 0) + 1
+        counters[prefix] = sequence
+        names[host] = f"{prefix}-{sequence:03d}"
+
+    return names

@@ -1,6 +1,7 @@
 import pytest
 
-from src.core.proxy_import import parse_proxy_line
+from src.core.ip_location import IPLocation, lookup_locations
+from src.core.proxy_import import allocate_proxy_names, parse_proxy_line
 
 
 def test_parse_proxy_line_supports_all_formats():
@@ -42,3 +43,34 @@ def test_parse_proxy_line_ignores_default_type_for_explicit_protocol():
 def test_parse_proxy_line_rejects_invalid_ip_like_domain():
     with pytest.raises(ValueError):
         parse_proxy_line("999.999.999.999:80", default_type="http", line_no=3)
+
+
+def test_lookup_locations_falls_back_and_caches(monkeypatch):
+    calls = []
+
+    def fake_ip_sb(ip):
+        calls.append(("ip_sb", ip))
+        raise RuntimeError("boom")
+
+    def fake_freeipapi(ip):
+        calls.append(("freeipapi", ip))
+        return IPLocation(ip=ip, country="United States", city="Seattle")
+
+    result = lookup_locations(["1.1.1.1", "1.1.1.1"], ip_sb_lookup=fake_ip_sb, freeip_lookup=fake_freeipapi)
+
+    assert result["1.1.1.1"].country == "United States"
+    assert calls == [("ip_sb", "1.1.1.1"), ("freeipapi", "1.1.1.1")]
+
+
+def test_allocate_proxy_names_falls_back_when_country_or_city_missing():
+    names = allocate_proxy_names(
+        prefixes_in_db={"代理": 2, "美国-西雅图": 1},
+        locations=[
+            {"host": "1.1.1.1", "country": "美国", "city": "西雅图"},
+            {"host": "2.2.2.2", "country": "美国", "city": ""},
+        ],
+    )
+    assert names == {
+        "1.1.1.1": "美国-西雅图-002",
+        "2.2.2.2": "代理-003",
+    }
