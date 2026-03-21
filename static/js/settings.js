@@ -28,6 +28,20 @@ const elements = {
     // 批量操作
     selectAllServices: document.getElementById('select-all-services'),
     // 代理列表
+    proxyBatchImportForm: document.getElementById('proxy-batch-import-form'),
+    proxyImportDefaultType: document.getElementById('proxy-import-default-type'),
+    proxyBatchImportData: document.getElementById('proxy-batch-import-data'),
+    clearProxyImportBtn: document.getElementById('clear-proxy-import-btn'),
+    proxyImportResult: document.getElementById('proxy-import-result'),
+    proxyFilterForm: document.getElementById('proxy-filter-form'),
+    proxyFilterKeyword: document.getElementById('proxy-filter-keyword'),
+    proxyFilterType: document.getElementById('proxy-filter-type'),
+    proxyFilterEnabled: document.getElementById('proxy-filter-enabled'),
+    proxyFilterIsDefault: document.getElementById('proxy-filter-is-default'),
+    proxyFilterLocation: document.getElementById('proxy-filter-location'),
+    resetProxyFiltersBtn: document.getElementById('reset-proxy-filters-btn'),
+    selectAllProxies: document.getElementById('select-all-proxies'),
+    batchDeleteProxiesBtn: document.getElementById('batch-delete-proxies-btn'),
     proxiesTable: document.getElementById('proxies-table'),
     addProxyBtn: document.getElementById('add-proxy-btn'),
     testAllProxiesBtn: document.getElementById('test-all-proxies-btn'),
@@ -76,6 +90,20 @@ const elements = {
 
 // 选中的服务 ID
 let selectedServiceIds = new Set();
+let selectedProxyIds = new Set();
+
+function getDefaultProxyFilters() {
+    return {
+        keyword: '',
+        type: '',
+        enabled: '',
+        is_default: '',
+        location: ''
+    };
+}
+
+const proxyFilters = getDefaultProxyFilters();
+const PROXY_TABLE_COLUMN_COUNT = 10;
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
@@ -198,6 +226,48 @@ function initEventListeners() {
     }
 
     // 代理列表相关
+    if (elements.proxyBatchImportForm) {
+        elements.proxyBatchImportForm.addEventListener('submit', handleProxyBatchImport);
+    }
+
+    if (elements.clearProxyImportBtn) {
+        elements.clearProxyImportBtn.addEventListener('click', () => {
+            elements.proxyBatchImportData.value = '';
+            if (elements.proxyImportResult) {
+                elements.proxyImportResult.style.display = 'none';
+                elements.proxyImportResult.innerHTML = '';
+            }
+        });
+    }
+
+    if (elements.proxyFilterForm) {
+        elements.proxyFilterForm.addEventListener('submit', handleApplyProxyFilters);
+    }
+
+    if (elements.resetProxyFiltersBtn) {
+        elements.resetProxyFiltersBtn.addEventListener('click', handleResetProxyFilters);
+    }
+
+    if (elements.selectAllProxies) {
+        elements.selectAllProxies.addEventListener('change', (e) => {
+            const checked = e.target.checked;
+            elements.proxiesTable?.querySelectorAll('.proxy-checkbox[data-id]').forEach(cb => {
+                cb.checked = checked;
+                const id = parseInt(cb.dataset.id, 10);
+                if (checked) {
+                    selectedProxyIds.add(id);
+                } else {
+                    selectedProxyIds.delete(id);
+                }
+            });
+            updateProxySelectionUi();
+        });
+    }
+
+    if (elements.batchDeleteProxiesBtn) {
+        elements.batchDeleteProxiesBtn.addEventListener('click', handleBatchDeleteProxies);
+    }
+
     if (elements.addProxyBtn) {
         elements.addProxyBtn.addEventListener('click', () => openProxyModal());
     }
@@ -762,16 +832,86 @@ function escapeHtml(text) {
 // 代理列表管理
 // ============================================================================
 
+function buildProxyQueryString() {
+    const params = new URLSearchParams();
+
+    Object.entries(proxyFilters).forEach(([key, value]) => {
+        if (value !== '') {
+            params.set(key, value);
+        }
+    });
+
+    const query = params.toString();
+    return query ? `?${query}` : '';
+}
+
+function getProxyLocationLabel(proxy) {
+    return [proxy.country, proxy.city].filter(Boolean).join(' / ') || '-';
+}
+
+function renderProxyImportResult(result) {
+    if (!elements.proxyImportResult) {
+        return;
+    }
+
+    const rows = (result.results || []).map(item => {
+        const statusText = item.status === 'success'
+            ? '✅ 成功'
+            : item.status === 'skipped'
+                ? '⏭️ 跳过'
+                : '❌ 失败';
+        const detail = item.status === 'success'
+            ? escapeHtml(item.proxy?.name || `${item.proxy?.host || ''}:${item.proxy?.port || ''}`)
+            : escapeHtml(item.reason || '-');
+        return `
+            <li style="margin-top: 4px; line-height: 1.5;">
+                <strong>第 ${item.line_no} 行</strong>
+                <span style="margin-left: 8px;">${statusText}</span>
+                <div style="color: var(--text-muted); margin-top: 2px;">${detail}</div>
+            </li>
+        `;
+    }).join('');
+
+    elements.proxyImportResult.style.display = 'block';
+    elements.proxyImportResult.innerHTML = `
+        <div class="import-stats">
+            <span>✅ 成功导入: <strong>${result.success || 0}</strong></span>
+            <span>⏭️ 跳过: <strong>${result.skipped || 0}</strong></span>
+            <span>❌ 失败: <strong>${result.failed || 0}</strong></span>
+        </div>
+        ${rows ? `<div class="import-errors" style="margin-top: var(--spacing-sm);"><strong>处理结果：</strong><ul style="margin: 8px 0 0; padding-left: 20px;">${rows}</ul></div>` : ''}
+    `;
+}
+
+function updateProxySelectionUi() {
+    const checkboxes = Array.from(elements.proxiesTable?.querySelectorAll('.proxy-checkbox[data-id]') || []);
+    const checkedCount = checkboxes.filter(cb => cb.checked).length;
+    const totalCount = checkboxes.length;
+
+    if (elements.selectAllProxies) {
+        elements.selectAllProxies.checked = totalCount > 0 && checkedCount === totalCount;
+        elements.selectAllProxies.indeterminate = checkedCount > 0 && checkedCount < totalCount;
+        elements.selectAllProxies.disabled = totalCount === 0;
+    }
+
+    if (elements.batchDeleteProxiesBtn) {
+        const count = selectedProxyIds.size;
+        elements.batchDeleteProxiesBtn.disabled = count === 0;
+        elements.batchDeleteProxiesBtn.textContent = count > 0 ? `🗑️ 批量删除 (${count})` : '🗑️ 批量删除';
+    }
+}
+
 // 加载代理列表
 async function loadProxies() {
     try {
-        const data = await api.get('/settings/proxies');
-        renderProxies(data.proxies);
+        const data = await api.get(`/settings/proxies${buildProxyQueryString()}`);
+        renderProxies(data.proxies || []);
     } catch (error) {
         console.error('加载代理列表失败:', error);
+        selectedProxyIds.clear();
         elements.proxiesTable.innerHTML = `
             <tr>
-                <td colspan="7">
+                <td colspan="${PROXY_TABLE_COLUMN_COUNT}">
                     <div class="empty-state">
                         <div class="empty-state-icon">❌</div>
                         <div class="empty-state-title">加载失败</div>
@@ -779,32 +919,144 @@ async function loadProxies() {
                 </td>
             </tr>
         `;
+        updateProxySelectionUi();
+    }
+}
+
+async function handleApplyProxyFilters(e) {
+    if (e) {
+        e.preventDefault();
+    }
+
+    proxyFilters.keyword = elements.proxyFilterKeyword?.value.trim() || '';
+    proxyFilters.type = elements.proxyFilterType?.value || '';
+    proxyFilters.enabled = elements.proxyFilterEnabled?.value || '';
+    proxyFilters.is_default = elements.proxyFilterIsDefault?.value || '';
+    proxyFilters.location = elements.proxyFilterLocation?.value.trim() || '';
+
+    await loadProxies();
+}
+
+async function handleResetProxyFilters() {
+    Object.assign(proxyFilters, getDefaultProxyFilters());
+
+    if (elements.proxyFilterForm) {
+        elements.proxyFilterForm.reset();
+    }
+
+    await loadProxies();
+}
+
+async function handleProxyBatchImport(e) {
+    e.preventDefault();
+
+    const data = elements.proxyBatchImportData?.value.trim();
+    if (!data) {
+        toast.warning('请输入要导入的代理数据');
+        return;
+    }
+
+    const submitBtn = elements.proxyBatchImportForm?.querySelector('button[type="submit"]');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="loading-spinner"></span> 导入中...';
+    }
+
+    try {
+        const result = await api.post('/settings/proxies/batch-import', {
+            data,
+            default_type: elements.proxyImportDefaultType?.value || 'http'
+        });
+
+        renderProxyImportResult(result);
+
+        if ((result.success || 0) > 0) {
+            toast.success(`成功导入 ${result.success} 个代理`);
+            elements.proxyBatchImportData.value = '';
+            await loadProxies();
+        } else {
+            toast.info(`导入完成：跳过 ${result.skipped || 0}，失败 ${result.failed || 0}`);
+        }
+    } catch (error) {
+        toast.error('批量导入失败: ' + error.message);
+    } finally {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = '📥 批量导入';
+        }
+    }
+}
+
+async function handleBatchDeleteProxies() {
+    const ids = Array.from(selectedProxyIds);
+    if (ids.length === 0) {
+        return;
+    }
+
+    const confirmed = await confirm(`确定要删除选中的 ${ids.length} 个代理吗？此操作不可恢复。`);
+    if (!confirmed) {
+        return;
+    }
+
+    if (elements.batchDeleteProxiesBtn) {
+        elements.batchDeleteProxiesBtn.disabled = true;
+        elements.batchDeleteProxiesBtn.innerHTML = '<span class="loading-spinner"></span> 删除中...';
+    }
+
+    try {
+        const result = await api.post('/settings/proxies/batch-delete', { ids });
+        selectedProxyIds.clear();
+        toast.success(`已删除 ${result.deleted || 0} 个代理${result.missing?.length ? `，${result.missing.length} 个不存在` : ''}`);
+        await loadProxies();
+    } catch (error) {
+        toast.error('批量删除失败: ' + error.message);
+        updateProxySelectionUi();
     }
 }
 
 // 渲染代理列表
 function renderProxies(proxies) {
+    const visibleIds = new Set((proxies || []).map(proxy => proxy.id));
+    selectedProxyIds = new Set(Array.from(selectedProxyIds).filter(id => visibleIds.has(id)));
+
     if (!proxies || proxies.length === 0) {
         elements.proxiesTable.innerHTML = `
             <tr>
-                <td colspan="7">
+                <td colspan="${PROXY_TABLE_COLUMN_COUNT}">
                     <div class="empty-state">
                         <div class="empty-state-icon">🌐</div>
                         <div class="empty-state-title">暂无代理</div>
-                        <div class="empty-state-description">点击"添加代理"按钮添加代理服务器</div>
+                        <div class="empty-state-description">请调整筛选条件或点击“添加代理 / 批量导入”</div>
                     </div>
                 </td>
             </tr>
         `;
+        updateProxySelectionUi();
         return;
     }
 
     elements.proxiesTable.innerHTML = proxies.map(proxy => `
         <tr data-proxy-id="${proxy.id}">
+            <td>
+                <input
+                    type="checkbox"
+                    class="proxy-checkbox"
+                    data-id="${proxy.id}"
+                    aria-label="选择代理 ${escapeHtml(proxy.name)}"
+                    ${selectedProxyIds.has(proxy.id) ? 'checked' : ''}
+                >
+            </td>
             <td>${proxy.id}</td>
-            <td>${escapeHtml(proxy.name)}</td>
-            <td><span class="badge">${proxy.type.toUpperCase()}</span></td>
-            <td><code>${escapeHtml(proxy.host)}:${proxy.port}</code></td>
+            <td>
+                <div>${escapeHtml(proxy.name)}</div>
+                <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">${escapeHtml(proxy.host)}:${proxy.port}</div>
+            </td>
+            <td>${escapeHtml(getProxyLocationLabel(proxy))}</td>
+            <td><span class="badge">${(proxy.type || 'http').toUpperCase()}</span></td>
+            <td>
+                <code>${escapeHtml(proxy.host)}:${proxy.port}</code>
+                ${proxy.username ? `<div style="color: var(--text-muted); margin-top: 4px; font-size: 0.75rem;">账号：${escapeHtml(proxy.username)}</div>` : ''}
+            </td>
             <td>
                 ${proxy.is_default
                     ? '<span class="status-badge active">默认</span>'
@@ -829,6 +1081,20 @@ function renderProxies(proxies) {
             </td>
         </tr>
     `).join('');
+
+    elements.proxiesTable.querySelectorAll('.proxy-checkbox[data-id]').forEach(cb => {
+        cb.addEventListener('change', (e) => {
+            const id = parseInt(e.target.dataset.id, 10);
+            if (e.target.checked) {
+                selectedProxyIds.add(id);
+            } else {
+                selectedProxyIds.delete(id);
+            }
+            updateProxySelectionUi();
+        });
+    });
+
+    updateProxySelectionUi();
 }
 
 function toggleSettingsMoreMenu(btn) {
