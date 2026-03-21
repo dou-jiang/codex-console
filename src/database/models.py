@@ -181,6 +181,8 @@ class Proxy(Base):
     type = Column(String(20), nullable=False, default='http')  # http, socks5
     host = Column(String(255), nullable=False)
     port = Column(Integer, nullable=False)
+    country = Column(String(100))
+    city = Column(String(100))
     username = Column(String(100))
     password = Column(String(255))
     enabled = Column(Boolean, default=True)
@@ -198,6 +200,8 @@ class Proxy(Base):
             'type': self.type,
             'host': self.host,
             'port': self.port,
+            'country': self.country,
+            'city': self.city,
             'username': self.username,
             'enabled': self.enabled,
             'is_default': self.is_default or False,
