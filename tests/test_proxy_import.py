@@ -1,6 +1,9 @@
+import json
+import urllib.request
+
 import pytest
 
-from src.core.ip_location import IPLocation, lookup_locations
+from src.core.ip_location import IPLocation, lookup_ip_sb, lookup_locations
 from src.core.proxy_import import (
     allocate_proxy_names,
     canonicalize_proxy_host,
@@ -150,3 +153,30 @@ def test_allocate_proxy_names_falls_back_when_country_or_city_missing():
         "1.1.1.1": "美国-西雅图-002",
         "2.2.2.2": "代理-003",
     }
+
+
+def test_lookup_ip_sb_uses_request_headers_for_provider_compatibility(monkeypatch):
+    captured = {}
+
+    class _FakeResponse:
+        status = 200
+
+        def read(self):
+            return json.dumps({"country": "United States", "city": "Seattle"}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(request, timeout):
+        assert isinstance(request, urllib.request.Request)
+        captured["user_agent"] = request.headers.get("User-agent")
+        return _FakeResponse()
+
+    monkeypatch.setattr("src.core.ip_location.urllib.request.urlopen", fake_urlopen)
+
+    location = lookup_ip_sb("8.8.8.8")
+    assert location == IPLocation(ip="8.8.8.8", country="United States", city="Seattle")
+    assert captured["user_agent"]

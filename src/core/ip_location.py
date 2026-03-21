@@ -20,6 +20,7 @@ LookupProvider = Callable[[str], IPLocation]
 IPv4Resolver = Callable[[str], str]
 
 _REQUEST_TIMEOUT_SECONDS = 2.5
+_DEFAULT_USER_AGENT = "Mozilla/5.0"
 
 
 def lookup_locations(
@@ -179,7 +180,8 @@ def _normalize_location(ip: str, location: IPLocation | dict[str, object] | None
 
 def _fetch_json(url: str) -> dict[str, object]:
     try:
-        with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
+        request = urllib.request.Request(url, headers={"User-Agent": _DEFAULT_USER_AGENT})
+        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
             body = response.read().decode("utf-8", errors="ignore")
             payload = json.loads(body) if body else {}
     except Exception:
