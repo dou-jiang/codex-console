@@ -1,6 +1,7 @@
 import asyncio
 import sqlite3
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
@@ -269,3 +270,107 @@ def test_batch_delete_route_returns_requested_deleted_and_missing(route_db):
 
     assert result == {"success": True, "requested": 3, "deleted": 2, "missing": [404]}
     assert crud.get_proxies(route_db) == []
+
+
+def test_batch_import_proxies_skips_blank_and_comment_lines_and_reports_invalid(route_db, monkeypatch):
+    monkeypatch.setattr(settings_routes, "lookup_locations", lambda hosts, **_: {
+        "1.1.1.1": IPLocation(ip="1.1.1.1", country="美国", city="西雅图"),
+    })
+
+    result = asyncio.run(settings_routes.batch_import_proxies(
+        settings_routes.ProxyBatchImportRequest(
+            data="\n# comment\n  \n1.1.1.1:8080\nbad-input\n# trailing",
+            default_type="http",
+        )
+    ))
+
+    rows = crud.get_proxies(route_db)
+
+    assert result["success"] == 1
+    assert result["skipped"] == 0
+    assert result["failed"] == 1
+    assert [entry["status"] for entry in result["results"]] == ["failed", "success"]
+    assert result["results"][0]["line_no"] == 5
+    assert result["results"][0]["reason"] == "unsupported proxy line format"
+    assert [row.host for row in rows] == ["1.1.1.1"]
+
+
+def test_batch_import_proxies_falls_back_when_geolocation_lookup_fails(route_db, monkeypatch):
+    crud.create_proxy(
+        route_db,
+        name="代理-009",
+        type="http",
+        host="9.9.9.9",
+        port=9000,
+    )
+
+    def broken_lookup(hosts, **_):
+        raise RuntimeError("geo lookup failed")
+
+    monkeypatch.setattr(settings_routes, "lookup_locations", broken_lookup)
+
+    result = asyncio.run(settings_routes.batch_import_proxies(
+        settings_routes.ProxyBatchImportRequest(
+            data="proxy.example.com:8080",
+            default_type="http",
+        )
+    ))
+
+    rows = crud.get_proxies(route_db)
+    imported = next(row for row in rows if row.host == "proxy.example.com")
+
+    assert result["success"] == 1
+    assert result["skipped"] == 0
+    assert result["failed"] == 0
+    assert imported.name == "代理-010"
+    assert imported.country is None
+    assert imported.city is None
+
+
+def test_batch_import_proxies_dedupes_domain_hosts_case_insensitively(route_db, monkeypatch):
+    crud.create_proxy(
+        route_db,
+        name="现有域名代理",
+        type="http",
+        host="Example.COM",
+        port=8080,
+    )
+    monkeypatch.setattr(settings_routes, "lookup_locations", lambda hosts, **_: {})
+
+    result = asyncio.run(settings_routes.batch_import_proxies(
+        settings_routes.ProxyBatchImportRequest(
+            data="example.com:8080\nEXAMPLE.com:8080\nunique.example.com:8080",
+            default_type="http",
+        )
+    ))
+
+    rows = crud.get_proxies(route_db)
+
+    assert result["success"] == 1
+    assert result["skipped"] == 2
+    assert result["failed"] == 0
+    assert sorted((row.host, row.port) for row in rows) == [
+        ("Example.COM", 8080),
+        ("unique.example.com", 8080),
+    ]
+
+
+def test_batch_import_proxies_uses_asyncio_to_thread_for_geolocation(route_db, monkeypatch):
+    tracker = {"called": False}
+
+    async def fake_to_thread(func, *args, **kwargs):
+        tracker["called"] = True
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(settings_routes, "asyncio", SimpleNamespace(to_thread=fake_to_thread))
+    monkeypatch.setattr(settings_routes, "lookup_locations", lambda hosts, **_: {})
+
+    result = asyncio.run(settings_routes.batch_import_proxies(
+        settings_routes.ProxyBatchImportRequest(
+            data="thread-check.example.com:8080",
+            default_type="http",
+        )
+    ))
+
+    assert result["success"] == 1
+    assert tracker["called"] is True

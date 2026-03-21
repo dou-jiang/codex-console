@@ -2,6 +2,7 @@
 设置 API 路由
 """
 
+import asyncio
 import logging
 import os
 from typing import Literal, Optional
@@ -13,6 +14,7 @@ from ...config.settings import get_settings, update_settings
 from ...core.ip_location import lookup_locations
 from ...core.proxy_import import (
     allocate_proxy_names,
+    proxy_host_port_key,
     collect_proxy_name_counters,
     iter_proxy_import_lines,
     parse_proxy_line,
@@ -540,6 +542,11 @@ async def batch_import_proxies(request: ProxyBatchImportRequest):
     pending_host_ports: set[tuple[str, int]] = set()
 
     with get_db() as db:
+        existing_host_ports = {
+            proxy_host_port_key(host, port)
+            for host, port in db.query(Proxy.host, Proxy.port).all()
+        }
+
         for line_no, raw_line in iter_proxy_import_lines(request.data):
             try:
                 parsed = parse_proxy_line(raw_line, request.default_type, line_no)
@@ -553,8 +560,8 @@ async def batch_import_proxies(request: ProxyBatchImportRequest):
                 })
                 continue
 
-            host_port = (parsed.host, parsed.port)
-            if host_port in pending_host_ports or crud.find_proxy_by_host_port(db, host=parsed.host, port=parsed.port):
+            host_port = proxy_host_port_key(parsed.host, parsed.port)
+            if host_port in pending_host_ports or host_port in existing_host_ports:
                 skipped += 1
                 results.append({
                     "line_no": line_no,
@@ -575,12 +582,20 @@ async def batch_import_proxies(request: ProxyBatchImportRequest):
                 "results": results,
             }
 
-        try:
-            locations_by_host = lookup_locations([item.host for item in import_candidates])
-        except Exception:
-            locations_by_host = {}
+    try:
+        locations_by_host = await asyncio.to_thread(
+            lookup_locations,
+            [item.host for item in import_candidates],
+        )
+    except Exception:
+        locations_by_host = {}
 
+    with get_db() as db:
         existing_names = [row[0] for row in db.query(Proxy.name).all()]
+        existing_host_ports = {
+            proxy_host_port_key(host, port)
+            for host, port in db.query(Proxy.host, Proxy.port).all()
+        }
         prefixes_in_db = collect_proxy_name_counters(existing_names)
         allocated_names = allocate_proxy_names(
             prefixes_in_db,
@@ -598,8 +613,8 @@ async def batch_import_proxies(request: ProxyBatchImportRequest):
         success = 0
         seen_host_ports: set[tuple[str, int]] = set()
         for item in import_candidates:
-            key = (item.host, item.port)
-            if key in seen_host_ports or crud.find_proxy_by_host_port(db, host=item.host, port=item.port):
+            key = proxy_host_port_key(item.host, item.port)
+            if key in seen_host_ports or key in existing_host_ports:
                 skipped += 1
                 results.append({
                     "line_no": item.line_no,

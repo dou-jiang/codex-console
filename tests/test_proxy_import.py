@@ -1,7 +1,12 @@
 import pytest
 
 from src.core.ip_location import IPLocation, lookup_locations
-from src.core.proxy_import import allocate_proxy_names, parse_proxy_line
+from src.core.proxy_import import (
+    allocate_proxy_names,
+    canonicalize_proxy_host,
+    parse_proxy_line,
+    proxy_host_port_key,
+)
 
 
 def test_parse_proxy_line_supports_all_formats():
@@ -43,6 +48,15 @@ def test_parse_proxy_line_ignores_default_type_for_explicit_protocol():
 def test_parse_proxy_line_rejects_invalid_ip_like_domain():
     with pytest.raises(ValueError):
         parse_proxy_line("999.999.999.999:80", default_type="http", line_no=3)
+
+
+def test_canonicalize_proxy_host_lowercases_domains_but_not_ipv4():
+    assert canonicalize_proxy_host("Example.COM") == "example.com"
+    assert canonicalize_proxy_host("1.1.1.1") == "1.1.1.1"
+
+
+def test_proxy_host_port_key_is_case_insensitive_for_domains():
+    assert proxy_host_port_key("Example.COM", 8080) == proxy_host_port_key("example.com", 8080)
 
 
 def test_lookup_locations_falls_back_and_caches():

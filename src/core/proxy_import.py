@@ -190,6 +190,19 @@ def _normalize_protocol(value: str) -> str:
     return normalized
 
 
+def canonicalize_proxy_host(host: str) -> str:
+    normalized = str(host).strip()
+    if _IPV4_REGEX.fullmatch(normalized):
+        return normalized
+    if _DOMAIN_REGEX.fullmatch(normalized):
+        return normalized.lower()
+    return normalized
+
+
+def proxy_host_port_key(host: str, port: int) -> tuple[str, int]:
+    return canonicalize_proxy_host(host), int(port)
+
+
 def collect_proxy_name_counters(existing_names: list[str]) -> dict[str, int]:
     counters: dict[str, int] = {}
 
