@@ -45,8 +45,6 @@ def parse_proxy_line(raw_line: str, default_type: str, line_no: int) -> ParsedPr
     if not trimmed:
         raise ValueError("empty proxy line")
 
-    default_type_normalized = _normalize_protocol(default_type)
-
     for builder in (
         _build_protocol_prefixed,
         _build_username_password_at,
@@ -56,7 +54,7 @@ def parse_proxy_line(raw_line: str, default_type: str, line_no: int) -> ParsedPr
     ):
         result = builder(
             trimmed,
-            default_type_normalized,
+            default_type,
             line_no,
         )
         if result is not None:
@@ -121,7 +119,7 @@ def _build_host_port(line: str, default_type: str, line_no: int) -> ParsedProxyL
     return ParsedProxyLine(
         line_no=line_no,
         raw_line=line,
-        type=default_type,
+        type=_normalize_protocol(default_type),
         host=host,
         port=port,
     )
@@ -135,7 +133,7 @@ def _build_authenticated(match: re.Match[str], default_type: str, line: str, lin
     return ParsedProxyLine(
         line_no=line_no,
         raw_line=line,
-        type=default_type,
+        type=_normalize_protocol(default_type),
         host=host,
         port=port,
         username=username,
@@ -148,6 +146,8 @@ def _validate_host(host: str) -> str:
         raise ValueError("invalid host")
     if _IPv4 := _IPV4_REGEX.fullmatch(host):
         return host
+    if "." in host and all(ch.isdigit() or ch == "." for ch in host):
+        raise ValueError("invalid host")
     if _DOMAIN_REGEX.fullmatch(host):
         return host
     raise ValueError("invalid host")

@@ -28,3 +28,17 @@ def test_parse_proxy_line_rejects_invalid_input():
     for raw in bad_lines:
         with pytest.raises(ValueError):
             parse_proxy_line(raw, default_type="http", line_no=1)
+
+
+def test_parse_proxy_line_ignores_default_type_for_explicit_protocol():
+    parsed = parse_proxy_line(
+        "http://1.1.1.1:8080:user:pass",
+        default_type="ftp",
+        line_no=2,
+    )
+    assert parsed.type == "http"
+
+
+def test_parse_proxy_line_rejects_invalid_ip_like_domain():
+    with pytest.raises(ValueError):
+        parse_proxy_line("999.999.999.999:80", default_type="http", line_no=3)
