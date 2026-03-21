@@ -1125,6 +1125,11 @@ async def get_available_email_services():
             "count": 0,
             "services": []
         },
+        "cloudmail": {
+            "available": False,
+            "count": 0,
+            "services": []
+        },
         "imap_mail": {
             "available": False,
             "count": 0,
@@ -1237,6 +1242,25 @@ async def get_available_email_services():
 
         result["freemail"]["count"] = len(freemail_services)
         result["freemail"]["available"] = len(freemail_services) > 0
+
+        cloudmail_services = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "cloudmail",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).all()
+
+        for service in cloudmail_services:
+            config = service.config or {}
+            result["cloudmail"]["services"].append({
+                "id": service.id,
+                "name": service.name,
+                "type": "cloudmail",
+                "default_domain": config.get("default_domain"),
+                "login_email": config.get("login_email"),
+                "priority": service.priority
+            })
+
+        result["cloudmail"]["count"] = len(cloudmail_services)
+        result["cloudmail"]["available"] = len(cloudmail_services) > 0
 
         imap_mail_services = db.query(EmailServiceModel).filter(
             EmailServiceModel.service_type == "imap_mail",

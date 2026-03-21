@@ -84,7 +84,15 @@ class OutlookBatchImportResponse(BaseModel):
 # ============== Helper Functions ==============
 
 # 敏感字段列表，返回响应时需要过滤
-SENSITIVE_FIELDS = {'password', 'api_key', 'refresh_token', 'access_token', 'admin_token'}
+SENSITIVE_FIELDS = {
+    'password',
+    'api_key',
+    'refresh_token',
+    'access_token',
+    'admin_token',
+    'admin_password',
+    'login_password',
+}
 
 def filter_sensitive_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """过滤敏感配置信息"""
@@ -146,6 +154,7 @@ async def get_email_services_stats():
             'temp_mail_count': 0,
             'duck_mail_count': 0,
             'freemail_count': 0,
+            'cloudmail_count': 0,
             'imap_mail_count': 0,
             'tempmail_available': True,  # 临时邮箱始终可用
             'enabled_count': enabled_count
@@ -162,6 +171,8 @@ async def get_email_services_stats():
                 stats['duck_mail_count'] = count
             elif service_type == 'freemail':
                 stats['freemail_count'] = count
+            elif service_type == 'cloudmail':
+                stats['cloudmail_count'] = count
             elif service_type == 'imap_mail':
                 stats['imap_mail_count'] = count
 
@@ -233,6 +244,18 @@ async def get_service_types():
                     {"name": "base_url", "label": "API 地址", "required": True, "placeholder": "https://freemail.example.com"},
                     {"name": "admin_token", "label": "Admin Token", "required": True, "secret": True},
                     {"name": "domain", "label": "邮箱域名", "required": False, "placeholder": "example.com"},
+                ]
+            },
+            {
+                "value": "cloudmail",
+                "label": "CloudMail",
+                "description": "CloudMail Web API 邮箱服务，使用后台账户创建临时邮箱",
+                "config_fields": [
+                    {"name": "base_url", "label": "站点地址", "required": True, "placeholder": "https://mail.example.com"},
+                    {"name": "login_email", "label": "登录邮箱", "required": True},
+                    {"name": "login_password", "label": "登录密码", "required": True, "secret": True},
+                    {"name": "default_domain", "label": "默认域名", "required": False, "placeholder": "example.com"},
+                    {"name": "poll_interval", "label": "轮询间隔", "required": False, "default": 3},
                 ]
             },
             {
