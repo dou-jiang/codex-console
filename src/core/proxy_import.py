@@ -27,6 +27,7 @@ _HOST_PORT_WITH_COLON_AUTH_PATTERN = re.compile(
     r"^(?P<host>[^:@]+):(?P<port>\d+):(?P<username>[^:@]+):(?P<password>[^:@]+)$"
 )
 _HOST_PORT_PATTERN = re.compile(r"^(?P<host>[^:@]+):(?P<port>\d+)$")
+_NAME_SUFFIX_PATTERN = re.compile(r"^(?P<prefix>.+)-(?P<sequence>\d+)$")
 
 
 @dataclass
@@ -38,6 +39,18 @@ class ParsedProxyLine:
     port: int
     username: str | None = None
     password: str | None = None
+
+
+def iter_proxy_import_lines(raw_data: str) -> list[tuple[int, str]]:
+    lines: list[tuple[int, str]] = []
+
+    for line_no, raw_line in enumerate(raw_data.splitlines(), start=1):
+        trimmed = raw_line.strip()
+        if not trimmed or trimmed.startswith("#"):
+            continue
+        lines.append((line_no, trimmed))
+
+    return lines
 
 
 def parse_proxy_line(raw_line: str, default_type: str, line_no: int) -> ParsedProxyLine:
@@ -177,13 +190,28 @@ def _normalize_protocol(value: str) -> str:
     return normalized
 
 
+def collect_proxy_name_counters(existing_names: list[str]) -> dict[str, int]:
+    counters: dict[str, int] = {}
+
+    for name in existing_names:
+        match = _NAME_SUFFIX_PATTERN.fullmatch(str(name).strip())
+        if not match:
+            continue
+
+        prefix = match.group("prefix")
+        sequence = int(match.group("sequence"))
+        counters[prefix] = max(counters.get(prefix, 0), sequence)
+
+    return counters
+
+
 def allocate_proxy_names(prefixes_in_db: dict[str, int], locations: list[dict[str, str]]) -> dict[str, str]:
     counters = {prefix: max(0, int(value)) for prefix, value in prefixes_in_db.items()}
     names: dict[str, str] = {}
 
     for location in locations:
-        host = str(location.get("host", "")).strip()
-        if not host:
+        key = str(location.get("key") or location.get("host", "")).strip()
+        if not key:
             continue
 
         country = str(location.get("country", "")).strip()
@@ -192,6 +220,6 @@ def allocate_proxy_names(prefixes_in_db: dict[str, int], locations: list[dict[st
 
         sequence = counters.get(prefix, 0) + 1
         counters[prefix] = sequence
-        names[host] = f"{prefix}-{sequence:03d}"
+        names[key] = f"{prefix}-{sequence:03d}"
 
     return names

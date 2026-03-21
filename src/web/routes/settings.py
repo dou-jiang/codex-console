@@ -4,13 +4,21 @@
 
 import logging
 import os
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ...config.settings import get_settings, update_settings
+from ...core.ip_location import lookup_locations
+from ...core.proxy_import import (
+    allocate_proxy_names,
+    collect_proxy_name_counters,
+    iter_proxy_import_lines,
+    parse_proxy_line,
+)
 from ...database import crud
+from ...database.models import Proxy
 from ...database.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -469,11 +477,35 @@ class ProxyUpdateRequest(BaseModel):
     priority: Optional[int] = None
 
 
+class ProxyBatchImportRequest(BaseModel):
+    """批量导入代理请求"""
+    data: str
+    default_type: Literal["http", "socks5"] = "http"
+
+
+class ProxyBatchDeleteRequest(BaseModel):
+    """批量删除代理请求"""
+    ids: list[int]
+
+
 @router.get("/proxies")
-async def get_proxies_list(enabled: Optional[bool] = None):
+async def get_proxies_list(
+    enabled: Optional[bool] = None,
+    keyword: Optional[str] = None,
+    type: Optional[str] = None,
+    is_default: Optional[bool] = None,
+    location: Optional[str] = None,
+):
     """获取代理列表"""
     with get_db() as db:
-        proxies = crud.get_proxies(db, enabled=enabled)
+        proxies = crud.get_proxies(
+            db,
+            enabled=enabled,
+            keyword=keyword,
+            type=type,
+            is_default=is_default,
+            location=location,
+        )
         return {
             "proxies": [p.to_dict() for p in proxies],
             "total": len(proxies)
@@ -496,6 +528,130 @@ async def create_proxy_item(request: ProxyCreateRequest):
             priority=request.priority
         )
         return {"success": True, "proxy": proxy.to_dict()}
+
+
+@router.post("/proxies/batch-import")
+async def batch_import_proxies(request: ProxyBatchImportRequest):
+    """批量导入代理"""
+    import_candidates = []
+    results = []
+    skipped = 0
+    failed = 0
+    pending_host_ports: set[tuple[str, int]] = set()
+
+    with get_db() as db:
+        for line_no, raw_line in iter_proxy_import_lines(request.data):
+            try:
+                parsed = parse_proxy_line(raw_line, request.default_type, line_no)
+            except ValueError as exc:
+                failed += 1
+                results.append({
+                    "line_no": line_no,
+                    "raw": raw_line,
+                    "status": "failed",
+                    "reason": str(exc),
+                })
+                continue
+
+            host_port = (parsed.host, parsed.port)
+            if host_port in pending_host_ports or crud.find_proxy_by_host_port(db, host=parsed.host, port=parsed.port):
+                skipped += 1
+                results.append({
+                    "line_no": line_no,
+                    "raw": raw_line,
+                    "status": "skipped",
+                    "reason": "duplicate",
+                })
+                continue
+
+            pending_host_ports.add(host_port)
+            import_candidates.append(parsed)
+
+        if not import_candidates:
+            return {
+                "success": 0,
+                "skipped": skipped,
+                "failed": failed,
+                "results": results,
+            }
+
+        try:
+            locations_by_host = lookup_locations([item.host for item in import_candidates])
+        except Exception:
+            locations_by_host = {}
+
+        existing_names = [row[0] for row in db.query(Proxy.name).all()]
+        prefixes_in_db = collect_proxy_name_counters(existing_names)
+        allocated_names = allocate_proxy_names(
+            prefixes_in_db,
+            [
+                {
+                    "key": f"{item.line_no}:{item.host}:{item.port}",
+                    "host": item.host,
+                    "country": locations_by_host.get(item.host).country if locations_by_host.get(item.host) else "",
+                    "city": locations_by_host.get(item.host).city if locations_by_host.get(item.host) else "",
+                }
+                for item in import_candidates
+            ],
+        )
+
+        success = 0
+        seen_host_ports: set[tuple[str, int]] = set()
+        for item in import_candidates:
+            key = (item.host, item.port)
+            if key in seen_host_ports or crud.find_proxy_by_host_port(db, host=item.host, port=item.port):
+                skipped += 1
+                results.append({
+                    "line_no": item.line_no,
+                    "raw": item.raw_line,
+                    "status": "skipped",
+                    "reason": "duplicate",
+                })
+                continue
+
+            seen_host_ports.add(key)
+            location = locations_by_host.get(item.host)
+            proxy = crud.create_proxy(
+                db,
+                name=allocated_names.get(f"{item.line_no}:{item.host}:{item.port}", f"代理-{success + 1:03d}"),
+                type=item.type,
+                host=item.host,
+                port=item.port,
+                username=item.username,
+                password=item.password,
+                country=location.country if location else None,
+                city=location.city if location else None,
+            )
+            success += 1
+            results.append({
+                "line_no": item.line_no,
+                "raw": item.raw_line,
+                "status": "success",
+                "proxy": proxy.to_dict(),
+            })
+
+    return {
+        "success": success,
+        "skipped": skipped,
+        "failed": failed,
+        "results": results,
+    }
+
+
+@router.post("/proxies/batch-delete")
+async def batch_delete_proxies(request: ProxyBatchDeleteRequest):
+    """批量删除代理"""
+    with get_db() as db:
+        existing_ids = {row[0] for row in db.query(Proxy.id).filter(Proxy.id.in_(request.ids)).all()}
+        deleted = crud.delete_proxies(db, request.ids)
+        missing = [proxy_id for proxy_id in request.ids if proxy_id not in existing_ids]
+
+    return {
+        "success": True,
+        "requested": len(request.ids),
+        "deleted": deleted,
+        "missing": missing,
+    }
 
 
 @router.get("/proxies/{proxy_id}")

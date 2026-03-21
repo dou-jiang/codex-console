@@ -1,11 +1,15 @@
+import asyncio
 import sqlite3
+from contextlib import contextmanager
 
 import pytest
 from sqlalchemy import text
 
+from src.core.ip_location import IPLocation
 from src.database import crud
 from src.database.models import Base
 from src.database.session import DatabaseSessionManager
+from src.web.routes import settings as settings_routes
 
 
 @pytest.fixture
@@ -19,6 +23,16 @@ def temp_db(tmp_path):
         yield session
     finally:
         session.close()
+
+
+@pytest.fixture
+def route_db(monkeypatch, temp_db):
+    @contextmanager
+    def _get_db():
+        yield temp_db
+
+    monkeypatch.setattr(settings_routes, "get_db", _get_db)
+    return temp_db
 
 
 def test_get_proxies_supports_keyword_status_default_and_location_filters(temp_db):
@@ -178,3 +192,80 @@ def test_sqlite_migrate_tables_adds_proxy_country_and_city_columns(tmp_path):
 
     assert "country" in columns
     assert "city" in columns
+
+
+def test_batch_import_proxies_creates_rows_and_skips_duplicates(monkeypatch, route_db):
+    monkeypatch.setattr(settings_routes, "lookup_locations", lambda hosts, **_: {
+        "1.1.1.1": IPLocation(ip="1.1.1.1", country="美国", city="西雅图"),
+        "2.2.2.2": IPLocation(ip="2.2.2.2", country="", city=""),
+    })
+
+    result = asyncio.run(settings_routes.batch_import_proxies(
+        settings_routes.ProxyBatchImportRequest(
+            data="1.1.1.1:8080\nuser:pass@2.2.2.2:1080\n1.1.1.1:8080",
+            default_type="http",
+        )
+    ))
+
+    rows = crud.get_proxies(route_db)
+
+    assert result["success"] == 2
+    assert result["skipped"] == 1
+    assert result["failed"] == 0
+    assert {row.host for row in rows} == {"1.1.1.1", "2.2.2.2"}
+
+
+def test_get_proxies_list_accepts_filter_query_params(route_db):
+    first = crud.create_proxy(
+        route_db,
+        name="美国-西雅图-001",
+        type="http",
+        host="1.1.1.1",
+        port=8080,
+        country="美国",
+        city="西雅图",
+    )
+    crud.create_proxy(
+        route_db,
+        name="代理-001",
+        type="socks5",
+        host="2.2.2.2",
+        port=1080,
+        enabled=False,
+    )
+    crud.set_proxy_default(route_db, proxy_id=first.id)
+
+    result = asyncio.run(settings_routes.get_proxies_list(
+        enabled=True,
+        keyword="美国",
+        type="http",
+        is_default=True,
+        location="西雅图",
+    ))
+
+    assert result["total"] == 1
+    assert [proxy["host"] for proxy in result["proxies"]] == ["1.1.1.1"]
+
+
+def test_batch_delete_route_returns_requested_deleted_and_missing(route_db):
+    first = crud.create_proxy(
+        route_db,
+        name="代理-001",
+        type="http",
+        host="3.3.3.3",
+        port=8080,
+    )
+    second = crud.create_proxy(
+        route_db,
+        name="代理-002",
+        type="http",
+        host="4.4.4.4",
+        port=8081,
+    )
+
+    result = asyncio.run(settings_routes.batch_delete_proxies(
+        settings_routes.ProxyBatchDeleteRequest(ids=[first.id, second.id, 404])
+    ))
+
+    assert result == {"success": True, "requested": 3, "deleted": 2, "missing": [404]}
+    assert crud.get_proxies(route_db) == []
