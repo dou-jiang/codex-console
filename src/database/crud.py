@@ -394,12 +394,12 @@ def create_proxy(
     type: str,
     host: str,
     port: int,
-    country: Optional[str] = None,
-    city: Optional[str] = None,
     username: Optional[str] = None,
     password: Optional[str] = None,
     enabled: bool = True,
-    priority: int = 0
+    priority: int = 0,
+    country: Optional[str] = None,
+    city: Optional[str] = None,
 ) -> Proxy:
     """创建代理配置"""
     db_proxy = Proxy(
@@ -432,13 +432,14 @@ def find_proxy_by_host_port(db: Session, host: str, port: int) -> Optional[Proxy
 
 def get_proxies(
     db: Session,
+    enabled: Optional[bool] = None,
+    skip: int = 0,
+    limit: int = 100,
+    *,
     keyword: Optional[str] = None,
     type: Optional[str] = None,
-    enabled: Optional[bool] = None,
     is_default: Optional[bool] = None,
     location: Optional[str] = None,
-    skip: int = 0,
-    limit: int = 100
 ) -> List[Proxy]:
     """获取代理列表（支持关键字、类型、状态、默认代理、位置筛选）"""
     query = db.query(Proxy)
