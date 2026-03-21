@@ -113,18 +113,11 @@ def lookup_freeipapi(ip: str) -> IPLocation:
 
 def _lookup_with_fallback(ip: str, ip_sb_lookup: LookupProvider, freeip_lookup: LookupProvider) -> IPLocation:
     primary = _safe_provider_lookup(ip_sb_lookup, ip)
-    if primary.country or primary.city:
+    if _is_complete_location(primary):
         return primary
 
     secondary = _safe_provider_lookup(freeip_lookup, ip)
-    if secondary.country or secondary.city:
-        return secondary
-
-    if primary.ip:
-        return primary
-    if secondary.ip:
-        return secondary
-    return IPLocation(ip=ip)
+    return _pick_better_location(primary, secondary, ip)
 
 
 def _safe_provider_lookup(provider: LookupProvider, ip: str) -> IPLocation:
@@ -132,6 +125,30 @@ def _safe_provider_lookup(provider: LookupProvider, ip: str) -> IPLocation:
         return _normalize_location(ip, provider(ip))
     except Exception:
         return IPLocation(ip=ip)
+
+
+def _is_complete_location(location: IPLocation) -> bool:
+    return bool(location.country and location.city)
+
+
+def _location_score(location: IPLocation) -> int:
+    return int(bool(location.country)) + int(bool(location.city))
+
+
+def _pick_better_location(primary: IPLocation, secondary: IPLocation, ip: str) -> IPLocation:
+    primary_score = _location_score(primary)
+    secondary_score = _location_score(secondary)
+
+    if secondary_score > primary_score:
+        return secondary
+    if primary_score > secondary_score:
+        return primary
+
+    if primary.ip:
+        return primary
+    if secondary.ip:
+        return secondary
+    return IPLocation(ip=ip)
 
 
 def _safe_resolve(host: str, resolver: IPv4Resolver) -> str:

@@ -45,7 +45,7 @@ def test_parse_proxy_line_rejects_invalid_ip_like_domain():
         parse_proxy_line("999.999.999.999:80", default_type="http", line_no=3)
 
 
-def test_lookup_locations_falls_back_and_caches(monkeypatch):
+def test_lookup_locations_falls_back_and_caches():
     calls = []
 
     def fake_ip_sb(ip):
@@ -60,6 +60,68 @@ def test_lookup_locations_falls_back_and_caches(monkeypatch):
 
     assert result["1.1.1.1"].country == "United States"
     assert calls == [("ip_sb", "1.1.1.1"), ("freeipapi", "1.1.1.1")]
+
+
+def test_lookup_locations_uses_freeipapi_when_ip_sb_result_is_partial():
+    calls = []
+
+    def fake_ip_sb(ip):
+        calls.append(("ip_sb", ip))
+        return IPLocation(ip=ip, country="United States", city="")
+
+    def fake_freeipapi(ip):
+        calls.append(("freeipapi", ip))
+        return IPLocation(ip=ip, country="United States", city="Seattle")
+
+    result = lookup_locations(["1.1.1.1"], ip_sb_lookup=fake_ip_sb, freeip_lookup=fake_freeipapi)
+
+    assert result["1.1.1.1"] == IPLocation(ip="1.1.1.1", country="United States", city="Seattle")
+    assert calls == [("ip_sb", "1.1.1.1"), ("freeipapi", "1.1.1.1")]
+
+
+def test_lookup_locations_resolves_domains_and_deduplicates_same_target_ip():
+    calls = []
+
+    def fake_resolver(host):
+        return {
+            "a.example.com": "1.1.1.1",
+            "b.example.com": "1.1.1.1",
+        }[host]
+
+    def fake_ip_sb(ip):
+        calls.append(("ip_sb", ip))
+        return IPLocation(ip=ip, country="United States", city="Seattle")
+
+    result = lookup_locations(
+        ["a.example.com", "b.example.com"],
+        resolver=fake_resolver,
+        ip_sb_lookup=fake_ip_sb,
+    )
+
+    expected = IPLocation(ip="1.1.1.1", country="United States", city="Seattle")
+    assert result["a.example.com"] == expected
+    assert result["b.example.com"] == expected
+    assert calls == [("ip_sb", "1.1.1.1")]
+
+
+def test_lookup_locations_swallows_resolver_and_provider_failures():
+    def flaky_resolver(host):
+        if host == "bad.example.com":
+            raise RuntimeError("resolver boom")
+        return host
+
+    def broken_provider(ip):
+        raise RuntimeError("provider boom")
+
+    result = lookup_locations(
+        ["bad.example.com", "8.8.8.8"],
+        resolver=flaky_resolver,
+        ip_sb_lookup=broken_provider,
+        freeip_lookup=broken_provider,
+    )
+
+    assert result["bad.example.com"] == IPLocation(ip="", country="", city="")
+    assert result["8.8.8.8"] == IPLocation(ip="8.8.8.8", country="", city="")
 
 
 def test_allocate_proxy_names_falls_back_when_country_or_city_missing():
