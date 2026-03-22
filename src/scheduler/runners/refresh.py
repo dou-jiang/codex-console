@@ -146,6 +146,7 @@ def run_refresh_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                         account.status = "active"
                         account.primary_cpa_service_id = cpa_service_id
                         account.cpa_uploaded = False
+                        account.cpa_uploaded_at = None
                         account.invalidated_at = None
                         account.invalid_reason = None
                         db.commit()

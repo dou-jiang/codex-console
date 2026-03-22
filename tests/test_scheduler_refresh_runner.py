@@ -61,6 +61,7 @@ def make_account(
     registered_days_ago: int,
     last_refresh: datetime | None,
     cpa_uploaded: bool = False,
+    cpa_uploaded_at: datetime | None = None,
 ):
     account = crud.create_account(
         temp_db,
@@ -75,6 +76,7 @@ def make_account(
     account.registered_at = datetime.utcnow() - timedelta(days=registered_days_ago)
     account.last_refresh = last_refresh
     account.cpa_uploaded = cpa_uploaded
+    account.cpa_uploaded_at = cpa_uploaded_at
     temp_db.commit()
     temp_db.refresh(account)
     return account
@@ -108,12 +110,15 @@ def test_refresh_runner_selects_due_accounts_from_registered_at_when_last_refres
 
 def test_refresh_runner_marks_account_expired_on_refresh_failure(temp_db, monkeypatch):
     service, plan, run = _create_refresh_plan_and_run(temp_db)
+    stale_uploaded_at = datetime.utcnow() - timedelta(days=1)
     account = make_account(
         temp_db,
         status="active",
         primary_cpa_service_id=service.id,
         registered_days_ago=8,
         last_refresh=None,
+        cpa_uploaded=True,
+        cpa_uploaded_at=stale_uploaded_at,
     )
 
     monkeypatch.setattr(
@@ -128,11 +133,14 @@ def test_refresh_runner_marks_account_expired_on_refresh_failure(temp_db, monkey
     refreshed = crud.get_account_by_id(temp_db, account.id)
     assert refreshed.status == "expired"
     assert refreshed.invalid_reason == "refresh_failed"
+    assert refreshed.cpa_uploaded is False
+    assert refreshed.cpa_uploaded_at is None
     assert summary["refresh_failed"] == 1
 
 
 def test_refresh_runner_keeps_account_active_when_cpa_upload_fails(temp_db, monkeypatch):
     service, plan, run = _create_refresh_plan_and_run(temp_db)
+    stale_uploaded_at = datetime.utcnow() - timedelta(days=1)
     account = make_account(
         temp_db,
         status="active",
@@ -140,6 +148,7 @@ def test_refresh_runner_keeps_account_active_when_cpa_upload_fails(temp_db, monk
         registered_days_ago=8,
         last_refresh=None,
         cpa_uploaded=True,
+        cpa_uploaded_at=stale_uploaded_at,
     )
 
     monkeypatch.setattr(
@@ -161,17 +170,21 @@ def test_refresh_runner_keeps_account_active_when_cpa_upload_fails(temp_db, monk
     refreshed = crud.get_account_by_id(temp_db, account.id)
     assert refreshed.status == "active"
     assert refreshed.cpa_uploaded is False
+    assert refreshed.cpa_uploaded_at is None
     assert refreshed.invalid_reason is None
 
 
 def test_refresh_runner_marks_account_expired_on_subscription_check_failure(temp_db, monkeypatch):
     service, plan, run = _create_refresh_plan_and_run(temp_db)
+    stale_uploaded_at = datetime.utcnow() - timedelta(days=1)
     account = make_account(
         temp_db,
         status="active",
         primary_cpa_service_id=service.id,
         registered_days_ago=8,
         last_refresh=None,
+        cpa_uploaded=True,
+        cpa_uploaded_at=stale_uploaded_at,
     )
 
     monkeypatch.setattr(
@@ -197,4 +210,45 @@ def test_refresh_runner_marks_account_expired_on_subscription_check_failure(temp
     refreshed = crud.get_account_by_id(temp_db, account.id)
     assert refreshed.status == "expired"
     assert refreshed.invalid_reason == "subscription_check_failed"
+    assert refreshed.cpa_uploaded is False
+    assert refreshed.cpa_uploaded_at is None
     assert summary["subscription_failed"] == 1
+
+
+def test_refresh_runner_updates_tokens_subscription_and_cpa_state_on_success(temp_db, monkeypatch):
+    service, plan, run = _create_refresh_plan_and_run(temp_db)
+    account = make_account(
+        temp_db,
+        status="active",
+        primary_cpa_service_id=service.id,
+        registered_days_ago=8,
+        last_refresh=None,
+    )
+
+    monkeypatch.setattr(
+        refresh_runner,
+        "refresh_account_token",
+        lambda *a, **k: SimpleNamespace(
+            success=True,
+            access_token="new-ak",
+            refresh_token="new-rk",
+            expires_at=datetime.utcnow() + timedelta(days=10),
+        ),
+    )
+    monkeypatch.setattr(refresh_runner, "check_subscription_status", lambda *a, **k: "plus")
+    monkeypatch.setattr(refresh_runner, "upload_account_to_bound_cpa", lambda **_: (True, "ok"))
+
+    summary = run_refresh_plan(plan_id=plan.id, run_id=run.id)
+
+    temp_db.expire_all()
+    refreshed = crud.get_account_by_id(temp_db, account.id)
+    assert refreshed.status == "active"
+    assert refreshed.access_token == "new-ak"
+    assert refreshed.refresh_token == "new-rk"
+    assert refreshed.last_refresh is not None
+    assert refreshed.subscription_type == "plus"
+    assert refreshed.subscription_at is not None
+    assert refreshed.cpa_uploaded is True
+    assert refreshed.cpa_uploaded_at is not None
+    assert refreshed.invalid_reason is None
+    assert summary["uploaded_success"] == 1

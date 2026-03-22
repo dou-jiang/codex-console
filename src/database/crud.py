@@ -199,6 +199,8 @@ def mark_account_expired(db: Session, account_id: int, reason: str) -> Optional[
 
     now = datetime.utcnow()
     account.status = "expired"
+    account.cpa_uploaded = False
+    account.cpa_uploaded_at = None
     account.invalidated_at = now
     account.invalid_reason = reason
     account.updated_at = now
