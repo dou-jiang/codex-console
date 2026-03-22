@@ -765,6 +765,7 @@ def create_scheduled_plan(
     cpa_service_id: int,
     trigger_type: str,
     config: Dict[str, Any],
+    config_meta: Optional[Dict[str, Any]] = None,
     enabled: bool = True,
     cron_expression: Optional[str] = None,
     interval_value: Optional[int] = None,
@@ -786,6 +787,7 @@ def create_scheduled_plan(
         interval_value=interval_value,
         interval_unit=interval_unit,
         config=config,
+        config_meta=config_meta,
         next_run_at=next_run_at,
     )
     db.add(plan)

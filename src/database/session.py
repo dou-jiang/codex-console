@@ -29,6 +29,7 @@ SQLITE_MIGRATIONS = [
     ("proxies", "country", "VARCHAR(100)"),
     ("proxies", "city", "VARCHAR(100)"),
     ("registration_tasks", "email_address", "VARCHAR(255)"),
+    ("scheduled_plans", "config_meta", "TEXT"),
 ]
 
 POSTGRESQL_MIGRATIONS = [
@@ -38,6 +39,7 @@ POSTGRESQL_MIGRATIONS = [
     ("proxies", "country", "VARCHAR(100)"),
     ("proxies", "city", "VARCHAR(100)"),
     ("registration_tasks", "email_address", "VARCHAR(255)"),
+    ("scheduled_plans", "config_meta", "TEXT"),
 ]
 
 

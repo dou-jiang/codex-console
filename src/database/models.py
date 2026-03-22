@@ -165,6 +165,7 @@ class ScheduledPlan(Base):
     interval_value = Column(Integer)
     interval_unit = Column(String(16))
     config = Column(JSONEncodedDict, nullable=False)
+    config_meta = Column(JSONEncodedDict)
     next_run_at = Column(DateTime)
     last_run_started_at = Column(DateTime)
     last_run_finished_at = Column(DateTime)
