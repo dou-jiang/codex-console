@@ -83,12 +83,20 @@ def seeded_scheduled_data(route_db):
         status="success",
         summary={"processed": 3},
     )
-    crud.create_scheduled_run(route_db, plan_id=plan.id, trigger_source="manual")
+    latest_run = crud.create_scheduled_run(route_db, plan_id=plan.id, trigger_source="manual")
+    earlier_run.started_at = datetime(2026, 3, 22, 8, 0, 0)
+    earlier_run.finished_at = datetime(2026, 3, 22, 8, 5, 0)
+    latest_run.started_at = datetime(2026, 3, 22, 9, 0, 0)
+    route_db.commit()
+    route_db.refresh(earlier_run)
+    route_db.refresh(latest_run)
 
     return {
         "plan": plan,
         "primary_service": primary_service,
         "secondary_service": secondary_service,
+        "earlier_run": earlier_run,
+        "latest_run": latest_run,
     }
 
 
@@ -163,13 +171,26 @@ def test_list_plan_runs_route_returns_latest_runs(client, seeded_scheduled_data)
     response = client.get(f"/api/scheduled-plans/{seeded_scheduled_data['plan'].id}/runs")
 
     assert response.status_code == 200
-    assert isinstance(response.json()["runs"], list)
+    runs = response.json()["runs"]
+    assert isinstance(runs, list)
+    assert [row["id"] for row in runs] == [
+        seeded_scheduled_data["latest_run"].id,
+        seeded_scheduled_data["earlier_run"].id,
+    ]
+    assert runs[0]["trigger_source"] == "manual"
+    assert runs[0]["status"] == "running"
+    assert runs[1]["trigger_source"] == "scheduled"
+    assert runs[1]["status"] == "success"
+    assert runs[1]["summary"] == {"processed": 3}
 
 
 def test_list_accounts_can_filter_by_primary_cpa_and_returns_invalid_fields(client, expired_accounts):
     response = client.get("/api/accounts", params={"status": "expired", "primary_cpa_service_id": 7})
 
     body = response.json()
-    assert body["accounts"][0]["primary_cpa_service_id"] == 7
+    assert body["total"] == 1
+    assert len(body["accounts"]) == 1
+    assert all(account["primary_cpa_service_id"] == 7 for account in body["accounts"])
+    assert all(account["email"] != "expired-other@example.com" for account in body["accounts"])
     assert "invalidated_at" in body["accounts"][0]
     assert "invalid_reason" in body["accounts"][0]
