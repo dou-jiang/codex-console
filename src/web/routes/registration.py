@@ -120,6 +120,7 @@ class BatchRegistrationResponse(BaseModel):
     """批量注册响应"""
     batch_id: str
     count: int
+    is_unlimited: bool = False
     tasks: List[RegistrationTaskResponse]
 
 
@@ -578,19 +579,39 @@ async def run_registration_task(task_uuid: str, email_service_type: str, proxy: 
         task_manager.update_status(task_uuid, "failed", error=str(e))
 
 
-def _init_batch_state(batch_id: str, task_uuids: List[str]):
+def _init_batch_state(
+    batch_id: str,
+    task_uuids: List[str],
+    *,
+    is_unlimited: bool = False,
+    total: Optional[int] = None,
+):
     """初始化批量任务内存状态"""
-    task_manager.init_batch(batch_id, len(task_uuids))
+    computed_total = 0 if is_unlimited else (total if total is not None else len(task_uuids))
+    task_manager.init_batch(
+        batch_id,
+        computed_total,
+        is_unlimited=is_unlimited,
+        consecutive_failures=0,
+        max_consecutive_failures=10,
+        stop_reason=None,
+        domain_stats=[],
+    )
     batch_tasks[batch_id] = {
-        "total": len(task_uuids),
+        "total": computed_total,
         "completed": 0,
         "success": 0,
         "failed": 0,
         "cancelled": False,
-        "task_uuids": task_uuids,
+        "task_uuids": list(task_uuids),
         "current_index": 0,
         "logs": [],
-        "finished": False
+        "finished": False,
+        "is_unlimited": is_unlimited,
+        "consecutive_failures": 0,
+        "max_consecutive_failures": 10,
+        "stop_reason": None,
+        "domain_stats": [],
     }
 
 
@@ -607,6 +628,28 @@ def _make_batch_helpers(batch_id: str):
         task_manager.update_batch_status(batch_id, **kwargs)
 
     return add_batch_log, update_batch_status
+
+
+async def run_unlimited_batch_registration(
+    batch_id: str,
+    email_service_type: str,
+    proxy: Optional[str],
+    email_service_config: Optional[dict],
+    email_service_id: Optional[int],
+    interval_min: int,
+    interval_max: int,
+    concurrency: int,
+    mode: str,
+    auto_upload_cpa: bool = False,
+    cpa_service_ids: List[int] = None,
+    auto_upload_sub2api: bool = False,
+    sub2api_service_ids: List[int] = None,
+    auto_upload_tm: bool = False,
+    tm_service_ids: List[int] = None,
+):
+    """无限注册模式占位实现，后续任务会补充实际逻辑。"""
+    if batch_id not in batch_tasks:
+        _init_batch_state(batch_id, [], is_unlimited=True, total=0)
 
 
 async def run_batch_parallel(
@@ -862,15 +905,15 @@ async def start_batch_registration(
     """
     启动批量注册任务
 
-    - count: 注册数量 (1-100)
+    - count: 注册数量 (0-500)
     - email_service_type: 邮箱服务类型
     - proxy: 代理地址
     - interval_min: 最小间隔秒数
     - interval_max: 最大间隔秒数
     """
     # 验证参数
-    if request.count < 1 or request.count > 100:
-        raise HTTPException(status_code=400, detail="注册数量必须在 1-100 之间")
+    if request.count < 0 or request.count > 500:
+        raise HTTPException(status_code=400, detail="注册数量必须在 0-500 之间")
 
     try:
         EmailServiceType(request.email_service_type)
@@ -889,8 +932,38 @@ async def start_batch_registration(
     if request.mode not in ("parallel", "pipeline"):
         raise HTTPException(status_code=400, detail="模式必须为 parallel 或 pipeline")
 
+    is_unlimited = request.count == 0
+
     # 创建批量任务
     batch_id = str(uuid.uuid4())
+
+    if is_unlimited:
+        _init_batch_state(batch_id, [], is_unlimited=True, total=0)
+        background_tasks.add_task(
+            run_unlimited_batch_registration,
+            batch_id,
+            request.email_service_type,
+            request.proxy,
+            request.email_service_config,
+            request.email_service_id,
+            request.interval_min,
+            request.interval_max,
+            request.concurrency,
+            request.mode,
+            request.auto_upload_cpa,
+            request.cpa_service_ids,
+            request.auto_upload_sub2api,
+            request.sub2api_service_ids,
+            request.auto_upload_tm,
+            request.tm_service_ids,
+        )
+        return BatchRegistrationResponse(
+            batch_id=batch_id,
+            count=request.count,
+            is_unlimited=True,
+            tasks=[],
+        )
+
     task_uuids = []
 
     with get_db() as db:
@@ -931,6 +1004,7 @@ async def start_batch_registration(
     return BatchRegistrationResponse(
         batch_id=batch_id,
         count=request.count,
+        is_unlimited=False,
         tasks=[task_to_response(t) for t in tasks if t]
     )
 
@@ -951,7 +1025,12 @@ async def get_batch_status(batch_id: str):
         "current_index": batch["current_index"],
         "cancelled": batch["cancelled"],
         "finished": batch.get("finished", False),
-        "progress": f"{batch['completed']}/{batch['total']}"
+        "progress": f"{batch['completed']}/{batch['total']}",
+        "is_unlimited": batch.get("is_unlimited", False),
+        "consecutive_failures": batch.get("consecutive_failures", 0),
+        "max_consecutive_failures": batch.get("max_consecutive_failures", 10),
+        "stop_reason": batch.get("stop_reason"),
+        "domain_stats": batch.get("domain_stats", []),
     }
 
 

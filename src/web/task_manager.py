@@ -211,7 +211,7 @@ class TaskManager:
 
     # ============== 批量任务管理 ==============
 
-    def init_batch(self, batch_id: str, total: int):
+    def init_batch(self, batch_id: str, total: int, **extra):
         """初始化批量任务"""
         _batch_status[batch_id] = {
             "status": "running",
@@ -221,7 +221,8 @@ class TaskManager:
             "failed": 0,
             "skipped": 0,
             "current_index": 0,
-            "finished": False
+            "finished": False,
+            **extra,
         }
         logger.info(f"批量任务 {batch_id} 已初始化，总数: {total}")
 
