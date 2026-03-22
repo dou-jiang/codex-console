@@ -47,6 +47,13 @@
 - 支持打包为 Windows/Linux/macOS 可执行文件
 - 更适配当前 OpenAI 注册与登录链路
 
+## 定时任务
+
+- 支持 CPA 清理、CPA 补号、老账号刷新
+- 计划触发支持 Cron 和固定频率
+- Cron 时区固定为 Asia/Shanghai
+- 补号任务支持连续失败自动禁用
+
 ## 环境要求
 
 - Python 3.10+
