@@ -10,7 +10,7 @@ let totalAccounts = 0;
 let selectedAccounts = new Set();
 let isLoading = false;
 let selectAllPages = false;  // 是否选中了全部页
-let currentFilters = { status: '', email_service: '', search: '' };  // 当前筛选条件
+let currentFilters = { status: '', email_service: '', search: '', primary_cpa_service_id: '' };  // 当前筛选条件
 
 // DOM 元素
 const elements = {
@@ -21,6 +21,7 @@ const elements = {
     failedAccounts: document.getElementById('failed-accounts'),
     filterStatus: document.getElementById('filter-status'),
     filterService: document.getElementById('filter-service'),
+    filterPrimaryCpaServiceId: document.getElementById('filter-primary-cpa-service-id'),
     searchInput: document.getElementById('search-input'),
     refreshBtn: document.getElementById('refresh-btn'),
     batchRefreshBtn: document.getElementById('batch-refresh-btn'),
@@ -62,6 +63,14 @@ function initEventListeners() {
         resetSelectAllPages();
         loadAccounts();
     });
+
+    if (elements.filterPrimaryCpaServiceId) {
+        elements.filterPrimaryCpaServiceId.addEventListener('change', () => {
+            currentPage = 1;
+            resetSelectAllPages();
+            loadAccounts();
+        });
+    }
 
     // 搜索（防抖）
     elements.searchInput.addEventListener('input', debounce(() => {
@@ -202,6 +211,30 @@ function animateValue(element, value) {
     }, 200);
 }
 
+function getInvalidReasonText(reason) {
+    const reasonMap = {
+        cpa_cleanup: 'CPA 清理淘汰',
+        refresh_failed: '刷新失败',
+    };
+    return reasonMap[reason] || reason || '-';
+}
+
+function renderInvalidationColumns(invalidatedAt, invalidReason, primaryCpaServiceId) {
+    const serviceText = primaryCpaServiceId != null ? `#${primaryCpaServiceId}` : '-';
+    const invalidatedText = invalidatedAt ? format.date(invalidatedAt) : '-';
+    const reasonText = invalidReason ? getInvalidReasonText(invalidReason) : '-';
+
+    return `
+        <td>
+            <div style="display:flex;flex-direction:column;gap:2px;font-size:0.75rem;">
+                <span title="主 CPA 服务">服务: ${escapeHtml(String(serviceText))}</span>
+                <span title="失效时间">时间: ${escapeHtml(invalidatedText)}</span>
+                <span title="失效原因">原因: ${escapeHtml(reasonText)}</span>
+            </div>
+        </td>
+    `;
+}
+
 // 加载账号列表
 async function loadAccounts() {
     if (isLoading) return;
@@ -210,7 +243,7 @@ async function loadAccounts() {
     // 显示加载状态
     elements.table.innerHTML = `
         <tr>
-            <td colspan="9">
+            <td colspan="11">
                 <div class="empty-state">
                     <div class="skeleton skeleton-text" style="width: 60%;"></div>
                     <div class="skeleton skeleton-text" style="width: 80%;"></div>
@@ -224,6 +257,7 @@ async function loadAccounts() {
     currentFilters.status = elements.filterStatus.value;
     currentFilters.email_service = elements.filterService.value;
     currentFilters.search = elements.searchInput.value.trim();
+    currentFilters.primary_cpa_service_id = elements.filterPrimaryCpaServiceId ? elements.filterPrimaryCpaServiceId.value.trim() : '';
 
     const params = new URLSearchParams({
         page: currentPage,
@@ -242,6 +276,10 @@ async function loadAccounts() {
         params.append('search', currentFilters.search);
     }
 
+    if (currentFilters.primary_cpa_service_id) {
+        params.append('primary_cpa_service_id', currentFilters.primary_cpa_service_id);
+    }
+
     try {
         const data = await api.get(`/accounts?${params}`);
         totalAccounts = data.total;
@@ -251,7 +289,7 @@ async function loadAccounts() {
         console.error('加载账号列表失败:', error);
         elements.table.innerHTML = `
             <tr>
-                <td colspan="9">
+                <td colspan="11">
                     <div class="empty-state">
                         <div class="empty-state-icon">❌</div>
                         <div class="empty-state-title">加载失败</div>
@@ -270,7 +308,7 @@ function renderAccounts(accounts) {
     if (accounts.length === 0) {
         elements.table.innerHTML = `
             <tr>
-                <td colspan="9">
+                <td colspan="11">
                     <div class="empty-state">
                         <div class="empty-state-icon">📭</div>
                         <div class="empty-state-title">暂无数据</div>
@@ -319,6 +357,7 @@ function renderAccounts(accounts) {
                         : `<span class="badge pending">-</span>`}
                 </div>
             </td>
+            ${renderInvalidationColumns(account.invalidated_at, account.invalid_reason, account.primary_cpa_service_id)}
             <td>${format.date(account.last_refresh) || '-'}</td>
             <td>
                 <div style="display:flex;gap:4px;align-items:center;white-space:nowrap;">
@@ -422,6 +461,7 @@ function buildBatchPayload(extraFields = {}) {
             status_filter: currentFilters.status || null,
             email_service_filter: currentFilters.email_service || null,
             search_filter: currentFilters.search || null,
+            primary_cpa_service_id_filter: currentFilters.primary_cpa_service_id || null,
             ...extraFields
         };
     }
@@ -580,6 +620,18 @@ async function viewAccount(id) {
                             ${getStatusText('account', account.status)}
                         </span>
                     </span>
+                </div>
+                <div class="info-item">
+                    <span class="label">主 CPA 服务</span>
+                    <span class="value">${account.primary_cpa_service_id ?? '-'}</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">失效时间</span>
+                    <span class="value">${format.date(account.invalidated_at) || '-'}</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">失效原因</span>
+                    <span class="value">${escapeHtml(getInvalidReasonText(account.invalid_reason))}</span>
                 </div>
                 <div class="info-item">
                     <span class="label">注册时间</span>

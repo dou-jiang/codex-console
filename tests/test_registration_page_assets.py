@@ -10,6 +10,11 @@ def test_registration_template_contains_unlimited_mode_and_domain_stats_containe
     assert 'id="batch-domain-stats"' in template
 
 
+def test_registration_template_nav_contains_scheduled_tasks_link():
+    template = Path("templates/index.html").read_text(encoding="utf-8")
+    assert 'href="/scheduled-tasks"' in template
+
+
 def test_app_js_posts_count_zero_for_unlimited_mode():
     result = run_app_js_scenario("unlimited_mode_request")
     assert result["batch_count_display"] == "none"

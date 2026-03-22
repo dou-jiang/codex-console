@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>定时任务 - OpenAI 注册系统</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⏰</text></svg>">
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar">
+            <div class="nav-brand">
+                <h1>OpenAI 注册系统</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/" class="nav-link">注册</a>
+                <a href="/accounts" class="nav-link">账号管理</a>
+                <a href="/email-services" class="nav-link">邮箱服务</a>
+                <a href="/scheduled-tasks" class="nav-link active">定时任务</a>
+                <a href="/payment" class="nav-link">支付</a>
+                <a href="/settings" class="nav-link">设置</a>
+                <a href="/logout" class="nav-link">退出</a>
+            </div>
+            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">
+                🌙
+            </button>
+        </nav>
+
+        <main class="main-content">
+            <div class="page-header">
+                <h2>定时任务</h2>
+                <p class="subtitle">查看定时计划状态、执行记录和运行日志</p>
+            </div>
+
+            <div class="card">
+                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <h3>计划列表</h3>
+                    <button class="btn btn-secondary btn-sm" id="refresh-plans-btn">🔄 刷新</button>
+                </div>
+                <div class="card-body" style="padding:0;">
+                    <div class="table-container">
+                        <table id="scheduled-plans-table" class="data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 70px;">ID</th>
+                                    <th>计划名称</th>
+                                    <th style="width: 110px;">任务类型</th>
+                                    <th style="width: 120px;">触发方式</th>
+                                    <th style="width: 180px;">下次执行</th>
+                                    <th style="width: 100px;">状态</th>
+                                    <th style="width: 180px;">最近运行</th>
+                                    <th style="width: 170px;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="scheduled-plans-table-body">
+                                <tr>
+                                    <td colspan="8">
+                                        <div class="empty-state">
+                                            <div class="empty-state-icon">⏳</div>
+                                            <div class="empty-state-title">加载中</div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="plan-modal" class="modal">
+        <div class="modal-content" style="max-width: 520px;">
+            <div class="modal-header">
+                <h3>计划详情</h3>
+                <button class="modal-close" data-close-modal="plan-modal">&times;</button>
+            </div>
+            <div class="modal-body" id="plan-modal-body">
+                <div style="color: var(--text-muted);">计划详情加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="run-log-modal" class="modal">
+        <div class="modal-content" style="max-width: 760px;">
+            <div class="modal-header">
+                <h3>运行记录</h3>
+                <button class="modal-close" data-close-modal="run-log-modal">&times;</button>
+            </div>
+            <div class="modal-body" id="run-log-modal-body">
+                <div style="color: var(--text-muted);">暂无记录</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/static/js/scheduled_tasks.js?v={{ static_version }}"></script>
+</body>
+</html>

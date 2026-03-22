@@ -157,6 +157,12 @@ def create_app() -> FastAPI:
             return _redirect_to_login(request)
         return templates.TemplateResponse("email_services.html", {"request": request})
 
+    @app.get("/scheduled-tasks", response_class=HTMLResponse)
+    async def scheduled_tasks_page(request: Request):
+        if not _is_authenticated(request):
+            return _redirect_to_login(request)
+        return templates.TemplateResponse("scheduled_tasks.html", {"request": request})
+
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(request: Request):
         """设置页面"""
