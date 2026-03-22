@@ -9,7 +9,12 @@ from sqlalchemy import desc
 from ...database import crud
 from ...database.models import ScheduledRun
 from ...database.session import get_db
-from ...scheduler.schemas import ScheduledPlanCreate, ScheduledPlanResponse, ScheduledRunResponse
+from ...scheduler.schemas import (
+    ScheduledPlanCreate,
+    ScheduledPlanListResponse,
+    ScheduledPlanResponse,
+    ScheduledRunResponse,
+)
 from ...scheduler.service import validate_plan_payload
 from ...scheduler.time_utils import SCHEDULER_TZ, compute_next_run_at
 
@@ -64,6 +69,23 @@ async def create_scheduled_plan(request: ScheduledPlanCreate):
             return ScheduledPlanResponse.model_validate(plan)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("", response_model=ScheduledPlanListResponse)
+async def list_scheduled_plans(
+    enabled: bool | None = Query(None),
+    cpa_service_id: int | None = Query(None, ge=1),
+):
+    with get_db() as db:
+        plans = crud.get_scheduled_plans(
+            db,
+            enabled=enabled,
+            cpa_service_id=cpa_service_id,
+        )
+        return ScheduledPlanListResponse(
+            items=[ScheduledPlanResponse.model_validate(plan) for plan in plans],
+            total=len(plans),
+        )
 
 
 @router.get("/{plan_id}/runs", response_model=ScheduledRunListResponse)

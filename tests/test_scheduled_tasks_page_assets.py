@@ -8,7 +8,8 @@ def test_scheduled_tasks_page_requires_auth_and_renders_script():
     app = create_app()
     with TestClient(app) as client:
         unauthenticated = client.get("/scheduled-tasks", follow_redirects=False)
-        assert unauthenticated.status_code in {200, 302}
+        assert unauthenticated.status_code == 302
+        assert unauthenticated.headers["location"] == "/login?next=/scheduled-tasks"
 
         password = get_settings().webui_access_password.get_secret_value()
         login_response = client.post(

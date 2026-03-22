@@ -219,6 +219,16 @@ def test_list_plan_runs_route_returns_latest_runs(client, seeded_scheduled_data)
     assert runs[1]["summary"] == {"processed": 3}
 
 
+def test_list_scheduled_plans_route_returns_items_and_total(client, seeded_scheduled_data):
+    response = client.get("/api/scheduled-plans")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] >= 1
+    assert isinstance(payload["items"], list)
+    assert payload["items"][0]["id"] == seeded_scheduled_data["plan"].id
+
+
 def test_get_scheduled_run_logs_route_returns_saved_logs(client, route_db, seeded_scheduled_data):
     run = seeded_scheduled_data["latest_run"]
     assert crud.append_scheduled_run_log(route_db, run.id, "manual run started")
