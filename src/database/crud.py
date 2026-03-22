@@ -7,7 +7,17 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, asc, func
 
-from .models import Account, EmailService, RegistrationTask, Setting, Proxy, CpaService, Sub2ApiService
+from .models import (
+    Account,
+    EmailService,
+    RegistrationTask,
+    Setting,
+    Proxy,
+    CpaService,
+    Sub2ApiService,
+    ScheduledPlan,
+    ScheduledRun,
+)
 
 
 # ============================================================================
@@ -632,6 +642,116 @@ def delete_cpa_service(db: Session, service_id: int) -> bool:
     db.delete(db_service)
     db.commit()
     return True
+
+
+# ============================================================================
+# 定时任务 CRUD
+# ============================================================================
+
+def create_scheduled_plan(
+    db: Session,
+    name: str,
+    task_type: str,
+    cpa_service_id: int,
+    trigger_type: str,
+    config: Dict[str, Any],
+    enabled: bool = True,
+    cron_expression: Optional[str] = None,
+    interval_value: Optional[int] = None,
+    interval_unit: Optional[str] = None,
+    next_run_at: Optional[datetime] = None,
+) -> ScheduledPlan:
+    """创建定时计划"""
+    plan = ScheduledPlan(
+        name=name,
+        task_type=task_type,
+        enabled=enabled,
+        cpa_service_id=cpa_service_id,
+        trigger_type=trigger_type,
+        cron_expression=cron_expression,
+        interval_value=interval_value,
+        interval_unit=interval_unit,
+        config=config,
+        next_run_at=next_run_at,
+    )
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+    return plan
+
+
+def get_scheduled_plans(
+    db: Session,
+    enabled: Optional[bool] = None,
+    cpa_service_id: Optional[int] = None,
+) -> List[ScheduledPlan]:
+    """获取定时计划列表"""
+    query = db.query(ScheduledPlan)
+
+    if enabled is not None:
+        query = query.filter(ScheduledPlan.enabled == enabled)
+
+    if cpa_service_id is not None:
+        query = query.filter(ScheduledPlan.cpa_service_id == cpa_service_id)
+
+    return query.order_by(asc(ScheduledPlan.id)).all()
+
+
+def create_scheduled_run(
+    db: Session,
+    plan_id: int,
+    trigger_source: str,
+    status: str = 'running',
+) -> ScheduledRun:
+    """创建定时执行记录"""
+    run = ScheduledRun(
+        plan_id=plan_id,
+        trigger_source=trigger_source,
+        status=status,
+        started_at=datetime.utcnow(),
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def append_scheduled_run_log(db: Session, run_id: int, log_message: str) -> bool:
+    """追加运行日志"""
+    run = db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+    if not run:
+        return False
+
+    if run.logs:
+        run.logs += f"\n{log_message}"
+    else:
+        run.logs = log_message
+
+    db.commit()
+    return True
+
+
+def finish_scheduled_run(
+    db: Session,
+    run_id: int,
+    status: str,
+    summary: Optional[Dict[str, Any]] = None,
+    error_message: Optional[str] = None,
+    finished_at: Optional[datetime] = None,
+) -> Optional[ScheduledRun]:
+    """结束定时执行记录"""
+    run = db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+    if not run:
+        return None
+
+    run.status = status
+    run.summary = summary
+    run.error_message = error_message
+    run.finished_at = finished_at or datetime.utcnow()
+
+    db.commit()
+    db.refresh(run)
+    return run
 
 
 # ============================================================================

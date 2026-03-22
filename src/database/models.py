@@ -52,6 +52,9 @@ class Account(Base):
     extra_data = Column(JSONEncodedDict)  # 额外信息存储
     cpa_uploaded = Column(Boolean, default=False)  # 是否已上传到 CPA
     cpa_uploaded_at = Column(DateTime)  # 上传时间
+    primary_cpa_service_id = Column(Integer)  # 主 CPA 服务 ID（用于任务匹配）
+    invalidated_at = Column(DateTime)  # 本地判定失效时间
+    invalid_reason = Column(String(64))  # 失效原因（如 cpa_cleanup）
     source = Column(String(20), default='register')  # 'register' 或 'login'，区分账号来源
     subscription_type = Column(String(20))  # None / 'plus' / 'team'
     subscription_at = Column(DateTime)  # 订阅开通时间
@@ -76,6 +79,9 @@ class Account(Base):
             'proxy_used': self.proxy_used,
             'cpa_uploaded': self.cpa_uploaded,
             'cpa_uploaded_at': self.cpa_uploaded_at.isoformat() if self.cpa_uploaded_at else None,
+            'primary_cpa_service_id': self.primary_cpa_service_id,
+            'invalidated_at': self.invalidated_at.isoformat() if self.invalidated_at else None,
+            'invalid_reason': self.invalid_reason,
             'source': self.source,
             'subscription_type': self.subscription_type,
             'subscription_at': self.subscription_at.isoformat() if self.subscription_at else None,
@@ -143,6 +149,51 @@ class CpaService(Base):
     priority = Column(Integer, default=0)  # 优先级
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ScheduledPlan(Base):
+    """定时计划表"""
+    __tablename__ = 'scheduled_plans'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), nullable=False)
+    task_type = Column(String(32), nullable=False, index=True)  # cpa_cleanup / cpa_refill / account_refresh
+    enabled = Column(Boolean, default=True, nullable=False)
+    cpa_service_id = Column(Integer, ForeignKey('cpa_services.id'), nullable=False, index=True)
+    trigger_type = Column(String(16), nullable=False)  # cron / interval
+    cron_expression = Column(String(120))
+    interval_value = Column(Integer)
+    interval_unit = Column(String(16))
+    config = Column(JSONEncodedDict, nullable=False)
+    next_run_at = Column(DateTime)
+    last_run_started_at = Column(DateTime)
+    last_run_finished_at = Column(DateTime)
+    last_run_status = Column(String(20))
+    last_success_at = Column(DateTime)
+    auto_disabled_reason = Column(String(120))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    cpa_service = relationship('CpaService')
+    runs = relationship('ScheduledRun', back_populates='plan', cascade='all, delete-orphan')
+
+
+class ScheduledRun(Base):
+    """定时计划执行记录表"""
+    __tablename__ = 'scheduled_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id = Column(Integer, ForeignKey('scheduled_plans.id'), nullable=False, index=True)
+    trigger_source = Column(String(16), nullable=False)  # scheduled / manual
+    status = Column(String(20), nullable=False, default='running')  # running / success / failed / skipped
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime)
+    summary = Column(JSONEncodedDict)
+    error_message = Column(Text)
+    logs = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    plan = relationship('ScheduledPlan', back_populates='runs')
 
 
 class Sub2ApiService(Base):

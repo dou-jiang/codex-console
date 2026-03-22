@@ -143,3 +143,35 @@ def test_sqlite_migrate_tables_adds_registration_task_email_column(tmp_path):
         }
 
     assert "email_address" in columns
+
+
+def test_sqlite_migrate_tables_adds_scheduler_account_columns(tmp_path):
+    db_path = tmp_path / "legacy-accounts.db"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email VARCHAR(255) NOT NULL,
+                password VARCHAR(255),
+                email_service VARCHAR(50) NOT NULL,
+                created_at DATETIME,
+                updated_at DATETIME
+            )
+            """
+        )
+        conn.commit()
+
+    manager = DatabaseSessionManager(f"sqlite:///{db_path}")
+    manager.migrate_tables()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info('accounts')").fetchall()
+        }
+
+    assert "primary_cpa_service_id" in columns
+    assert "invalidated_at" in columns
+    assert "invalid_reason" in columns

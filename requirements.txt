@@ -10,6 +10,7 @@ jinja2>=3.1.0
 python-multipart>=0.0.6
 sqlalchemy>=2.0.0
 aiosqlite>=0.19.0
+croniter>=2.0.5
 psycopg[binary]>=3.1.18
 # 可选：无痕打开支付页需要 playwright（pip install playwright && playwright install chromium）
 # playwright>=1.40.0

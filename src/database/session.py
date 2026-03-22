@@ -22,6 +22,9 @@ SQLITE_MIGRATIONS = [
     ("accounts", "subscription_type", "VARCHAR(20)"),
     ("accounts", "subscription_at", "DATETIME"),
     ("accounts", "cookies", "TEXT"),
+    ("accounts", "primary_cpa_service_id", "INTEGER"),
+    ("accounts", "invalidated_at", "DATETIME"),
+    ("accounts", "invalid_reason", "VARCHAR(64)"),
     ("proxies", "is_default", "BOOLEAN DEFAULT 0"),
     ("proxies", "country", "VARCHAR(100)"),
     ("proxies", "city", "VARCHAR(100)"),
@@ -29,6 +32,9 @@ SQLITE_MIGRATIONS = [
 ]
 
 POSTGRESQL_MIGRATIONS = [
+    ("accounts", "primary_cpa_service_id", "INTEGER"),
+    ("accounts", "invalidated_at", "TIMESTAMP"),
+    ("accounts", "invalid_reason", "VARCHAR(64)"),
     ("proxies", "country", "VARCHAR(100)"),
     ("proxies", "city", "VARCHAR(100)"),
     ("registration_tasks", "email_address", "VARCHAR(255)"),

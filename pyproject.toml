@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "sqlalchemy>=2.0.0",
     "aiosqlite>=0.19.0",
+    "croniter>=2.0.5",
     "psycopg[binary]>=3.1.18",
     "websockets>=16.0",
     "path>=17.1.1",
