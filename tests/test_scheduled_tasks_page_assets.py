@@ -32,3 +32,21 @@ def test_scheduled_tasks_script_defines_escape_html_helper():
     assert "function escapeHtml(" in script
     # 至少要在定义之外被调用一次，否则无法覆盖页面渲染分支
     assert script.count("escapeHtml(") >= 2
+
+
+def test_scheduled_tasks_template_contains_plan_management_hooks():
+    template = Path("templates/scheduled_tasks.html").read_text(encoding="utf-8")
+    assert 'id="create-plan-btn"' in template
+    assert 'id="plan-form-modal"' in template
+    assert 'id="plan-form"' in template
+    assert 'id="plan-trigger-type"' in template
+
+
+def test_scheduled_tasks_script_contains_create_edit_enable_disable_hooks():
+    script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    assert "function openCreatePlanModal(" in script
+    assert "function openEditPlanModal(" in script
+    assert "function submitPlanForm(" in script
+    assert "function togglePlanEnabled(" in script
+    assert "/scheduled-plans/${planId}/enable" in script
+    assert "/scheduled-plans/${planId}/disable" in script

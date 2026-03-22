@@ -36,7 +36,10 @@
             <div class="card">
                 <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
                     <h3>计划列表</h3>
-                    <button class="btn btn-secondary btn-sm" id="refresh-plans-btn">🔄 刷新</button>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <button class="btn btn-primary btn-sm" id="create-plan-btn">➕ 新建计划</button>
+                        <button class="btn btn-secondary btn-sm" id="refresh-plans-btn">🔄 刷新</button>
+                    </div>
                 </div>
                 <div class="card-body" style="padding:0;">
                     <div class="table-container">
@@ -50,7 +53,7 @@
                                     <th style="width: 180px;">下次执行</th>
                                     <th style="width: 100px;">状态</th>
                                     <th style="width: 180px;">最近运行</th>
-                                    <th style="width: 170px;">操作</th>
+                                    <th style="width: 240px;">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="scheduled-plans-table-body">
@@ -68,6 +71,82 @@
                 </div>
             </div>
         </main>
+    </div>
+
+    <div id="plan-form-modal" class="modal">
+        <div class="modal-content" style="max-width: 640px;">
+            <div class="modal-header">
+                <h3 id="plan-form-title">新建计划</h3>
+                <button class="modal-close" data-close-modal="plan-form-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="plan-form">
+                    <input type="hidden" id="plan-id">
+                    <div class="form-group">
+                        <label for="plan-name">计划名称</label>
+                        <input type="text" id="plan-name" required placeholder="例如：每小时补量">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="plan-task-type">任务类型</label>
+                            <select id="plan-task-type" required>
+                                <option value="cpa_cleanup">CPA 清理</option>
+                                <option value="cpa_refill">CPA 补量</option>
+                                <option value="account_refresh">账号刷新</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="plan-cpa-service-select">CPA 服务</label>
+                            <select id="plan-cpa-service-select"></select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="plan-cpa-service-id">CPA 服务 ID（手动输入可覆盖下拉选择）</label>
+                        <input type="number" id="plan-cpa-service-id" min="1" required placeholder="1">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="plan-trigger-type">触发方式</label>
+                            <select id="plan-trigger-type" required>
+                                <option value="interval">间隔</option>
+                                <option value="cron">Cron</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="plan-cron-group" style="display:none;">
+                            <label for="plan-cron-expression">Cron 表达式</label>
+                            <input type="text" id="plan-cron-expression" placeholder="0 * * * *">
+                        </div>
+                    </div>
+                    <div class="form-row" id="plan-interval-group">
+                        <div class="form-group">
+                            <label for="plan-interval-value">间隔值</label>
+                            <input type="number" id="plan-interval-value" min="1" value="60">
+                        </div>
+                        <div class="form-group">
+                            <label for="plan-interval-unit">间隔单位</label>
+                            <select id="plan-interval-unit">
+                                <option value="minutes">分钟</option>
+                                <option value="hours">小时</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="plan-config-json">配置 JSON</label>
+                        <textarea id="plan-config-json" rows="6" placeholder='{"max_consecutive_failures": 10}'>{}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="plan-enabled" checked>
+                            保存后启用计划
+                        </label>
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary" id="plan-form-submit-btn">保存计划</button>
+                        <button type="button" class="btn btn-secondary" data-close-modal="plan-form-modal">取消</button>
+                    </div>
+                </form>
+            </div>
+        </div>
     </div>
 
     <div id="plan-modal" class="modal">
