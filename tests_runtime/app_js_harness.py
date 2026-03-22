@@ -159,6 +159,7 @@ const sessionStore = new Map();
 const logs = {{
   lastPostPath: null,
   lastPostPayload: null,
+  apiGetPaths: [],
 }};
 
 class MockWebSocket {{
@@ -218,7 +219,23 @@ const context = {{
       logs.lastPostPayload = JSON.parse(JSON.stringify(payload));
       return {{ batch_id: 'batch-001', count: payload.count }};
     }},
-    async get() {{
+    async get(path) {{
+      logs.apiGetPaths.push(path);
+
+      if (path === '/registration/batch/batch-unlimited-01') {{
+        return {{
+          total: 0,
+          completed: 4,
+          success: 2,
+          failed: 2,
+          finished: false,
+          is_unlimited: true,
+          consecutive_failures: 1,
+          max_consecutive_failures: 10,
+          domain_stats: [],
+        }};
+      }}
+
       return {{ accounts: [], finished: false }};
     }},
     async patch() {{ return {{ success: true }}; }},
@@ -231,7 +248,7 @@ context.globalThis = context;
 
 vm.createContext(context);
 vm.runInContext(
-  appSource + `\n;globalThis.__appTestExports = {{\n  handleModeChange,\n  handleBatchRegistration,\n  showBatchStatus,\n  updateBatchProgress,\n  elements,\n}};`,
+  appSource + `\n;globalThis.__appTestExports = {{\n  handleModeChange,\n  handleBatchRegistration,\n  showBatchStatus,\n  updateBatchProgress,\n  restoreActiveTask,\n  elements,\n}};`,
   context,
 );
 
@@ -268,7 +285,7 @@ async function runScenario() {{
         saved_active_task: JSON.parse(context.sessionStorage.getItem('activeTask') || 'null'),
       }};
     }}
-    case 'unlimited_progress': {{
+    case 'unlimited_progress_running': {{
       exported.showBatchStatus({{ count: 0 }});
       exported.updateBatchProgress({{
         is_unlimited: true,
@@ -280,7 +297,7 @@ async function runScenario() {{
         consecutive_failures: 3,
         max_consecutive_failures: 10,
         domain_stats: [
-          {{ domain: 'gmail.com', success: 3, failed: 1, total: 4 }},
+          {{ domain: 'gmail.com', success: 3, failed: 1, total: 4, success_rate: 75, failure_rate: 25 }},
         ],
       }});
 
@@ -289,7 +306,45 @@ async function runScenario() {{
         progress_percent: getElement('batch-progress-percent').textContent,
         progress_bar_indeterminate: getElement('progress-bar').classList.contains('indeterminate'),
         consecutive_failures_text: getElement('batch-consecutive-failures').textContent,
+        domain_stats_display: getElement('batch-domain-stats').style.display || '',
         domain_stats_html: getElement('batch-domain-stats').innerHTML,
+      }};
+    }}
+    case 'unlimited_progress_finished': {{
+      exported.showBatchStatus({{ count: 0 }});
+      exported.updateBatchProgress({{
+        is_unlimited: true,
+        completed: 8,
+        total: 0,
+        finished: true,
+        success: 6,
+        failed: 2,
+        consecutive_failures: 0,
+        max_consecutive_failures: 10,
+        domain_stats: [
+          {{ domain: 'gmail.com', success: 3, failed: 1, total: 4, success_rate: 75, failure_rate: 25 }},
+        ],
+      }});
+
+      return {{
+        progress_text: getElement('batch-progress-text').textContent,
+        progress_percent: getElement('batch-progress-percent').textContent,
+        progress_bar_indeterminate: getElement('progress-bar').classList.contains('indeterminate'),
+        domain_stats_html: getElement('batch-domain-stats').innerHTML,
+      }};
+    }}
+    case 'restore_unlimited_task': {{
+      context.sessionStorage.setItem('activeTask', JSON.stringify({{
+        batch_id: 'batch-unlimited-01',
+        mode: 'unlimited',
+        total: 0,
+      }}));
+
+      await exported.restoreActiveTask();
+
+      return {{
+        api_get_paths: logs.apiGetPaths.slice(),
+        batch_progress_display: getElement('batch-progress-section').style.display || '',
       }};
     }}
     default:

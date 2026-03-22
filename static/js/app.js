@@ -680,7 +680,11 @@ async function handleBatchRegistration(requestData) {
     requestData.concurrency = Math.min(50, Math.max(1, concurrency));
     requestData.mode = mode;
 
-    addLog('info', `[系统] 正在启动批量注册任务 (${count === 0 ? '无限模式' : `数量: ${count}`})...`);
+    if (count === 0) {
+        addLog('info', '[系统] 正在启动无限注册任务...');
+    } else {
+        addLog('info', `[系统] 正在启动批量注册任务 (数量: ${count})...`);
+    }
 
     try {
         const data = await api.post('/registration/batch', requestData);
@@ -927,7 +931,7 @@ function updateBatchProgress(data) {
         elements.batchFailed.textContent = data.failed;
         elements.batchRemaining.textContent = '不限';
         elements.batchConsecutiveFailures.textContent = `${data.consecutive_failures || 0}/${data.max_consecutive_failures || 0}`;
-        renderBatchDomainStats(data.domain_stats || []);
+        renderBatchDomainStats(data.finished ? (data.domain_stats || []) : []);
         return;
     }
 
@@ -976,6 +980,8 @@ function renderBatchDomainStats(rows) {
             <td>${row.total || 0}</td>
             <td>${row.success || 0}</td>
             <td>${row.failed || 0}</td>
+            <td>${formatDomainRate(row.success_rate, row.success, row.total)}</td>
+            <td>${formatDomainRate(row.failure_rate, row.failed, row.total)}</td>
         </tr>
     `).join('');
 
@@ -990,6 +996,8 @@ function renderBatchDomainStats(rows) {
                             <th>总计</th>
                             <th>成功</th>
                             <th>失败</th>
+                            <th>成功率</th>
+                            <th>失败率</th>
                         </tr>
                     </thead>
                     <tbody>${html}</tbody>
@@ -998,6 +1006,14 @@ function renderBatchDomainStats(rows) {
         </div>
     `;
     elements.batchDomainStats.style.display = 'block';
+}
+
+function formatDomainRate(rate, count, total) {
+    if (typeof rate === 'number' && Number.isFinite(rate)) {
+        return `${rate.toFixed(2)}%`;
+    }
+    if (!total) return '0.00%';
+    return `${((count || 0) / total * 100).toFixed(2)}%`;
 }
 
 // 加载最近注册的账号
