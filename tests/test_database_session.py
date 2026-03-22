@@ -110,6 +110,39 @@ def test_postgresql_migrate_tables_adds_registration_task_email_column(monkeypat
     )
 
 
+def test_postgresql_migrate_tables_adds_scheduler_account_columns(monkeypatch):
+    connection = _FakeConnection()
+    manager = _build_manager(connection)
+
+    class _FakeInspector:
+        def get_columns(self, table_name: str):
+            if table_name == "accounts":
+                return [{"name": "id"}, {"name": "email"}]
+            if table_name == "proxies":
+                return [{"name": "id"}, {"name": "country"}, {"name": "city"}]
+            if table_name == "registration_tasks":
+                return [{"name": "id"}, {"name": "email_address"}]
+            return [{"name": "id"}]
+
+    monkeypatch.setattr(session_module.Base.metadata, "create_all", lambda bind: None)
+    monkeypatch.setattr(session_module, "inspect", lambda conn: _FakeInspector())
+
+    manager.migrate_tables()
+
+    assert any(
+        'ALTER TABLE "accounts" ADD COLUMN IF NOT EXISTS "primary_cpa_service_id" INTEGER' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "accounts" ADD COLUMN IF NOT EXISTS "invalidated_at" TIMESTAMP' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "accounts" ADD COLUMN IF NOT EXISTS "invalid_reason" VARCHAR(64)' in stmt
+        for stmt in connection.statements
+    )
+
+
 def test_sqlite_migrate_tables_adds_registration_task_email_column(tmp_path):
     db_path = tmp_path / "legacy-registration-tasks.db"
 

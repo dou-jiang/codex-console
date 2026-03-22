@@ -662,6 +662,10 @@ def create_scheduled_plan(
     next_run_at: Optional[datetime] = None,
 ) -> ScheduledPlan:
     """创建定时计划"""
+    cpa_service = db.query(CpaService).filter(CpaService.id == cpa_service_id).first()
+    if not cpa_service:
+        raise ValueError(f"cpa service {cpa_service_id} does not exist")
+
     plan = ScheduledPlan(
         name=name,
         task_type=task_type,
@@ -704,6 +708,10 @@ def create_scheduled_run(
     status: str = 'running',
 ) -> ScheduledRun:
     """创建定时执行记录"""
+    plan = db.query(ScheduledPlan).filter(ScheduledPlan.id == plan_id).first()
+    if not plan:
+        raise ValueError(f"scheduled plan {plan_id} does not exist")
+
     run = ScheduledRun(
         plan_id=plan_id,
         trigger_source=trigger_source,
