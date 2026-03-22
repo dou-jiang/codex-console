@@ -89,33 +89,106 @@
                     </div>
                 </div>
 
-                <!-- 代理列表 -->
+                <!-- 代理批量导入 -->
                 <div class="card" style="margin-top: var(--spacing-lg);">
                     <div class="card-header">
-                        <h3>代理列表</h3>
-                        <div style="display: flex; gap: var(--spacing-sm);">
-                            <button class="btn btn-secondary btn-sm" id="test-all-proxies-btn">🔌 测试全部</button>
-                            <button class="btn btn-primary btn-sm" id="add-proxy-btn">➕ 添加代理</button>
+                        <h3>代理批量导入</h3>
+                        <span class="hint">支持逐行粘贴 host:port、user:pass@host:port 等格式</span>
+                    </div>
+                    <div class="card-body">
+                        <form id="proxy-batch-import-form">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="proxy-import-default-type">默认代理类型</label>
+                                    <select id="proxy-import-default-type" name="default_type">
+                                        <option value="http">HTTP</option>
+                                        <option value="socks5">SOCKS5</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy-batch-import-data">代理数据</label>
+                                <textarea id="proxy-batch-import-data" name="data" rows="6" placeholder="每行一个代理，例如：&#10;1.1.1.1:8080&#10;user:pass@2.2.2.2:1080"></textarea>
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">📥 批量导入</button>
+                                <button type="button" class="btn btn-secondary" id="clear-proxy-import-btn">清空</button>
+                            </div>
+                        </form>
+                        <div id="proxy-import-result" style="display: none; margin-top: var(--spacing-md);"></div>
+                    </div>
+                </div>
+
+                <!-- 代理列表 -->
+                <div class="card" style="margin-top: var(--spacing-lg);">
+                    <div class="card-header" style="display: block;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap;">
+                            <h3>代理列表</h3>
+                            <div style="display: flex; gap: var(--spacing-sm); flex-wrap: wrap;">
+                                <button class="btn btn-danger btn-sm" id="batch-delete-proxies-btn" disabled>🗑️ 批量删除</button>
+                                <button class="btn btn-secondary btn-sm" id="test-all-proxies-btn">🔌 测试全部</button>
+                                <button class="btn btn-primary btn-sm" id="add-proxy-btn">➕ 添加代理</button>
+                            </div>
                         </div>
+                        <form id="proxy-filter-form" class="proxy-filter-bar" style="margin-top: var(--spacing-md); display: flex; gap: var(--spacing-sm); flex-wrap: wrap; align-items: end;">
+                            <div class="form-group" style="margin: 0; min-width: 180px; flex: 1 1 180px;">
+                                <label for="proxy-filter-keyword">关键词</label>
+                                <input type="text" id="proxy-filter-keyword" placeholder="名称 / 地址 / 地区">
+                            </div>
+                            <div class="form-group" style="margin: 0; min-width: 120px;">
+                                <label for="proxy-filter-type">类型</label>
+                                <select id="proxy-filter-type">
+                                    <option value="">全部</option>
+                                    <option value="http">HTTP</option>
+                                    <option value="socks5">SOCKS5</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="margin: 0; min-width: 120px;">
+                                <label for="proxy-filter-enabled">状态</label>
+                                <select id="proxy-filter-enabled">
+                                    <option value="">全部</option>
+                                    <option value="true">已启用</option>
+                                    <option value="false">已禁用</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="margin: 0; min-width: 120px;">
+                                <label for="proxy-filter-is-default">默认</label>
+                                <select id="proxy-filter-is-default">
+                                    <option value="">全部</option>
+                                    <option value="true">默认代理</option>
+                                    <option value="false">非默认</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="margin: 0; min-width: 160px; flex: 1 1 160px;">
+                                <label for="proxy-filter-location">地区</label>
+                                <input type="text" id="proxy-filter-location" placeholder="国家 / 城市">
+                            </div>
+                            <div class="form-actions" style="margin: 0; padding: 0; border: 0; gap: var(--spacing-sm);">
+                                <button type="submit" class="btn btn-secondary btn-sm">筛选</button>
+                                <button type="button" class="btn btn-ghost btn-sm" id="reset-proxy-filters-btn">重置</button>
+                            </div>
+                        </form>
                     </div>
                     <div class="card-body" style="padding: 0;">
                         <div class="table-container">
                             <table class="data-table">
                                 <thead>
                                     <tr>
+                                        <th style="width: 44px;"><input type="checkbox" id="select-all-proxies" aria-label="全选代理"></th>
                                         <th style="width: 50px;">ID</th>
                                         <th>名称</th>
-                                        <th>类型</th>
+                                        <th style="width: 140px;">地区</th>
+                                        <th style="width: 90px;">类型</th>
                                         <th>地址</th>
-                                        <th style="width: 60px;">默认</th>
+                                        <th style="width: 80px;">默认</th>
                                         <th style="width: 80px;">状态</th>
-                                        <th style="width: 120px;">最后使用</th>
+                                        <th style="width: 140px;">最后使用</th>
                                         <th style="width: 180px;">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="proxies-table">
                                     <tr>
-                                        <td colspan="7">
+                                        <td colspan="10">
                                             <div class="empty-state">
                                                 <div class="empty-state-icon">🌐</div>
                                                 <div class="empty-state-title">暂无代理</div>

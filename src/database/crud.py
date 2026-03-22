@@ -397,7 +397,9 @@ def create_proxy(
     username: Optional[str] = None,
     password: Optional[str] = None,
     enabled: bool = True,
-    priority: int = 0
+    priority: int = 0,
+    country: Optional[str] = None,
+    city: Optional[str] = None,
 ) -> Proxy:
     """创建代理配置"""
     db_proxy = Proxy(
@@ -405,6 +407,8 @@ def create_proxy(
         type=type,
         host=host,
         port=port,
+        country=country,
+        city=city,
         username=username,
         password=password,
         enabled=enabled,
@@ -421,17 +425,49 @@ def get_proxy_by_id(db: Session, proxy_id: int) -> Optional[Proxy]:
     return db.query(Proxy).filter(Proxy.id == proxy_id).first()
 
 
+def find_proxy_by_host_port(db: Session, host: str, port: int) -> Optional[Proxy]:
+    """根据 host + port 查找代理（用于去重）"""
+    return db.query(Proxy).filter(and_(Proxy.host == host, Proxy.port == port)).first()
+
+
 def get_proxies(
     db: Session,
     enabled: Optional[bool] = None,
     skip: int = 0,
-    limit: int = 100
+    limit: int = 100,
+    *,
+    keyword: Optional[str] = None,
+    type: Optional[str] = None,
+    is_default: Optional[bool] = None,
+    location: Optional[str] = None,
 ) -> List[Proxy]:
-    """获取代理列表"""
+    """获取代理列表（支持关键字、类型、状态、默认代理、位置筛选）"""
     query = db.query(Proxy)
+
+    if keyword:
+        keyword_like = f"%{keyword}%"
+        query = query.filter(or_(
+            Proxy.name.ilike(keyword_like),
+            Proxy.host.ilike(keyword_like),
+            Proxy.country.ilike(keyword_like),
+            Proxy.city.ilike(keyword_like),
+        ))
+
+    if type:
+        query = query.filter(Proxy.type == type)
 
     if enabled is not None:
         query = query.filter(Proxy.enabled == enabled)
+
+    if is_default is not None:
+        query = query.filter(Proxy.is_default == is_default)
+
+    if location:
+        location_like = f"%{location}%"
+        query = query.filter(or_(
+            Proxy.country.ilike(location_like),
+            Proxy.city.ilike(location_like),
+        ))
 
     query = query.order_by(desc(Proxy.created_at)).offset(skip).limit(limit)
     return query.all()
@@ -470,6 +506,16 @@ def delete_proxy(db: Session, proxy_id: int) -> bool:
     db.delete(db_proxy)
     db.commit()
     return True
+
+
+def delete_proxies(db: Session, proxy_ids: List[int]) -> int:
+    """批量删除代理，忽略不存在的 ID，返回实际删除数量"""
+    if not proxy_ids:
+        return 0
+
+    deleted = db.query(Proxy).filter(Proxy.id.in_(proxy_ids)).delete(synchronize_session=False)
+    db.commit()
+    return deleted
 
 
 def update_proxy_last_used(db: Session, proxy_id: int) -> bool:
