@@ -159,6 +159,11 @@ SQLITE_MIGRATIONS.extend([
     ("accounts", "invalidated_at", "DATETIME"),
     ("accounts", "invalid_reason", "VARCHAR(64)"),
 ])
+POSTGRESQL_MIGRATIONS.extend([
+    ("accounts", "primary_cpa_service_id", "INTEGER"),
+    ("accounts", "invalidated_at", "TIMESTAMP"),
+    ("accounts", "invalid_reason", "VARCHAR(64)"),
+])
 ```
 
 ```python
@@ -313,6 +318,16 @@ def test_scheduler_engine_start_is_idempotent():
     engine = SchedulerEngine(repo=FakeRepo())
     assert engine.start() is True
     assert engine.start() is False
+
+
+def test_scheduler_engine_skips_plan_when_same_cpa_is_locked():
+    repo = FakeRepo(due_plans=[FakePlan(id=2, cpa_service_id=8)])
+    engine = SchedulerEngine(repo=repo)
+    engine._cpa_locks.add(8)
+
+    engine.dispatch_due_plans_once()
+
+    assert repo.created_runs == [(2, "scheduled", "skipped")]
 ```
 
 - [ ] **Step 2: Run the engine tests and confirm they fail**
@@ -340,6 +355,9 @@ def dispatch_due_plans_once(self):
     for plan in self.repo.get_due_enabled_plans(now_in_scheduler_tz()):
         if plan.id in self._plan_locks:
             self.repo.create_skipped_run(plan.id, trigger_source="scheduled", reason="plan already running")
+            continue
+        if plan.cpa_service_id in self._cpa_locks:
+            self.repo.create_skipped_run(plan.id, trigger_source="scheduled", reason="cpa already busy")
             continue
 ```
 
@@ -670,6 +688,12 @@ def test_manual_run_route_rejects_when_plan_is_currently_running(client, monkeyp
     monkeypatch.setattr(scheduled_routes.scheduler_engine, "trigger_plan_now", lambda plan_id: False)
     response = client.post("/api/scheduled-plans/1/run")
     assert response.status_code == 409
+
+
+def test_list_plan_runs_route_returns_latest_runs(client):
+    response = client.get("/api/scheduled-plans/1/runs")
+    assert response.status_code == 200
+    assert isinstance(response.json()["runs"], list)
 ```
 
 - [ ] **Step 2: Write a failing account filter/response test**
@@ -697,6 +721,12 @@ Expected: FAIL because scheduled task routes and account filters are incomplete.
 # src/web/routes/scheduled_tasks.py
 @router.post("")
 async def create_scheduled_plan(request: ScheduledPlanCreate): ...
+
+@router.get("/{plan_id}/runs")
+async def list_scheduled_runs(plan_id: int): ...
+
+@router.get("/runs/{run_id}/logs")
+async def get_scheduled_run_logs(run_id: int): ...
 
 @router.post("/{plan_id}/run")
 async def run_scheduled_plan(plan_id: int): ...
@@ -803,11 +833,17 @@ async function loadPlans() {
   const data = await api.get('/scheduled-plans');
   renderPlans(data.plans || data);
 }
+
+async function openRunLogs(planId) {
+  const data = await api.get(`/scheduled-plans/${planId}/runs`);
+  renderRunLogModal(data.runs || []);
+}
 ```
 
 ```javascript
 // static/js/accounts.js
 currentFilters = { status: '', email_service: '', search: '', primary_cpa_service_id: '' };
+renderInvalidationColumns(account.invalidated_at, account.invalid_reason, account.primary_cpa_service_id);
 ```
 
 - [ ] **Step 5: Update all authenticated nav templates**
