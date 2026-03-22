@@ -1,6 +1,8 @@
 import asyncio
 from contextlib import contextmanager
 from copy import deepcopy
+from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
@@ -76,6 +78,17 @@ def test_create_and_update_registration_task_persist_email_address(temp_db):
 class FakeTaskManager:
     def __init__(self):
         self._status = {}
+        self._task_status = {}
+        self._batch_logs = {}
+
+    def is_cancelled(self, task_uuid):
+        return self._task_status.get(task_uuid, {}).get("cancelled", False)
+
+    def update_status(self, task_uuid, status, **kwargs):
+        self._task_status.setdefault(task_uuid, {}).update({"status": status, **kwargs})
+
+    def create_log_callback(self, task_uuid, prefix="", batch_id=""):
+        return lambda message: None
 
     def init_batch(
         self,
@@ -104,8 +117,18 @@ class FakeTaskManager:
     def get_batch_status(self, batch_id):
         return self._status.get(batch_id)
 
+    def add_batch_log(self, batch_id, log_message):
+        self._batch_logs.setdefault(batch_id, []).append(log_message)
+
     def is_batch_cancelled(self, batch_id):
         return self._status.get(batch_id, {}).get("cancelled", False)
+
+
+@pytest.fixture
+def fake_task_manager(monkeypatch, batch_state):
+    manager = FakeTaskManager()
+    monkeypatch.setattr(registration_routes, "task_manager", manager)
+    return manager
 
 
 def test_start_batch_registration_accepts_zero_and_queues_unlimited_runner(route_db, batch_state, monkeypatch):
@@ -165,3 +188,140 @@ def test_get_batch_status_includes_unlimited_metadata(batch_state):
     assert result["max_consecutive_failures"] == 10
     assert result["stop_reason"] is None
     assert result["domain_stats"] == []
+
+
+def test_run_sync_registration_task_persists_email_address_even_on_failure(route_db, fake_task_manager, monkeypatch):
+    crud.create_registration_task(route_db, task_uuid="task-1")
+
+    monkeypatch.setattr(
+        registration_routes,
+        "get_settings",
+        lambda: SimpleNamespace(tempmail_base_url="http://mail", tempmail_timeout=1, tempmail_max_retries=0),
+    )
+    monkeypatch.setattr(
+        registration_routes.EmailServiceFactory,
+        "create",
+        lambda *args, **kwargs: SimpleNamespace(service_type=SimpleNamespace(value="tempmail")),
+    )
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self):
+            return SimpleNamespace(
+                success=False,
+                email="failed@gmail.com",
+                error_message="boom",
+                to_dict=lambda: {"email": "failed@gmail.com"},
+            )
+
+    monkeypatch.setattr(registration_routes, "RegistrationEngine", FakeEngine)
+
+    registration_routes._run_sync_registration_task("task-1", "tempmail", None, None)
+
+    task = crud.get_registration_task(route_db, "task-1")
+    assert task.status == "failed"
+    assert task.email_address == "failed@gmail.com"
+
+
+def test_run_batch_registration_attaches_sorted_domain_stats(route_db, fake_task_manager, monkeypatch):
+    task_ids = []
+    for name in ["a", "b", "c"]:
+        task = crud.create_registration_task(route_db, task_uuid=f"task-{name}")
+        task_ids.append(task.task_uuid)
+
+    outcomes = iter([
+        ("completed", "one@yahoo.com"),
+        ("failed", "two@gmail.com"),
+        ("completed", "three@gmail.com"),
+    ])
+
+    async def fake_run_registration_task(task_uuid, *args, **kwargs):
+        status, email = next(outcomes)
+        crud.update_registration_task(
+            route_db,
+            task_uuid,
+            status=status,
+            email_address=email,
+            completed_at=datetime.utcnow(),
+            result={"email": email} if status == "completed" else None,
+            error_message=None if status == "completed" else "boom",
+        )
+
+    monkeypatch.setattr(registration_routes, "run_registration_task", fake_run_registration_task)
+
+    asyncio.run(
+        registration_routes.run_batch_registration(
+            batch_id="fixed-1",
+            task_uuids=task_ids,
+            email_service_type="tempmail",
+            proxy=None,
+            email_service_config=None,
+            email_service_id=None,
+            interval_min=0,
+            interval_max=0,
+            concurrency=1,
+            mode="parallel",
+        )
+    )
+
+    stats = registration_routes.batch_tasks["fixed-1"]["domain_stats"]
+    assert [row["domain"] for row in stats] == ["yahoo.com", "gmail.com"]
+
+
+def test_run_unlimited_batch_registration_stops_after_eleven_consecutive_failures(route_db, fake_task_manager, monkeypatch):
+    outcomes = iter([("failed", f"user{i}@bad.com") for i in range(11)] + [("completed", "late@good.com")])
+
+    async def fake_run_registration_task(task_uuid, *args, **kwargs):
+        status, email = next(outcomes)
+        crud.update_registration_task(
+            route_db,
+            task_uuid,
+            status=status,
+            email_address=email,
+            completed_at=datetime.utcnow(),
+            result={"email": email} if status == "completed" else None,
+            error_message=None if status == "completed" else "boom",
+        )
+
+    monkeypatch.setattr(registration_routes, "run_registration_task", fake_run_registration_task)
+
+    asyncio.run(
+        registration_routes.run_unlimited_batch_registration(
+            batch_id="unlimited-1",
+            email_service_type="tempmail",
+            proxy=None,
+            email_service_config=None,
+            email_service_id=None,
+            interval_min=0,
+            interval_max=0,
+            concurrency=1,
+            mode="parallel",
+        )
+    )
+
+    state = registration_routes.batch_tasks["unlimited-1"]
+    assert state["completed"] == 11
+    assert state["failed"] == 11
+    assert state["consecutive_failures"] == 11
+    assert state["stop_reason"] == "too_many_consecutive_failures"
+
+
+def test_get_outlook_batch_status_includes_domain_stats_if_present(batch_state):
+    registration_routes.batch_tasks["outlook-1"] = {
+        "total": 2,
+        "completed": 2,
+        "success": 1,
+        "failed": 1,
+        "skipped": 0,
+        "current_index": 1,
+        "cancelled": False,
+        "finished": True,
+        "logs": [],
+        "domain_stats": [{"domain": "gmail.com", "total": 2, "success": 1, "failed": 1}],
+    }
+
+    result = asyncio.run(registration_routes.get_outlook_batch_status("outlook-1"))
+
+    assert result["domain_stats"] == [{"domain": "gmail.com", "total": 2, "success": 1, "failed": 1}]

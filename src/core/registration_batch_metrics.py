@@ -11,6 +11,9 @@ class TaskWithEmail(Protocol):
 
 
 def apply_task_outcome(state: dict[str, int], status: str) -> None:
+    if status not in {"completed", "failed"}:
+        return
+
     state["completed"] = state.get("completed", 0) + 1
 
     if status == "completed":

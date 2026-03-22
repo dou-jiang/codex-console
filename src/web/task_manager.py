@@ -285,6 +285,9 @@ class TaskManager:
             logger.warning(f"批量任务 {batch_id} 不存在")
             return
 
+        if "domain_stats" in kwargs and kwargs["domain_stats"] is not None:
+            kwargs["domain_stats"] = list(kwargs["domain_stats"])
+
         _batch_status[batch_id].update(kwargs)
 
         # 异步广播状态更新

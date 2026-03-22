@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from ...database import crud
 from ...database.session import get_db
 from ...database.models import RegistrationTask, Proxy
+from ...core.registration_batch_metrics import apply_task_outcome, build_domain_stats
 from ...core.register import RegistrationEngine, RegistrationResult
 from ...services import EmailServiceFactory, EmailServiceType
 from ...config.settings import get_settings
@@ -405,6 +406,9 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
             # 执行注册
             result = engine.run()
 
+            if getattr(result, "email", ""):
+                crud.update_registration_task(db, task_uuid, email_address=result.email)
+
             if result.success:
                 # 更新代理使用时间
                 update_proxy_usage(db, proxy_id)
@@ -630,6 +634,23 @@ def _make_batch_helpers(batch_id: str):
     return add_batch_log, update_batch_status
 
 
+def _finalize_batch_domain_stats(batch_id: str, task_uuids: List[str]) -> None:
+    with get_db() as db:
+        tasks = (
+            db.query(RegistrationTask)
+            .filter(RegistrationTask.task_uuid.in_(task_uuids))
+            .filter(RegistrationTask.status.in_(["completed", "failed"]))
+            .all()
+        )
+
+    stats = build_domain_stats(tasks)
+
+    if batch_id in batch_tasks:
+        batch_tasks[batch_id]["domain_stats"] = stats
+
+    task_manager.update_batch_status(batch_id, domain_stats=stats)
+
+
 async def run_unlimited_batch_registration(
     batch_id: str,
     email_service_type: str,
@@ -647,9 +668,94 @@ async def run_unlimited_batch_registration(
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
 ):
-    """无限注册模式占位实现，后续任务会补充实际逻辑。"""
-    if batch_id not in batch_tasks:
-        _init_batch_state(batch_id, [], is_unlimited=True, total=0)
+    """无限注册模式：持续创建任务直到取消或连续失败超过阈值。"""
+    _init_batch_state(batch_id, [], is_unlimited=True, total=0)
+    add_batch_log, update_batch_status = _make_batch_helpers(batch_id)
+    semaphore = asyncio.Semaphore(concurrency)
+    counter_lock = asyncio.Lock()
+    running: set[asyncio.Task] = set()
+    task_uuids: List[str] = []
+    add_batch_log(f"[系统] 无限模式启动，并发数: {concurrency}，模式: {mode}")
+
+    async def _spawn_one(index: int):
+        task_uuid = str(uuid.uuid4())
+        task_uuids.append(task_uuid)
+        batch_tasks[batch_id]["task_uuids"].append(task_uuid)
+
+        with get_db() as db:
+            crud.create_registration_task(db, task_uuid=task_uuid, proxy=proxy)
+
+        async with semaphore:
+            await run_registration_task(
+                task_uuid,
+                email_service_type,
+                proxy,
+                email_service_config,
+                email_service_id,
+                log_prefix=f"[任务{index}]",
+                batch_id=batch_id,
+                auto_upload_cpa=auto_upload_cpa,
+                cpa_service_ids=cpa_service_ids or [],
+                auto_upload_sub2api=auto_upload_sub2api,
+                sub2api_service_ids=sub2api_service_ids or [],
+                auto_upload_tm=auto_upload_tm,
+                tm_service_ids=tm_service_ids or [],
+            )
+
+        with get_db() as db:
+            task = crud.get_registration_task(db, task_uuid)
+
+        if not task:
+            return
+
+        async with counter_lock:
+            apply_task_outcome(batch_tasks[batch_id], task.status)
+            update_batch_status(
+                completed=batch_tasks[batch_id]["completed"],
+                success=batch_tasks[batch_id]["success"],
+                failed=batch_tasks[batch_id]["failed"],
+                consecutive_failures=batch_tasks[batch_id]["consecutive_failures"],
+                current_index=index,
+            )
+
+            if task.status == "completed":
+                add_batch_log(f"[任务{index}] [成功] 注册成功")
+            elif task.status == "failed":
+                add_batch_log(f"[任务{index}] [失败] 注册失败: {task.error_message}")
+
+            if batch_tasks[batch_id]["consecutive_failures"] > batch_tasks[batch_id]["max_consecutive_failures"]:
+                batch_tasks[batch_id]["stop_reason"] = "too_many_consecutive_failures"
+                update_batch_status(stop_reason="too_many_consecutive_failures")
+                add_batch_log("[停止] 连续失败次数过多，停止创建新任务")
+
+    try:
+        while not task_manager.is_batch_cancelled(batch_id) and batch_tasks[batch_id]["stop_reason"] is None:
+            next_index = len(task_uuids) + 1
+            running.add(asyncio.create_task(_spawn_one(next_index)))
+
+            if mode == "pipeline":
+                await asyncio.sleep(random.randint(interval_min, interval_max))
+
+            if len(running) >= concurrency:
+                done, pending = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+                running = set(pending)
+
+        if running:
+            await asyncio.gather(*running)
+
+        _finalize_batch_domain_stats(batch_id, task_uuids)
+
+        if task_manager.is_batch_cancelled(batch_id):
+            update_batch_status(finished=True, status="cancelled")
+        else:
+            update_batch_status(finished=True, status="completed")
+    except Exception as e:
+        logger.error(f"无限批量任务 {batch_id} 异常: {e}")
+        add_batch_log(f"[错误] 批量任务异常: {str(e)}")
+        _finalize_batch_domain_stats(batch_id, task_uuids)
+        update_batch_status(finished=True, status="failed")
+    finally:
+        batch_tasks[batch_id]["finished"] = True
 
 
 async def run_batch_parallel(
@@ -690,19 +796,21 @@ async def run_batch_parallel(
             t = crud.get_registration_task(db, uuid)
             if t:
                 async with counter_lock:
-                    new_completed = batch_tasks[batch_id]["completed"] + 1
-                    new_success = batch_tasks[batch_id]["success"]
-                    new_failed = batch_tasks[batch_id]["failed"]
+                    apply_task_outcome(batch_tasks[batch_id], t.status)
                     if t.status == "completed":
-                        new_success += 1
                         add_batch_log(f"{prefix} [成功] 注册成功")
                     elif t.status == "failed":
-                        new_failed += 1
                         add_batch_log(f"{prefix} [失败] 注册失败: {t.error_message}")
-                    update_batch_status(completed=new_completed, success=new_success, failed=new_failed)
+                    update_batch_status(
+                        completed=batch_tasks[batch_id]["completed"],
+                        success=batch_tasks[batch_id]["success"],
+                        failed=batch_tasks[batch_id]["failed"],
+                        consecutive_failures=batch_tasks[batch_id]["consecutive_failures"],
+                    )
 
     try:
         await asyncio.gather(*[_run_one(i, u) for i, u in enumerate(task_uuids)], return_exceptions=True)
+        _finalize_batch_domain_stats(batch_id, task_uuids)
         if not task_manager.is_batch_cancelled(batch_id):
             add_batch_log(f"[完成] 批量任务完成！成功: {batch_tasks[batch_id]['success']}, 失败: {batch_tasks[batch_id]['failed']}")
             update_batch_status(finished=True, status="completed")
@@ -711,6 +819,7 @@ async def run_batch_parallel(
     except Exception as e:
         logger.error(f"批量任务 {batch_id} 异常: {e}")
         add_batch_log(f"[错误] 批量任务异常: {str(e)}")
+        _finalize_batch_domain_stats(batch_id, task_uuids)
         update_batch_status(finished=True, status="failed")
     finally:
         batch_tasks[batch_id]["finished"] = True
@@ -756,16 +865,17 @@ async def run_batch_pipeline(
                 t = crud.get_registration_task(db, uuid)
                 if t:
                     async with counter_lock:
-                        new_completed = batch_tasks[batch_id]["completed"] + 1
-                        new_success = batch_tasks[batch_id]["success"]
-                        new_failed = batch_tasks[batch_id]["failed"]
+                        apply_task_outcome(batch_tasks[batch_id], t.status)
                         if t.status == "completed":
-                            new_success += 1
                             add_batch_log(f"{pfx} [成功] 注册成功")
                         elif t.status == "failed":
-                            new_failed += 1
                             add_batch_log(f"{pfx} [失败] 注册失败: {t.error_message}")
-                        update_batch_status(completed=new_completed, success=new_success, failed=new_failed)
+                        update_batch_status(
+                            completed=batch_tasks[batch_id]["completed"],
+                            success=batch_tasks[batch_id]["success"],
+                            failed=batch_tasks[batch_id]["failed"],
+                            consecutive_failures=batch_tasks[batch_id]["consecutive_failures"],
+                        )
         finally:
             semaphore.release()
 
@@ -794,12 +904,15 @@ async def run_batch_pipeline(
         if running_tasks_list:
             await asyncio.gather(*running_tasks_list, return_exceptions=True)
 
+        _finalize_batch_domain_stats(batch_id, task_uuids)
+
         if not task_manager.is_batch_cancelled(batch_id):
             add_batch_log(f"[完成] 批量任务完成！成功: {batch_tasks[batch_id]['success']}, 失败: {batch_tasks[batch_id]['failed']}")
             update_batch_status(finished=True, status="completed")
     except Exception as e:
         logger.error(f"批量任务 {batch_id} 异常: {e}")
         add_batch_log(f"[错误] 批量任务异常: {str(e)}")
+        _finalize_batch_domain_stats(batch_id, task_uuids)
         update_batch_status(finished=True, status="failed")
     finally:
         batch_tasks[batch_id]["finished"] = True
@@ -1585,7 +1698,8 @@ async def get_outlook_batch_status(batch_id: str):
         "cancelled": batch["cancelled"],
         "finished": batch.get("finished", False),
         "logs": batch.get("logs", []),
-        "progress": f"{batch['completed']}/{batch['total']}"
+        "progress": f"{batch['completed']}/{batch['total']}",
+        "domain_stats": batch.get("domain_stats", []),
     }
 
 
