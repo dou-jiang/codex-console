@@ -157,6 +157,79 @@ def mark_account_expired_by_email_and_cpa(
     return int(updated)
 
 
+def get_due_refresh_accounts(
+    db: Session,
+    *,
+    cpa_service_id: int,
+    refresh_after_days: int,
+    limit: int,
+) -> List[Account]:
+    """获取需要执行刷新任务的账号列表。"""
+    safe_days = max(0, int(refresh_after_days))
+    safe_limit = max(0, int(limit))
+    cutoff = datetime.utcnow() - timedelta(days=safe_days)
+
+    query = (
+        db.query(Account)
+        .filter(Account.status == "active")
+        .filter(Account.primary_cpa_service_id == cpa_service_id)
+        .filter(
+            or_(
+                and_(Account.last_refresh.is_(None), Account.registered_at <= cutoff),
+                and_(Account.last_refresh.is_not(None), Account.last_refresh <= cutoff),
+            )
+        )
+        .order_by(
+            asc(func.coalesce(Account.last_refresh, Account.registered_at)),
+            asc(Account.id),
+        )
+    )
+
+    if safe_limit > 0:
+        query = query.limit(safe_limit)
+
+    return query.all()
+
+
+def mark_account_expired(db: Session, account_id: int, reason: str) -> Optional[Account]:
+    """按账号 ID 标记失效。"""
+    account = get_account_by_id(db, account_id)
+    if not account:
+        return None
+
+    now = datetime.utcnow()
+    account.status = "expired"
+    account.invalidated_at = now
+    account.invalid_reason = reason
+    account.updated_at = now
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+def mark_account_active_for_cpa(
+    db: Session,
+    account_id: int,
+    cpa_service_id: int,
+) -> Optional[Account]:
+    """标记账号为 active 并绑定主 CPA 服务。"""
+    account = get_account_by_id(db, account_id)
+    if not account:
+        return None
+
+    now = datetime.utcnow()
+    account.status = "active"
+    account.primary_cpa_service_id = cpa_service_id
+    account.cpa_uploaded = True
+    account.cpa_uploaded_at = now
+    account.invalidated_at = None
+    account.invalid_reason = None
+    account.updated_at = now
+    db.commit()
+    db.refresh(account)
+    return account
+
+
 def delete_account(db: Session, account_id: int) -> bool:
     """删除账户"""
     db_account = get_account_by_id(db, account_id)
