@@ -97,6 +97,3 @@ class SchedulerEngine:
     def trigger_plan_now(self, plan_id: int) -> bool:
         """Task 3 placeholder; manual trigger execution is implemented in later tasks."""
         return False
-
-
-scheduler_engine = SchedulerEngine()

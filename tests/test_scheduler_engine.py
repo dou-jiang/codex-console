@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+import asyncio
 
 from src.scheduler.engine import SchedulerEngine
+from src.web.app import create_app
 
 
 @dataclass
@@ -20,7 +22,7 @@ class FakeRepo:
         return list(self._due_plans)
 
     def create_skipped_run(self, plan_id, trigger_source, reason):
-        self.created_runs.append((plan_id, trigger_source, "skipped"))
+        self.created_runs.append((plan_id, trigger_source, "skipped", reason))
 
 
 def test_scheduler_engine_skips_plan_when_same_plan_is_running(monkeypatch):
@@ -30,7 +32,7 @@ def test_scheduler_engine_skips_plan_when_same_plan_is_running(monkeypatch):
 
     engine.dispatch_due_plans_once()
 
-    assert repo.created_runs == [(1, "scheduled", "skipped")]
+    assert repo.created_runs == [(1, "scheduled", "skipped", "plan already running")]
 
 
 def test_scheduler_engine_start_is_idempotent():
@@ -46,4 +48,42 @@ def test_scheduler_engine_skips_plan_when_same_cpa_is_locked():
 
     engine.dispatch_due_plans_once()
 
-    assert repo.created_runs == [(2, "scheduled", "skipped")]
+    assert repo.created_runs == [(2, "scheduled", "skipped", "cpa already busy")]
+
+
+def test_create_app_startup_shutdown_uses_isolated_scheduler_engine_instances(monkeypatch):
+    monkeypatch.setattr("src.database.init_db.initialize_database", lambda: None)
+
+    app_one = create_app()
+    app_two = create_app()
+
+    engine_one = app_one.state.scheduler_engine
+    engine_two = app_two.state.scheduler_engine
+
+    assert engine_one is not engine_two
+    assert engine_one._started is False
+    assert engine_two._started is False
+
+    for handler in app_one.router.on_startup:
+        asyncio.run(handler())
+
+    assert engine_one._started is True
+    assert engine_two._started is False
+
+    for handler in app_one.router.on_shutdown:
+        asyncio.run(handler())
+
+    assert engine_one._started is False
+    assert engine_two._started is False
+
+    for handler in app_two.router.on_startup:
+        asyncio.run(handler())
+
+    assert engine_one._started is False
+    assert engine_two._started is True
+
+    for handler in app_two.router.on_shutdown:
+        asyncio.run(handler())
+
+    assert engine_one._started is False
+    assert engine_two._started is False

@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..config.settings import get_settings
-from ..scheduler.engine import scheduler_engine
+from ..scheduler.engine import SchedulerEngine
 from .routes import api_router
 from .routes.websocket import router as ws_router
 from .task_manager import task_manager
@@ -58,6 +58,7 @@ def create_app() -> FastAPI:
         docs_url="/api/docs" if settings.debug else None,
         redoc_url="/api/redoc" if settings.debug else None,
     )
+    app.state.scheduler_engine = SchedulerEngine()
 
     # CORS 中间件
     app.add_middleware(
@@ -183,7 +184,7 @@ def create_app() -> FastAPI:
         # 设置 TaskManager 的事件循环
         loop = asyncio.get_event_loop()
         task_manager.set_loop(loop)
-        scheduler_engine.start()
+        app.state.scheduler_engine.start()
 
         logger.info("=" * 50)
         logger.info(f"{settings.app_name} v{settings.app_version} 启动中，程序正在伸懒腰...")
@@ -194,7 +195,7 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def shutdown_event():
         """应用关闭事件"""
-        scheduler_engine.stop()
+        app.state.scheduler_engine.stop()
         logger.info("应用关闭，今天先收摊啦")
 
     return app
