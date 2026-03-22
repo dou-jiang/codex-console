@@ -50,3 +50,26 @@ def test_scheduled_tasks_script_contains_create_edit_enable_disable_hooks():
     assert "function togglePlanEnabled(" in script
     assert "/scheduled-plans/${planId}/enable" in script
     assert "/scheduled-plans/${planId}/disable" in script
+
+
+def test_scheduled_tasks_script_surfaces_cpa_service_load_failures_to_users():
+    script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    assert "CPA 服务列表加载失败" in script
+    assert "toast.error(" in script
+
+
+def test_scheduled_tasks_script_contains_button_busy_guard_logic():
+    script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    assert "data-busy" in script
+    assert "disabled = true" in script
+    assert "disabled = false" in script
+
+
+def test_scheduled_tasks_script_renders_plan_row_action_markers():
+    script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    assert 'data-action="detail"' in script
+    assert 'data-action="logs"' in script
+    assert 'data-action="edit"' in script
+    assert 'data-action="toggle"' in script
+    assert 'data-action="run-now"' in script
+    assert 'data-plan-id="${plan.id}"' in script
