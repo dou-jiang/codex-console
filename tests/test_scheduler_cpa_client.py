@@ -165,3 +165,40 @@ def test_probe_invalid_accounts_reads_chatgpt_account_id_from_nested_id_token(mo
         {"email": "invalid@example.com", "name": "invalid@example.com.json"},
     ]
     assert captured["json"]["header"]["Chatgpt-Account-Id"] == "acct-nested"
+
+
+def test_delete_invalid_accounts_uses_query_name_delete_endpoint(monkeypatch):
+    delete_calls = []
+
+    def _fake_delete(url, **kwargs):
+        delete_calls.append(url)
+        return FakeResponse(status_code=200, payload={"status": "ok"})
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "delete", _fake_delete)
+
+    result = cpa_client.delete_invalid_accounts(
+        _service(),
+        ["a@example.com.json", "b@example.com.json"],
+    )
+
+    assert result == {"deleted": 2, "failed": 0}
+    assert delete_calls == [
+        "https://cpa.example.com/v0/management/auth-files?name=a%40example.com.json",
+        "https://cpa.example.com/v0/management/auth-files?name=b%40example.com.json",
+    ]
+
+
+def test_delete_invalid_accounts_counts_failures_per_name(monkeypatch):
+    responses = [
+        FakeResponse(status_code=200, payload={"status": "ok"}),
+        FakeResponse(status_code=400, payload={"error": "invalid name"}),
+    ]
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "delete", lambda url, **kwargs: responses.pop(0))
+
+    result = cpa_client.delete_invalid_accounts(
+        _service(),
+        ["ok@example.com.json", "bad@example.com.json"],
+    )
+
+    assert result == {"deleted": 1, "failed": 1}

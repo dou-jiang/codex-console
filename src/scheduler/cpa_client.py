@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 from curl_cffi import requests as cffi_requests
 
@@ -390,26 +391,23 @@ def delete_invalid_accounts(service, names: list[str], *, timeout: int = 20) -> 
 
     endpoint = _build_endpoint(service)
     headers = _build_headers(service)
-    payload = {"names": cleaned_names}
+    deleted = 0
+    failed = 0
 
-    response = cffi_requests.delete(
-        endpoint,
-        json=payload,
-        headers=headers,
-        timeout=timeout,
-        proxies=None,
-        impersonate="chrome110",
-    )
-
-    if response.status_code in (404, 405):
-        response = cffi_requests.post(
-            f"{endpoint}/delete",
-            json=payload,
+    for name in cleaned_names:
+        response = cffi_requests.delete(
+            f"{endpoint}?name={quote(name, safe='')}",
             headers=headers,
             timeout=timeout,
             proxies=None,
             impersonate="chrome110",
         )
 
-    _raise_for_http_error(response, "delete")
-    return _extract_delete_counts(_safe_json(response), total=len(cleaned_names))
+        payload = _safe_json(response)
+        if response.status_code == 200 and isinstance(payload, dict) and payload.get("status") == "ok":
+            deleted += 1
+            continue
+
+        failed += 1
+
+    return {"deleted": deleted, "failed": failed}
