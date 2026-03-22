@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 import logging
 from threading import Event, Lock, Thread, current_thread
@@ -14,6 +15,21 @@ from .time_utils import SCHEDULER_TZ, compute_next_run_at
 
 
 logger = logging.getLogger(__name__)
+
+
+class SchedulerPlanConflictError(RuntimeError):
+    """Raised when a plan trigger is rejected due to lock conflict."""
+
+
+class SchedulerDispatchError(RuntimeError):
+    """Raised when a plan trigger cannot be dispatched."""
+
+
+@dataclass(frozen=True)
+class DispatchResult:
+    run_id: int | None
+    run_created: bool
+    dispatched: bool
 
 
 class DuePlan(Protocol):
@@ -53,13 +69,22 @@ class SchedulerRepository:
                 trigger_source=trigger_source,
                 status="skipped",
             )
-            crud.finish_scheduled_run(
+            finished = crud.finish_scheduled_run(
                 db,
                 run_id=run.id,
                 status="skipped",
                 error_message=reason,
                 finished_at=datetime.utcnow(),
             )
+            if finished is not None:
+                crud.update_scheduled_plan(
+                    db,
+                    plan_id,
+                    last_run_started_at=finished.started_at,
+                    last_run_finished_at=finished.finished_at,
+                    last_run_status="skipped",
+                )
+                return finished
             return run
 
 
@@ -135,36 +160,39 @@ class SchedulerEngine:
             if not acquired:
                 self.repo.create_skipped_run(plan.id, trigger_source="scheduled", reason=reason or "busy")
                 continue
-            run_id = self._dispatch_locked_plan(
+            dispatch_result = self._dispatch_locked_plan(
                 plan_id=plan.id,
                 cpa_service_id=plan.cpa_service_id,
                 task_type=plan.task_type,
                 trigger_source="scheduled",
                 schedule_now=schedule_now,
             )
-            if run_id is None:
+            if not dispatch_result.run_created:
                 self.repo.create_skipped_run(plan.id, trigger_source="scheduled", reason="dispatch failed")
 
-    def trigger_plan_now(self, plan_id: int) -> int | None:
+    def trigger_plan_now(self, plan_id: int) -> int:
         """Trigger a plan immediately and return run_id when accepted."""
         with get_db() as db:
             plan = crud.get_scheduled_plan_by_id(db, plan_id)
             if plan is None:
-                return None
+                raise SchedulerDispatchError(f"scheduled plan {plan_id} does not exist")
             cpa_service_id = int(plan.cpa_service_id)
             task_type = str(plan.task_type)
 
-        acquired, _ = self._try_acquire_run_locks(plan_id, cpa_service_id)
+        acquired, reason = self._try_acquire_run_locks(plan_id, cpa_service_id)
         if not acquired:
-            return None
+            raise SchedulerPlanConflictError(reason or "plan is busy")
 
-        return self._dispatch_locked_plan(
+        dispatch_result = self._dispatch_locked_plan(
             plan_id=plan_id,
             cpa_service_id=cpa_service_id,
             task_type=task_type,
             trigger_source="manual",
             schedule_now=None,
         )
+        if not dispatch_result.dispatched or dispatch_result.run_id is None:
+            raise SchedulerDispatchError(f"failed to dispatch scheduled plan {plan_id}")
+        return dispatch_result.run_id
 
     def _poll_forever(self) -> None:
         while True:
@@ -201,7 +229,7 @@ class SchedulerEngine:
         task_type: str,
         trigger_source: str,
         schedule_now: datetime | None,
-    ) -> int | None:
+    ) -> DispatchResult:
         run_id: int | None = None
         worker_spawned = False
         try:
@@ -211,13 +239,13 @@ class SchedulerEngine:
                 schedule_now=schedule_now,
             )
             if run_id is None:
-                return None
+                return DispatchResult(run_id=None, run_created=False, dispatched=False)
 
             runner = self._runner_map.get(task_type)
             if runner is None:
                 self._ensure_run_failed(run_id, f"unsupported task_type: {task_type}")
                 self._sync_plan_state_from_run(plan_id, run_id)
-                return run_id
+                return DispatchResult(run_id=run_id, run_created=True, dispatched=False)
 
             def _worker() -> None:
                 try:
@@ -231,13 +259,14 @@ class SchedulerEngine:
 
             self._worker_spawner(_worker, f"scheduler-run-{plan_id}-{run_id}")
             worker_spawned = True
-            return run_id
+            return DispatchResult(run_id=run_id, run_created=True, dispatched=True)
         except Exception:
             logger.exception("failed to dispatch plan (plan_id=%s)", plan_id)
             if run_id is not None:
                 self._ensure_run_failed(run_id, "dispatch failed")
                 self._sync_plan_state_from_run(plan_id, run_id)
-            return None
+                return DispatchResult(run_id=run_id, run_created=True, dispatched=False)
+            return DispatchResult(run_id=None, run_created=False, dispatched=False)
         finally:
             if not worker_spawned:
                 self._release_run_locks(plan_id, cpa_service_id)
@@ -254,10 +283,6 @@ class SchedulerEngine:
             if plan is None:
                 return None
 
-            next_run_at: datetime | None = None
-            if trigger_source == "scheduled" and schedule_now is not None:
-                next_run_at = _to_scheduler_naive_time(compute_next_run_at(plan, now=schedule_now))
-
             run = crud.create_scheduled_run(
                 db,
                 plan_id=plan_id,
@@ -269,8 +294,8 @@ class SchedulerEngine:
                 "last_run_finished_at": None,
                 "last_run_status": "running",
             }
-            if next_run_at is not None:
-                updates["next_run_at"] = next_run_at
+            if trigger_source == "scheduled" and schedule_now is not None:
+                updates["next_run_at"] = _to_scheduler_naive_time(compute_next_run_at(plan, now=schedule_now))
 
             crud.update_scheduled_plan(db, plan_id, **updates)
             return int(run.id)

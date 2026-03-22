@@ -9,7 +9,7 @@ from src.database import crud
 from src.database import session as session_module
 from src.database.models import Base, ScheduledRun
 from src.database.session import DatabaseSessionManager
-from src.scheduler.engine import SchedulerEngine
+from src.scheduler.engine import SchedulerDispatchError, SchedulerEngine, SchedulerPlanConflictError
 from src.web.app import create_app
 
 
@@ -164,7 +164,65 @@ def test_scheduler_engine_manual_trigger_rejects_running_plan(temp_db):
     engine = SchedulerEngine()
     engine._plan_locks.add(plan.id)
 
-    assert engine.trigger_plan_now(plan.id) is None
+    with pytest.raises(SchedulerPlanConflictError):
+        engine.trigger_plan_now(plan.id)
+
+
+def test_scheduler_engine_manual_trigger_raises_dispatch_error_on_internal_failure(temp_db):
+    plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
+
+    engine = SchedulerEngine(
+        runner_map={"cpa_cleanup": lambda **kwargs: None},
+        worker_spawner=lambda _fn, _name: (_ for _ in ()).throw(RuntimeError("spawn failed")),
+    )
+
+    with pytest.raises(SchedulerDispatchError):
+        engine.trigger_plan_now(plan.id)
+
+    temp_db.expire_all()
+    runs = temp_db.query(ScheduledRun).filter(ScheduledRun.plan_id == plan.id).all()
+    assert len(runs) == 1
+    assert runs[0].status == "failed"
+
+
+def test_scheduler_engine_dispatch_failure_does_not_create_extra_skipped_run(temp_db):
+    plan = _create_plan(temp_db, task_type="cpa_cleanup", due=True)
+    engine = SchedulerEngine(
+        runner_map={"cpa_cleanup": lambda **kwargs: None},
+        worker_spawner=lambda _fn, _name: (_ for _ in ()).throw(RuntimeError("spawn failed")),
+    )
+
+    engine.dispatch_due_plans_once()
+
+    temp_db.expire_all()
+    runs = (
+        temp_db.query(ScheduledRun)
+        .filter(ScheduledRun.plan_id == plan.id)
+        .order_by(ScheduledRun.id.asc())
+        .all()
+    )
+    assert len(runs) == 1
+    assert runs[0].status == "failed"
+    assert runs[0].trigger_source == "scheduled"
+
+
+def test_scheduler_engine_skipped_run_updates_plan_summary_fields(temp_db):
+    plan = _create_plan(temp_db, task_type="cpa_cleanup", due=True)
+    engine = SchedulerEngine()
+    engine._plan_locks.add(plan.id)
+
+    engine.dispatch_due_plans_once()
+
+    temp_db.expire_all()
+    runs = temp_db.query(ScheduledRun).filter(ScheduledRun.plan_id == plan.id).all()
+    assert len(runs) == 1
+    assert runs[0].status == "skipped"
+
+    persisted_plan = crud.get_scheduled_plan_by_id(temp_db, plan.id)
+    assert persisted_plan is not None
+    assert persisted_plan.last_run_status == "skipped"
+    assert persisted_plan.last_run_started_at is not None
+    assert persisted_plan.last_run_finished_at is not None
 
 
 def test_scheduler_engine_start_launches_single_background_poll_loop(monkeypatch):

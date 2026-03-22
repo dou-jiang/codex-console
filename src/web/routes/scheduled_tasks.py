@@ -9,6 +9,7 @@ from sqlalchemy import desc
 from ...database import crud
 from ...database.models import ScheduledRun
 from ...database.session import get_db
+from ...scheduler.engine import SchedulerDispatchError, SchedulerPlanConflictError
 from ...scheduler.schemas import (
     ScheduledPlanCreate,
     ScheduledPlanListResponse,
@@ -241,8 +242,11 @@ async def run_scheduled_plan(plan_id: int, request: Request):
     if scheduler_engine is None:
         raise HTTPException(status_code=500, detail="scheduler engine is not initialized")
 
-    run_id = scheduler_engine.trigger_plan_now(plan_id)
-    if run_id is None:
+    try:
+        run_id = scheduler_engine.trigger_plan_now(plan_id)
+    except SchedulerPlanConflictError as exc:
         raise HTTPException(status_code=409, detail="计划正在运行")
+    except SchedulerDispatchError as exc:
+        raise HTTPException(status_code=500, detail=str(exc) or "计划触发失败") from exc
 
     return {"success": True, "plan_id": plan_id, "run_id": int(run_id)}
