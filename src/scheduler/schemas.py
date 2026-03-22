@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .service import validate_trigger_payload
+
 
 TaskType = Literal["cpa_cleanup", "cpa_refill", "account_refresh"]
 TriggerType = Literal["cron", "interval"]
@@ -26,15 +28,15 @@ class ScheduledPlanCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_trigger_fields(self) -> "ScheduledPlanCreate":
-        if self.trigger_type == "cron" and not self.cron_expression:
-            raise ValueError("cron_expression is required when trigger_type is cron")
-
-        if self.trigger_type == "interval":
-            if self.interval_value is None:
-                raise ValueError("interval_value is required when trigger_type is interval")
-            if self.interval_unit is None:
-                raise ValueError("interval_unit is required when trigger_type is interval")
-
+        try:
+            validate_trigger_payload(
+                self.trigger_type,
+                cron_expression=self.cron_expression,
+                interval_value=self.interval_value,
+                interval_unit=self.interval_unit,
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
         return self
 
 
@@ -64,7 +66,7 @@ class ScheduledPlanResponse(BaseModel):
     next_run_at: datetime | None = None
     last_run_started_at: datetime | None = None
     last_run_finished_at: datetime | None = None
-    last_run_status: str | None = None
+    last_run_status: RunStatus | None = None
     last_success_at: datetime | None = None
     auto_disabled_reason: str | None = None
     created_at: datetime | None = None
