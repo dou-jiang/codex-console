@@ -639,6 +639,11 @@ def delete_cpa_service(db: Session, service_id: int) -> bool:
     db_service = get_cpa_service_by_id(db, service_id)
     if not db_service:
         return False
+
+    referenced_plan = db.query(ScheduledPlan).filter(ScheduledPlan.cpa_service_id == service_id).first()
+    if referenced_plan is not None:
+        return False
+
     db.delete(db_service)
     db.commit()
     return True

@@ -142,3 +142,28 @@ def test_finish_scheduled_run_persists_completion_fields(temp_db):
     assert finished.summary == {"remote_deleted": 3}
     assert finished.error_message == "remote timeout"
     assert finished.finished_at == finished_at
+
+
+def test_delete_cpa_service_rejects_when_referenced_by_scheduled_plan(temp_db):
+    service = crud.create_cpa_service(
+        temp_db,
+        name="main cpa",
+        api_url="https://example.test/api",
+        api_token="token",
+    )
+    plan = crud.create_scheduled_plan(
+        temp_db,
+        name="nightly cleanup",
+        task_type="cpa_cleanup",
+        cpa_service_id=service.id,
+        trigger_type="interval",
+        interval_value=30,
+        interval_unit="minutes",
+        config={"max_cleanup_count": 20},
+    )
+
+    deleted = crud.delete_cpa_service(temp_db, service_id=service.id)
+
+    assert deleted is False
+    assert crud.get_cpa_service_by_id(temp_db, service.id) is not None
+    assert crud.get_scheduled_plans(temp_db, cpa_service_id=service.id) == [plan]
