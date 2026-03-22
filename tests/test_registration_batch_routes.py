@@ -270,6 +270,47 @@ def test_run_batch_registration_attaches_sorted_domain_stats(route_db, fake_task
     assert [row["domain"] for row in stats] == ["yahoo.com", "gmail.com"]
 
 
+def test_run_batch_pipeline_finalizes_domain_stats_before_marking_cancelled_batch_finished(route_db, fake_task_manager, monkeypatch):
+    task_ids = []
+    for name in ["a", "b"]:
+        task = crud.create_registration_task(route_db, task_uuid=f"cancel-{name}")
+        task_ids.append(task.task_uuid)
+
+    monkeypatch.setattr(fake_task_manager, "is_batch_cancelled", lambda batch_id: True)
+
+    observed = {}
+
+    def fake_finalize(batch_id, task_uuids):
+        observed["route_finished"] = registration_routes.batch_tasks[batch_id]["finished"]
+        observed["manager_finished"] = fake_task_manager.get_batch_status(batch_id).get("finished", False)
+        observed["task_uuids"] = list(task_uuids)
+
+    monkeypatch.setattr(registration_routes, "_finalize_batch_domain_stats", fake_finalize)
+
+    asyncio.run(
+        registration_routes.run_batch_pipeline(
+            batch_id="cancelled-fixed-1",
+            task_uuids=task_ids,
+            email_service_type="tempmail",
+            proxy=None,
+            email_service_config=None,
+            email_service_id=None,
+            interval_min=0,
+            interval_max=0,
+            concurrency=1,
+        )
+    )
+
+    assert observed == {
+        "route_finished": False,
+        "manager_finished": False,
+        "task_uuids": task_ids,
+    }
+    assert registration_routes.batch_tasks["cancelled-fixed-1"]["finished"] is True
+    assert fake_task_manager.get_batch_status("cancelled-fixed-1")["finished"] is True
+    assert fake_task_manager.get_batch_status("cancelled-fixed-1")["status"] == "cancelled"
+
+
 def test_run_unlimited_batch_registration_stops_after_eleven_consecutive_failures(route_db, fake_task_manager, monkeypatch):
     outcomes = iter([("failed", f"user{i}@bad.com") for i in range(11)] + [("completed", "late@good.com")])
 

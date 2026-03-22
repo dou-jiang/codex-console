@@ -886,7 +886,7 @@ async def run_batch_pipeline(
                     for remaining_uuid in task_uuids[i:]:
                         crud.update_registration_task(db, remaining_uuid, status="cancelled")
                 add_batch_log("[取消] 批量任务已取消")
-                update_batch_status(finished=True, status="cancelled")
+                update_batch_status(status="cancelled")
                 break
 
             update_batch_status(current_index=i)
@@ -906,7 +906,9 @@ async def run_batch_pipeline(
 
         _finalize_batch_domain_stats(batch_id, task_uuids)
 
-        if not task_manager.is_batch_cancelled(batch_id):
+        if task_manager.is_batch_cancelled(batch_id) or batch_tasks[batch_id]["cancelled"]:
+            update_batch_status(finished=True, status="cancelled")
+        else:
             add_batch_log(f"[完成] 批量任务完成！成功: {batch_tasks[batch_id]['success']}, 失败: {batch_tasks[batch_id]['failed']}")
             update_batch_status(finished=True, status="completed")
     except Exception as e:
