@@ -61,6 +61,9 @@ class AccountResponse(BaseModel):
     proxy_used: Optional[str] = None
     cpa_uploaded: bool = False
     cpa_uploaded_at: Optional[str] = None
+    primary_cpa_service_id: Optional[int] = None
+    invalidated_at: Optional[str] = None
+    invalid_reason: Optional[str] = None
     cookies: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -140,6 +143,9 @@ def account_to_response(account: Account) -> AccountResponse:
         proxy_used=account.proxy_used,
         cpa_uploaded=account.cpa_uploaded or False,
         cpa_uploaded_at=account.cpa_uploaded_at.isoformat() if account.cpa_uploaded_at else None,
+        primary_cpa_service_id=account.primary_cpa_service_id,
+        invalidated_at=account.invalidated_at.isoformat() if account.invalidated_at else None,
+        invalid_reason=account.invalid_reason,
         cookies=account.cookies,
         created_at=account.created_at.isoformat() if account.created_at else None,
         updated_at=account.updated_at.isoformat() if account.updated_at else None,
@@ -155,6 +161,7 @@ async def list_accounts(
     status: Optional[str] = Query(None, description="状态筛选"),
     email_service: Optional[str] = Query(None, description="邮箱服务筛选"),
     search: Optional[str] = Query(None, description="搜索关键词"),
+    primary_cpa_service_id: Optional[int] = Query(None, description="主 CPA 服务 ID 筛选"),
 ):
     """
     获取账号列表
@@ -172,6 +179,9 @@ async def list_accounts(
         # 邮箱服务筛选
         if email_service:
             query = query.filter(Account.email_service == email_service)
+
+        if primary_cpa_service_id is not None:
+            query = query.filter(Account.primary_cpa_service_id == primary_cpa_service_id)
 
         # 搜索
         if search:
