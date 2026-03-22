@@ -10,6 +10,7 @@ from ...database import crud
 from ...database.models import ScheduledRun
 from ...database.session import get_db
 from ...scheduler.schemas import ScheduledPlanCreate, ScheduledPlanResponse, ScheduledRunResponse
+from ...scheduler.service import validate_plan_payload
 from ...scheduler.time_utils import SCHEDULER_TZ, compute_next_run_at
 
 
@@ -35,9 +36,17 @@ def _to_scheduler_naive_time(value: datetime | None) -> datetime | None:
 
 @router.post("", response_model=ScheduledPlanResponse)
 async def create_scheduled_plan(request: ScheduledPlanCreate):
-    next_run_at = _to_scheduler_naive_time(compute_next_run_at(request)) if request.enabled else None
-
     try:
+        validate_plan_payload(
+            task_type=request.task_type,
+            trigger_type=request.trigger_type,
+            config=request.config,
+            cron_expression=request.cron_expression,
+            interval_value=request.interval_value,
+            interval_unit=request.interval_unit,
+        )
+        next_run_at = _to_scheduler_naive_time(compute_next_run_at(request)) if request.enabled else None
+
         with get_db() as db:
             plan = crud.create_scheduled_plan(
                 db,

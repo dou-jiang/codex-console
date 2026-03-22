@@ -131,7 +131,13 @@ def expired_accounts(route_db):
     )
 
 
-def test_create_scheduled_plan_route_persists_next_run_at(client, route_db, seeded_scheduled_data):
+def test_create_scheduled_plan_route_persists_next_run_at(client, route_db, seeded_scheduled_data, monkeypatch):
+    monkeypatch.setattr(
+        scheduled_routes,
+        "compute_next_run_at",
+        lambda _request: datetime(2026, 3, 23, 8, 0, 0),
+    )
+
     response = client.post(
         "/api/scheduled-plans",
         json={
@@ -152,19 +158,48 @@ def test_create_scheduled_plan_route_persists_next_run_at(client, route_db, seed
 
     assert response.status_code == 200
     body = response.json()
-    assert body["next_run_at"].startswith("2026-")
+    assert body["next_run_at"] == "2026-03-23T08:00:00"
 
     created = crud.get_scheduled_plan_by_id(route_db, body["id"])
     assert created is not None
-    assert created.next_run_at is not None
+    assert created.next_run_at == datetime(2026, 3, 23, 8, 0, 0)
 
 
-def test_manual_run_route_rejects_when_plan_is_currently_running(client, seeded_scheduled_data, monkeypatch):
-    monkeypatch.setattr(client.app.state.scheduler_engine, "trigger_plan_now", lambda plan_id: False)
+def test_create_scheduled_plan_route_rejects_invalid_refill_config(client, seeded_scheduled_data):
+    response = client.post(
+        "/api/scheduled-plans",
+        json={
+            "name": "invalid refill",
+            "task_type": "cpa_refill",
+            "cpa_service_id": seeded_scheduled_data["secondary_service"].id,
+            "trigger_type": "cron",
+            "cron_expression": "0 8 * * *",
+            "config": {
+                "target_valid_count": 50,
+                "max_refill_count": 10,
+                "registration_profile": {},
+            },
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "max_consecutive_failures" in response.json()["detail"]
+
+
+def test_manual_run_route_rejects_when_plan_is_currently_running(client, seeded_scheduled_data):
+    client.app.state.scheduler_engine._plan_locks.add(seeded_scheduled_data["plan"].id)
 
     response = client.post(f"/api/scheduled-plans/{seeded_scheduled_data['plan'].id}/run")
 
     assert response.status_code == 409
+
+
+def test_manual_run_route_succeeds_when_plan_is_not_running(client, seeded_scheduled_data):
+    response = client.post(f"/api/scheduled-plans/{seeded_scheduled_data['plan'].id}/run")
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True, "plan_id": seeded_scheduled_data["plan"].id}
 
 
 def test_list_plan_runs_route_returns_latest_runs(client, seeded_scheduled_data):
@@ -182,6 +217,20 @@ def test_list_plan_runs_route_returns_latest_runs(client, seeded_scheduled_data)
     assert runs[1]["trigger_source"] == "scheduled"
     assert runs[1]["status"] == "success"
     assert runs[1]["summary"] == {"processed": 3}
+
+
+def test_get_scheduled_run_logs_route_returns_saved_logs(client, route_db, seeded_scheduled_data):
+    run = seeded_scheduled_data["latest_run"]
+    assert crud.append_scheduled_run_log(route_db, run.id, "manual run started")
+    assert crud.append_scheduled_run_log(route_db, run.id, "manual run finished")
+
+    response = client.get(f"/api/scheduled-plans/runs/{run.id}/logs")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": run.id,
+        "logs": "manual run started\nmanual run finished",
+    }
 
 
 def test_list_accounts_can_filter_by_primary_cpa_and_returns_invalid_fields(client, expired_accounts):

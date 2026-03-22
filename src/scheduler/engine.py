@@ -95,5 +95,8 @@ class SchedulerEngine:
                 continue
 
     def trigger_plan_now(self, plan_id: int) -> bool:
-        """Task 3 placeholder; manual trigger execution is implemented in later tasks."""
-        return False
+        """Return whether a manual trigger can be accepted for the given plan now."""
+        with self._state_lock:
+            if plan_id in self._plan_locks:
+                return False
+            return True
