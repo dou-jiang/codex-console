@@ -56,6 +56,7 @@ def test_scheduled_tasks_script_surfaces_cpa_service_load_failures_to_users():
     script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
     assert "CPA 服务列表加载失败" in script
     assert "toast.error(" in script
+    assert "loadCpaServices(true)" in script
 
 
 def test_scheduled_tasks_script_contains_button_busy_guard_logic():

@@ -74,6 +74,27 @@ function getDefaultConfigJson(taskType) {
     return '{}';
 }
 
+async function withButtonBusy(button, action) {
+    if (!button) {
+        return action();
+    }
+    if (button.dataset.busy === 'true') {
+        return;
+    }
+
+    button.dataset.busy = 'true';
+    button.setAttribute('data-busy', 'true');
+    button.disabled = true;
+
+    try {
+        return await action();
+    } finally {
+        delete button.dataset.busy;
+        button.removeAttribute('data-busy');
+        button.disabled = false;
+    }
+}
+
 function renderPlans(plans) {
     const rows = Array.isArray(plans) ? plans : [];
 
@@ -108,11 +129,37 @@ function renderPlans(plans) {
                     <td>${format.date(plan.last_run_started_at)}</td>
                     <td>
                         <div style="display:flex;gap:4px;flex-wrap:wrap;">
-                            <button class="btn btn-secondary btn-sm" onclick="showPlanDetail(${plan.id})">详情</button>
-                            <button class="btn btn-secondary btn-sm" onclick="openRunLogs(${plan.id})">记录</button>
-                            <button class="btn btn-secondary btn-sm" onclick="openEditPlanModal(${plan.id})">编辑</button>
-                            <button class="btn btn-secondary btn-sm" onclick="togglePlanEnabled(${plan.id}, ${shouldEnable})">${toggleLabel}</button>
-                            <button class="btn btn-primary btn-sm" onclick="runPlanNow(${plan.id})">立即执行</button>
+                            <button
+                                class="btn btn-secondary btn-sm"
+                                data-action="detail"
+                                data-plan-id="${plan.id}"
+                                onclick="handlePlanAction(this)"
+                            >详情</button>
+                            <button
+                                class="btn btn-secondary btn-sm"
+                                data-action="logs"
+                                data-plan-id="${plan.id}"
+                                onclick="handlePlanAction(this)"
+                            >记录</button>
+                            <button
+                                class="btn btn-secondary btn-sm"
+                                data-action="edit"
+                                data-plan-id="${plan.id}"
+                                onclick="handlePlanAction(this)"
+                            >编辑</button>
+                            <button
+                                class="btn btn-secondary btn-sm"
+                                data-action="toggle"
+                                data-plan-id="${plan.id}"
+                                data-should-enable="${shouldEnable}"
+                                onclick="handlePlanAction(this)"
+                            >${toggleLabel}</button>
+                            <button
+                                class="btn btn-primary btn-sm"
+                                data-action="run-now"
+                                data-plan-id="${plan.id}"
+                                onclick="handlePlanAction(this)"
+                            >立即执行</button>
                         </div>
                     </td>
                 </tr>
@@ -142,12 +189,15 @@ async function loadPlans() {
     }
 }
 
-async function loadCpaServices() {
+async function loadCpaServices(showErrorToast = false) {
     try {
         const services = await api.get('/cpa-services');
         cpaServicesCache = Array.isArray(services) ? services : [];
     } catch (error) {
         cpaServicesCache = [];
+        if (showErrorToast) {
+            toast.error('CPA 服务列表加载失败，请手动输入服务 ID');
+        }
     }
 }
 
@@ -226,7 +276,7 @@ async function openCreatePlanModal() {
     scheduledTaskElements.planConfigJsonInput.value = getDefaultConfigJson('cpa_cleanup');
     scheduledTaskElements.planEnabledInput.checked = true;
 
-    await loadCpaServices();
+    await loadCpaServices(true);
     renderCpaServiceOptions();
     scheduledTaskElements.planCpaServiceIdInput.value =
         scheduledTaskElements.planCpaServiceSelect.value || '';
@@ -259,7 +309,7 @@ async function openEditPlanModal(planId) {
         scheduledTaskElements.planConfigJsonInput.value = '{}';
     }
 
-    await loadCpaServices();
+    await loadCpaServices(true);
     renderCpaServiceOptions(plan.cpa_service_id);
     scheduledTaskElements.planCpaServiceIdInput.value = plan.cpa_service_id || '';
     updateTriggerInputs();
@@ -341,32 +391,29 @@ async function submitPlanForm(event) {
         return;
     }
 
-    submittingPlanForm = true;
-    if (scheduledTaskElements.planFormSubmitBtn) {
-        scheduledTaskElements.planFormSubmitBtn.disabled = true;
-    }
-
     const planId = Number.parseInt(scheduledTaskElements.planIdInput?.value || '', 10);
     const isEdit = Number.isInteger(planId) && planId > 0;
+    const submitButton = event.submitter || scheduledTaskElements.planFormSubmitBtn;
 
-    try {
-        if (isEdit) {
-            await api.put(`/scheduled-plans/${planId}`, payload);
-            toast.success('计划已更新');
-        } else {
-            await api.post('/scheduled-plans', payload);
-            toast.success('计划已创建');
+    await withButtonBusy(submitButton, async () => {
+        submittingPlanForm = true;
+
+        try {
+            if (isEdit) {
+                await api.put(`/scheduled-plans/${planId}`, payload);
+                toast.success('计划已更新');
+            } else {
+                await api.post('/scheduled-plans', payload);
+                toast.success('计划已创建');
+            }
+            closeModal('plan-form-modal');
+            await loadPlans();
+        } catch (error) {
+            toast.error(`${isEdit ? '更新' : '创建'}失败: ${error.message}`);
+        } finally {
+            submittingPlanForm = false;
         }
-        closeModal('plan-form-modal');
-        loadPlans();
-    } catch (error) {
-        toast.error(`${isEdit ? '更新' : '创建'}失败: ${error.message}`);
-    } finally {
-        submittingPlanForm = false;
-        if (scheduledTaskElements.planFormSubmitBtn) {
-            scheduledTaskElements.planFormSubmitBtn.disabled = false;
-        }
-    }
+    });
 }
 
 function showPlanDetail(planId) {
@@ -416,7 +463,7 @@ async function togglePlanEnabled(planId, shouldEnable) {
     try {
         await api.post(endpoint, {});
         toast.success(shouldEnable ? '计划已启用' : '计划已禁用');
-        loadPlans();
+        await loadPlans();
     } catch (error) {
         toast.error(`${shouldEnable ? '启用' : '禁用'}失败: ${error.message}`);
     }
@@ -426,7 +473,7 @@ async function runPlanNow(planId) {
     try {
         await api.post(`/scheduled-plans/${planId}/run`, {});
         toast.success('已触发执行');
-        loadPlans();
+        await loadPlans();
     } catch (error) {
         toast.error(`触发失败: ${error.message}`);
     }
@@ -474,7 +521,14 @@ function renderRunLogModal(runs) {
                             <td>${format.date(run.started_at)}</td>
                             <td>${format.date(run.finished_at)}</td>
                             <td>${escapeHtml(JSON.stringify(run.summary || {}))}</td>
-                            <td><button class="btn btn-secondary btn-sm" onclick="viewRunLog(${run.id})">查看</button></td>
+                            <td>
+                                <button
+                                    class="btn btn-secondary btn-sm"
+                                    data-action="view-run-log"
+                                    data-run-id="${run.id}"
+                                    onclick="handleRunLogAction(this)"
+                                >查看</button>
+                            </td>
                         </tr>
                     `,
                         )
@@ -493,13 +547,60 @@ async function viewRunLog(runId) {
         scheduledTaskElements.runLogModalBody.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <strong>运行日志 #${runId}</strong>
-                <button class="btn btn-secondary btn-sm" onclick="renderRunLogModal(currentRunList)">返回记录</button>
+                <button
+                    class="btn btn-secondary btn-sm"
+                    data-action="back-to-runs"
+                    onclick="handleRunLogAction(this)"
+                >返回记录</button>
             </div>
             <pre style="white-space:pre-wrap;word-break:break-word;background:var(--surface-hover);padding:12px;border-radius:8px;max-height:420px;overflow:auto;">${escapeHtml(data.logs || '暂无日志')}</pre>
         `;
     } catch (error) {
         toast.error(`加载日志失败: ${error.message}`);
     }
+}
+
+async function handlePlanAction(button) {
+    const action = button?.dataset?.action;
+    const planId = Number.parseInt(button?.dataset?.planId || '', 10);
+
+    return withButtonBusy(button, async () => {
+        switch (action) {
+            case 'detail':
+                showPlanDetail(planId);
+                return;
+            case 'logs':
+                await openRunLogs(planId);
+                return;
+            case 'edit':
+                await openEditPlanModal(planId);
+                return;
+            case 'toggle':
+                await togglePlanEnabled(planId, button?.dataset?.shouldEnable === 'true');
+                return;
+            case 'run-now':
+                await runPlanNow(planId);
+                return;
+            default:
+                return;
+        }
+    });
+}
+
+async function handleRunLogAction(button) {
+    const action = button?.dataset?.action;
+
+    return withButtonBusy(button, async () => {
+        if (action === 'view-run-log') {
+            const runId = Number.parseInt(button?.dataset?.runId || '', 10);
+            await viewRunLog(runId);
+            return;
+        }
+
+        if (action === 'back-to-runs') {
+            renderRunLogModal(currentRunList);
+        }
+    });
 }
 
 function closeModal(modalId) {
@@ -513,11 +614,15 @@ document.addEventListener('DOMContentLoaded', () => {
     loadCpaServices();
 
     if (scheduledTaskElements.refreshBtn) {
-        scheduledTaskElements.refreshBtn.addEventListener('click', loadPlans);
+        scheduledTaskElements.refreshBtn.addEventListener('click', (event) => {
+            void withButtonBusy(event.currentTarget, () => loadPlans());
+        });
     }
 
     if (scheduledTaskElements.createPlanBtn) {
-        scheduledTaskElements.createPlanBtn.addEventListener('click', openCreatePlanModal);
+        scheduledTaskElements.createPlanBtn.addEventListener('click', (event) => {
+            void withButtonBusy(event.currentTarget, () => openCreatePlanModal());
+        });
     }
 
     if (scheduledTaskElements.planForm) {
@@ -540,7 +645,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     document.querySelectorAll('[data-close-modal]').forEach((btn) => {
-        btn.addEventListener('click', () => closeModal(btn.dataset.closeModal));
+        btn.addEventListener('click', (event) => {
+            void withButtonBusy(event.currentTarget, () => closeModal(btn.dataset.closeModal));
+        });
     });
 
     [scheduledTaskElements.planFormModal, scheduledTaskElements.planModal, scheduledTaskElements.runLogModal].forEach((modal) => {
@@ -562,3 +669,5 @@ window.runPlanNow = runPlanNow;
 window.showPlanDetail = showPlanDetail;
 window.togglePlanEnabled = togglePlanEnabled;
 window.viewRunLog = viewRunLog;
+window.handlePlanAction = handlePlanAction;
+window.handleRunLogAction = handleRunLogAction;
