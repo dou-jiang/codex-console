@@ -66,6 +66,8 @@ const elements = {
     batchSuccess: document.getElementById('batch-success'),
     batchFailed: document.getElementById('batch-failed'),
     batchRemaining: document.getElementById('batch-remaining'),
+    batchConsecutiveFailures: document.getElementById('batch-consecutive-failures'),
+    batchDomainStats: document.getElementById('batch-domain-stats'),
     // 已注册账号
     recentAccountsTable: document.getElementById('recent-accounts-table'),
     refreshAccountsBtn: document.getElementById('refresh-accounts-btn'),
@@ -426,11 +428,15 @@ function handleServiceChange(e) {
 }
 
 // 模式切换
+function isUnlimitedRegistrationMode() {
+    return elements.regMode.value === 'unlimited';
+}
+
 function handleModeChange(e) {
     const mode = e.target.value;
-    isBatchMode = mode === 'batch';
+    isBatchMode = mode === 'batch' || mode === 'unlimited';
 
-    elements.batchCountGroup.style.display = isBatchMode ? 'block' : 'none';
+    elements.batchCountGroup.style.display = mode === 'batch' ? 'block' : 'none';
     elements.batchOptions.style.display = isBatchMode ? 'block' : 'none';
 }
 
@@ -660,10 +666,12 @@ async function handleBatchRegistration(requestData) {
     displayedLogs.clear();  // 清空日志去重集合
     toastShown = false;  // 重置 toast 标志
 
-    const count = parseInt(elements.batchCount.value) || 5;
-    const intervalMin = parseInt(elements.intervalMin.value) || 5;
-    const intervalMax = parseInt(elements.intervalMax.value) || 30;
-    const concurrency = parseInt(elements.concurrencyCount.value) || 3;
+    const count = isUnlimitedRegistrationMode()
+        ? 0
+        : Math.min(500, Math.max(1, parseInt(elements.batchCount.value, 10) || 5));
+    const intervalMin = parseInt(elements.intervalMin.value, 10) || 5;
+    const intervalMax = parseInt(elements.intervalMax.value, 10) || 30;
+    const concurrency = parseInt(elements.concurrencyCount.value, 10) || 3;
     const mode = elements.concurrencyMode.value || 'pipeline';
 
     requestData.count = count;
@@ -672,7 +680,7 @@ async function handleBatchRegistration(requestData) {
     requestData.concurrency = Math.min(50, Math.max(1, concurrency));
     requestData.mode = mode;
 
-    addLog('info', `[系统] 正在启动批量注册任务 (数量: ${count})...`);
+    addLog('info', `[系统] 正在启动批量注册任务 (${count === 0 ? '无限模式' : `数量: ${count}`})...`);
 
     try {
         const data = await api.post('/registration/batch', requestData);
@@ -680,9 +688,15 @@ async function handleBatchRegistration(requestData) {
         currentBatch = data;
         activeBatchId = data.batch_id;  // 保存用于重连
         // 持久化到 sessionStorage，跨页面导航后可恢复
-        sessionStorage.setItem('activeTask', JSON.stringify({ batch_id: data.batch_id, mode: 'batch', total: data.count }));
+        sessionStorage.setItem('activeTask', JSON.stringify({
+            batch_id: data.batch_id,
+            mode: isUnlimitedRegistrationMode() ? 'unlimited' : 'batch',
+            total: data.count
+        }));
         addLog('info', `[系统] 批量任务已创建: ${data.batch_id}`);
-        addLog('info', `[系统] 共 ${data.count} 个任务已加入队列`);
+        addLog('info', count === 0
+            ? '[系统] 已进入无限注册模式'
+            : `[系统] 共 ${data.count} 个任务已加入队列`);
         showBatchStatus(data);
 
         // 优先使用 WebSocket
@@ -882,15 +896,20 @@ function updateTaskStatus(status) {
 
 // 显示批量状态
 function showBatchStatus(batch) {
+    const isUnlimited = !!(batch && (batch.is_unlimited || batch.count === 0));
+
     elements.batchProgressSection.style.display = 'block';
     elements.taskStatusRow.style.display = 'none';
     elements.taskStatusBadge.style.display = 'none';
-    elements.batchProgressText.textContent = `0/${batch.count}`;
-    elements.batchProgressPercent.textContent = '0%';
-    elements.progressBar.style.width = '0%';
+    elements.batchProgressText.textContent = isUnlimited ? '0/∞' : `0/${batch.count}`;
+    elements.batchProgressPercent.textContent = isUnlimited ? '运行中' : '0%';
+    elements.progressBar.style.width = isUnlimited ? '100%' : '0%';
+    elements.progressBar.classList.toggle('indeterminate', isUnlimited);
     elements.batchSuccess.textContent = '0';
     elements.batchFailed.textContent = '0';
-    elements.batchRemaining.textContent = batch.count;
+    elements.batchRemaining.textContent = isUnlimited ? '不限' : batch.count;
+    elements.batchConsecutiveFailures.textContent = '0/0';
+    renderBatchDomainStats([]);
 
     // 重置计数器
     elements.batchSuccess.dataset.last = '0';
@@ -899,6 +918,20 @@ function showBatchStatus(batch) {
 
 // 更新批量进度
 function updateBatchProgress(data) {
+    if (data.is_unlimited) {
+        elements.batchProgressText.textContent = `${data.completed}/∞`;
+        elements.batchProgressPercent.textContent = data.finished ? '已结束' : '运行中';
+        elements.progressBar.classList.add('indeterminate');
+        elements.progressBar.style.width = '100%';
+        elements.batchSuccess.textContent = data.success;
+        elements.batchFailed.textContent = data.failed;
+        elements.batchRemaining.textContent = '不限';
+        elements.batchConsecutiveFailures.textContent = `${data.consecutive_failures || 0}/${data.max_consecutive_failures || 0}`;
+        renderBatchDomainStats(data.domain_stats || []);
+        return;
+    }
+
+    elements.progressBar.classList.remove('indeterminate');
     const progress = ((data.completed / data.total) * 100).toFixed(0);
     elements.batchProgressText.textContent = `${data.completed}/${data.total}`;
     elements.batchProgressPercent.textContent = `${progress}%`;
@@ -906,6 +939,12 @@ function updateBatchProgress(data) {
     elements.batchSuccess.textContent = data.success;
     elements.batchFailed.textContent = data.failed;
     elements.batchRemaining.textContent = data.total - data.completed;
+    if (data.max_consecutive_failures !== undefined && data.max_consecutive_failures !== null) {
+        elements.batchConsecutiveFailures.textContent = `${data.consecutive_failures || 0}/${data.max_consecutive_failures}`;
+    } else {
+        elements.batchConsecutiveFailures.textContent = '-';
+    }
+    renderBatchDomainStats(data.finished ? (data.domain_stats || []) : []);
 
     // 记录日志（避免重复）
     if (data.completed > 0) {
@@ -922,6 +961,43 @@ function updateBatchProgress(data) {
         elements.batchSuccess.dataset.last = data.success;
         elements.batchFailed.dataset.last = data.failed;
     }
+}
+
+function renderBatchDomainStats(rows) {
+    if (!rows || rows.length === 0) {
+        elements.batchDomainStats.innerHTML = '';
+        elements.batchDomainStats.style.display = 'none';
+        return;
+    }
+
+    const html = rows.map(row => `
+        <tr>
+            <td>${escapeHtml(row.domain || '-')}</td>
+            <td>${row.total || 0}</td>
+            <td>${row.success || 0}</td>
+            <td>${row.failed || 0}</td>
+        </tr>
+    `).join('');
+
+    elements.batchDomainStats.innerHTML = `
+        <div style="margin-top: var(--spacing-sm);">
+            <div style="font-weight: 500; margin-bottom: var(--spacing-xs);">域名统计</div>
+            <div style="max-height: 160px; overflow-y: auto;">
+                <table class="data-table" style="font-size: 0.8125rem;">
+                    <thead>
+                        <tr>
+                            <th>域名</th>
+                            <th>总计</th>
+                            <th>成功</th>
+                            <th>失败</th>
+                        </tr>
+                    </thead>
+                    <tbody>${html}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+    elements.batchDomainStats.style.display = 'block';
 }
 
 // 加载最近注册的账号
@@ -1255,7 +1331,12 @@ function connectBatchWebSocket(batchId) {
                         total: data.total,
                         completed: data.completed || 0,
                         success: data.success || 0,
-                        failed: data.failed || 0
+                        failed: data.failed || 0,
+                        finished: data.finished || ['completed', 'failed', 'cancelled', 'cancelling'].includes(data.status),
+                        is_unlimited: !!data.is_unlimited,
+                        consecutive_failures: data.consecutive_failures || 0,
+                        max_consecutive_failures: data.max_consecutive_failures || 0,
+                        domain_stats: data.domain_stats || []
                     });
                 }
 
@@ -1472,7 +1553,7 @@ async function restoreActiveTask() {
         } catch {
             sessionStorage.removeItem('activeTask');
         }
-    } else if ((mode === 'batch' || mode === 'outlook_batch') && batch_id) {
+    } else if ((mode === 'batch' || mode === 'unlimited' || mode === 'outlook_batch') && batch_id) {
         // 查询批量任务是否仍在运行
         const endpoint = mode === 'outlook_batch'
             ? `/registration/outlook-batch/${batch_id}`
@@ -1487,6 +1568,7 @@ async function restoreActiveTask() {
             currentBatch = { batch_id, ...data };
             activeBatchId = batch_id;
             isOutlookBatchMode = (mode === 'outlook_batch');
+            isBatchMode = (mode === 'batch' || mode === 'unlimited');
             batchCompleted = false;
             batchFinalStatus = null;
             toastShown = false;
