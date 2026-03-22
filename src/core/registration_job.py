@@ -20,6 +20,7 @@ class RegistrationJobResult:
     email: str | None = None
     error_message: str | None = None
     email_service_id: int | None = None
+    result_payload: dict[str, Any] | None = None
 
 
 def _normalize_email_service_config(
@@ -207,6 +208,7 @@ def run_registration_job(
             task_uuid=task_uuid,
         )
         result = engine.run()
+        result_payload = result.to_dict()
 
         if not result.success:
             return RegistrationJobResult(
@@ -214,6 +216,7 @@ def run_registration_job(
                 email=result.email or None,
                 error_message=result.error_message or "注册失败",
                 email_service_id=resolved_service_id,
+                result_payload=result_payload,
             )
 
         if not engine.save_to_database(result):
@@ -222,6 +225,7 @@ def run_registration_job(
                 email=result.email or None,
                 error_message="保存注册账号到数据库失败",
                 email_service_id=resolved_service_id,
+                result_payload=result_payload,
             )
 
         db.expire_all()
@@ -232,6 +236,7 @@ def run_registration_job(
                 email=result.email or None,
                 error_message="注册成功但未找到已保存账号",
                 email_service_id=resolved_service_id,
+                result_payload=result_payload,
             )
 
         if auto_upload:
@@ -242,6 +247,7 @@ def run_registration_job(
             account_id=account.id,
             email=account.email,
             email_service_id=resolved_service_id,
+            result_payload=result_payload,
         )
     except Exception as exc:
         logger.error("run_registration_job failed: %s", exc)

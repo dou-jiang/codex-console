@@ -347,7 +347,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     db, task_uuid,
                     status="completed",
                     completed_at=datetime.utcnow(),
-                    result={
+                    result=job_result.result_payload or {
                         "success": True,
                         "email": job_result.email,
                         "account_id": job_result.account_id,

@@ -210,6 +210,42 @@ def test_run_sync_registration_task_persists_email_address_even_on_failure(route
     assert task.email_address == "failed@gmail.com"
 
 
+def test_run_sync_registration_task_persists_full_result_payload_on_success(route_db, fake_task_manager, monkeypatch):
+    crud.create_registration_task(route_db, task_uuid="task-success-1")
+    rich_result = {
+        "success": True,
+        "email": "ok@gmail.com",
+        "password": "pw123",
+        "account_id": "acc-1",
+        "workspace_id": "ws-1",
+        "access_token": "tok...",
+        "refresh_token": "ref...",
+        "id_token": "id...",
+        "session_token": "sess...",
+        "error_message": "",
+        "logs": ["a", "b"],
+        "metadata": {"k": "v"},
+        "source": "register",
+    }
+
+    monkeypatch.setattr(
+        registration_routes,
+        "run_registration_job",
+        lambda **_: RegistrationJobResult(
+            success=True,
+            account_id=101,
+            email="ok@gmail.com",
+            result_payload=rich_result,
+        ),
+    )
+
+    registration_routes._run_sync_registration_task("task-success-1", "tempmail", None, None)
+
+    task = crud.get_registration_task(route_db, "task-success-1")
+    assert task.status == "completed"
+    assert task.result == rich_result
+
+
 def test_run_batch_registration_attaches_sorted_domain_stats(route_db, fake_task_manager, monkeypatch):
     task_ids = []
     for name in ["a", "b", "c"]:
