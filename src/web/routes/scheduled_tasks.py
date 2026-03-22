@@ -51,6 +51,7 @@ def _resolve_plan_update_payload(plan, request: ScheduledPlanUpdate) -> dict:
         "interval_value": request.interval_value if request.interval_value is not None else plan.interval_value,
         "interval_unit": request.interval_unit if request.interval_unit is not None else plan.interval_unit,
         "config": request.config if request.config is not None else plan.config,
+        "config_meta": request.config_meta if request.config_meta is not None else plan.config_meta,
         "enabled": request.enabled if request.enabled is not None else plan.enabled,
     }
 
@@ -87,6 +88,7 @@ async def create_scheduled_plan(request: ScheduledPlanCreate):
                 interval_value=request.interval_value,
                 interval_unit=request.interval_unit,
                 config=request.config,
+                config_meta=request.config_meta,
                 enabled=request.enabled,
                 next_run_at=next_run_at,
             )

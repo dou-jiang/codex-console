@@ -166,6 +166,13 @@ def test_create_scheduled_plan_route_persists_next_run_at(client, route_db, seed
                 "max_consecutive_failures": 3,
                 "registration_profile": {},
             },
+            "config_meta": {
+                "target_valid_count": {
+                    "key_description": "目标有效数",
+                    "value_description": "达到这个数量后停止补号",
+                    "value_type": "number",
+                }
+            },
             "enabled": True,
         },
     )
@@ -173,10 +180,12 @@ def test_create_scheduled_plan_route_persists_next_run_at(client, route_db, seed
     assert response.status_code == 200
     body = response.json()
     assert body["next_run_at"] == "2026-03-23T08:00:00"
+    assert body["config_meta"]["target_valid_count"]["value_type"] == "number"
 
     created = crud.get_scheduled_plan_by_id(route_db, body["id"])
     assert created is not None
     assert created.next_run_at == datetime(2026, 3, 23, 8, 0, 0)
+    assert created.config_meta["target_valid_count"]["key_description"] == "目标有效数"
 
 
 def test_create_scheduled_plan_route_rejects_invalid_refill_config(client, seeded_scheduled_data):
@@ -275,6 +284,13 @@ def test_update_scheduled_plan_route_persists_changes_and_recomputes_next_run_at
             "interval_value": None,
             "interval_unit": None,
             "config": {"max_cleanup_count": 5},
+            "config_meta": {
+                "max_cleanup_count": {
+                    "key_description": "最多清理数量",
+                    "value_description": "建议小批量执行",
+                    "value_type": "number",
+                }
+            },
         },
     )
 
@@ -284,6 +300,7 @@ def test_update_scheduled_plan_route_persists_changes_and_recomputes_next_run_at
     assert body["trigger_type"] == "cron"
     assert body["cron_expression"] == "30 9 * * *"
     assert body["next_run_at"] == "2026-03-24T09:30:00"
+    assert body["config_meta"]["max_cleanup_count"]["value_description"] == "建议小批量执行"
 
     route_db.expire_all()
     persisted = crud.get_scheduled_plan_by_id(route_db, seeded_scheduled_data["plan"].id)
@@ -292,6 +309,7 @@ def test_update_scheduled_plan_route_persists_changes_and_recomputes_next_run_at
     assert persisted.trigger_type == "cron"
     assert persisted.cron_expression == "30 9 * * *"
     assert persisted.next_run_at == datetime(2026, 3, 24, 9, 30, 0)
+    assert persisted.config_meta["max_cleanup_count"]["value_type"] == "number"
 
 
 def test_disable_and_enable_routes_toggle_plan_and_next_run_at(client, route_db, seeded_scheduled_data, monkeypatch):

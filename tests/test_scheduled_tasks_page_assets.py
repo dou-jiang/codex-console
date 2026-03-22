@@ -40,6 +40,10 @@ def test_scheduled_tasks_template_contains_plan_management_hooks():
     assert 'id="plan-form-modal"' in template
     assert 'id="plan-form"' in template
     assert 'id="plan-trigger-type"' in template
+    assert 'id="plan-config-mode-table"' in template
+    assert 'id="plan-config-mode-json"' in template
+    assert 'id="plan-config-entries-body"' in template
+    assert 'id="plan-config-add-entry-btn"' in template
 
 
 def test_scheduled_tasks_script_contains_create_edit_enable_disable_hooks():
@@ -61,9 +65,27 @@ def test_scheduled_tasks_script_surfaces_cpa_service_load_failures_to_users():
 
 def test_scheduled_tasks_script_provides_safe_default_cleanup_config():
     script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
-    assert "taskType === 'cpa_cleanup'" in script
-    assert '"max_probe_count"' in script
-    assert '"max_cleanup_count"' in script
+    assert "TASK_CONFIG_SCHEMAS" in script
+    assert "max_probe_count" in script
+    assert "max_cleanup_count" in script
+    assert "refresh_after_days" in script
+
+
+def test_scheduled_tasks_script_contains_config_editor_mode_and_serialization_hooks():
+    script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    assert "function renderConfigEntries(" in script
+    assert "function buildConfigPayloadFromEntries(" in script
+    assert "function syncRawJsonFromConfigEntries(" in script
+    assert "function syncConfigEntriesFromRawJson(" in script
+    assert "function switchConfigEditorMode(" in script
+    assert "config_meta" in script
+
+
+def test_scheduled_tasks_script_renders_key_description_value_description_columns():
+    script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    assert "键说明" in script
+    assert "值说明" in script
+    assert "value_type" in script
 
 
 def test_scheduled_tasks_script_contains_button_busy_guard_logic():

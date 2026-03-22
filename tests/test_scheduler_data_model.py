@@ -33,6 +33,8 @@ def test_scheduler_tables_and_account_columns_exist_after_init(tmp_path):
 
     account_columns = {col["name"] for col in inspector.get_columns("accounts")}
     assert {"primary_cpa_service_id", "invalidated_at", "invalid_reason"} <= account_columns
+    scheduled_plan_columns = {col["name"] for col in inspector.get_columns("scheduled_plans")}
+    assert "config_meta" in scheduled_plan_columns
 
 
 def test_create_plan_and_run_round_trip(temp_db):
@@ -52,12 +54,20 @@ def test_create_plan_and_run_round_trip(temp_db):
         interval_value=30,
         interval_unit="minutes",
         config={"max_cleanup_count": 20},
+        config_meta={
+            "max_cleanup_count": {
+                "key_description": "单次最多清理多少个失效账号",
+                "value_description": "10-20 更安全",
+                "value_type": "number",
+            }
+        },
     )
     run = crud.create_scheduled_run(temp_db, plan_id=plan.id, trigger_source="manual")
 
     listed_plans = crud.get_scheduled_plans(temp_db)
 
     assert plan.config["max_cleanup_count"] == 20
+    assert plan.config_meta["max_cleanup_count"]["value_type"] == "number"
     assert run.status == "running"
     assert [row.id for row in listed_plans] == [plan.id]
 

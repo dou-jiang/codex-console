@@ -24,6 +24,7 @@ class ScheduledPlanCreate(BaseModel):
     interval_value: int | None = None
     interval_unit: IntervalUnit | None = None
     config: dict[str, Any] = Field(default_factory=dict)
+    config_meta: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
 
     @model_validator(mode="after")
@@ -49,6 +50,7 @@ class ScheduledPlanUpdate(BaseModel):
     interval_value: int | None = None
     interval_unit: IntervalUnit | None = None
     config: dict[str, Any] | None = None
+    config_meta: dict[str, Any] | None = None
     enabled: bool | None = None
 
 
@@ -62,6 +64,7 @@ class ScheduledPlanResponse(BaseModel):
     interval_value: int | None = None
     interval_unit: IntervalUnit | None = None
     config: dict[str, Any]
+    config_meta: dict[str, Any] | None = None
     enabled: bool
     next_run_at: datetime | None = None
     last_run_started_at: datetime | None = None

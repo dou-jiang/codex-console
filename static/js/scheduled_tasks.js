@@ -17,6 +17,12 @@ const scheduledTaskElements = {
     planIntervalGroup: document.getElementById('plan-interval-group'),
     planIntervalValueInput: document.getElementById('plan-interval-value'),
     planIntervalUnitInput: document.getElementById('plan-interval-unit'),
+    planConfigModeTableBtn: document.getElementById('plan-config-mode-table'),
+    planConfigModeJsonBtn: document.getElementById('plan-config-mode-json'),
+    planConfigAddEntryBtn: document.getElementById('plan-config-add-entry-btn'),
+    planConfigEditorPanel: document.getElementById('plan-config-editor-panel'),
+    planConfigEntriesBody: document.getElementById('plan-config-entries-body'),
+    planConfigJsonPanel: document.getElementById('plan-config-json-panel'),
     planConfigJsonInput: document.getElementById('plan-config-json'),
     planEnabledInput: document.getElementById('plan-enabled'),
     planModal: document.getElementById('plan-modal'),
@@ -25,16 +31,237 @@ const scheduledTaskElements = {
     runLogModalBody: document.getElementById('run-log-modal-body'),
 };
 
+const CONFIG_EDITOR_MODE_TABLE = 'table';
+const CONFIG_EDITOR_MODE_JSON = 'json';
+const CONFIG_VALUE_TYPES = ['string', 'number', 'boolean', 'object', 'array'];
+const CONFIG_EDITOR_COLUMN_LABELS = {
+    key_description: '键说明',
+    value_description: '值说明',
+};
+const TASK_CONFIG_SCHEMAS = {
+    cpa_cleanup: [
+        {
+            key: 'max_probe_count',
+            key_description: '单次最多探测多少个远端账号',
+            value_type: 'number',
+            default_value: 100,
+            value_description: '用于限制运行时长，0 表示不限制',
+            readonly_key: true,
+        },
+        {
+            key: 'max_cleanup_count',
+            key_description: '单次最多清理多少个失效账号',
+            value_type: 'number',
+            default_value: 10,
+            value_description: '只限制删除数量，不等于探测数量',
+            readonly_key: true,
+        },
+    ],
+    cpa_refill: [
+        {
+            key: 'target_valid_count',
+            key_description: '目标有效账号数量',
+            value_type: 'number',
+            default_value: 50,
+            value_description: '达到该数量后停止补号',
+            readonly_key: true,
+        },
+        {
+            key: 'max_refill_count',
+            key_description: '单次最多补号数量',
+            value_type: 'number',
+            default_value: 10,
+            value_description: '本轮运行最多注册并上传多少个账号',
+            readonly_key: true,
+        },
+        {
+            key: 'max_consecutive_failures',
+            key_description: '连续失败阈值',
+            value_type: 'number',
+            default_value: 10,
+            value_description: '达到后自动禁用当前定时任务',
+            readonly_key: true,
+        },
+        {
+            key: 'email_service_type',
+            key_description: '注册使用的邮箱服务类型',
+            value_type: 'string',
+            default_value: 'tempmail',
+            value_description: '如 tempmail / outlook / moe_mail',
+            readonly_key: true,
+        },
+        {
+            key: 'email_service_id',
+            key_description: '邮箱服务 ID',
+            value_type: 'number',
+            default_value: 0,
+            value_description: '0 或空表示不绑定具体服务',
+            readonly_key: true,
+        },
+        {
+            key: 'email_service_config',
+            key_description: '邮箱服务附加配置',
+            value_type: 'object',
+            default_value: {},
+            value_description: '复杂配置请使用 JSON 对象',
+            readonly_key: true,
+        },
+        {
+            key: 'proxy',
+            key_description: '注册使用的代理地址',
+            value_type: 'string',
+            default_value: '',
+            value_description: '留空则按默认逻辑处理',
+            readonly_key: true,
+        },
+    ],
+    account_refresh: [
+        {
+            key: 'refresh_after_days',
+            key_description: '注册或上次刷新后多少天执行刷新',
+            value_type: 'number',
+            default_value: 7,
+            value_description: '达到天数阈值后才会进入刷新队列',
+            readonly_key: true,
+        },
+        {
+            key: 'max_refresh_count',
+            key_description: '单次最多刷新数量',
+            value_type: 'number',
+            default_value: 100,
+            value_description: '本轮最多处理多少个账号',
+            readonly_key: true,
+        },
+        {
+            key: 'proxy',
+            key_description: '刷新和订阅检测使用的代理',
+            value_type: 'string',
+            default_value: '',
+            value_description: '留空则按默认逻辑处理',
+            readonly_key: true,
+        },
+    ],
+};
+
 let scheduledPlansCache = [];
 let currentRunList = [];
 let cpaServicesCache = [];
 let submittingPlanForm = false;
+let currentConfigEntries = [];
+let currentConfigEditorMode = CONFIG_EDITOR_MODE_TABLE;
 
 function escapeHtml(text) {
     if (text === null || text === undefined) return '';
     const div = document.createElement('div');
     div.textContent = String(text);
     return div.innerHTML;
+}
+
+function cloneValue(value) {
+    if (Array.isArray(value) || (value && typeof value === 'object')) {
+        try {
+            return JSON.parse(JSON.stringify(value));
+        } catch (error) {
+            return value;
+        }
+    }
+    return value;
+}
+
+function isPlainObject(value) {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeValueType(valueType) {
+    return CONFIG_VALUE_TYPES.includes(valueType) ? valueType : 'string';
+}
+
+function inferValueType(value) {
+    if (Array.isArray(value)) return 'array';
+    if (isPlainObject(value)) return 'object';
+    if (typeof value === 'boolean') return 'boolean';
+    if (typeof value === 'number' && Number.isFinite(value)) return 'number';
+    return 'string';
+}
+
+function getDefaultValueForType(valueType) {
+    switch (normalizeValueType(valueType)) {
+        case 'number':
+            return 0;
+        case 'boolean':
+            return false;
+        case 'object':
+            return {};
+        case 'array':
+            return [];
+        default:
+            return '';
+    }
+}
+
+function serializeEditorValue(value, valueType) {
+    const normalizedType = normalizeValueType(valueType || inferValueType(value));
+    const safeValue = value === undefined ? getDefaultValueForType(normalizedType) : value;
+
+    if (normalizedType === 'object' || normalizedType === 'array') {
+        return JSON.stringify(safeValue, null, 2);
+    }
+    if (normalizedType === 'boolean') {
+        return safeValue ? 'true' : 'false';
+    }
+    if (normalizedType === 'number') {
+        return safeValue === null || safeValue === undefined ? '' : String(safeValue);
+    }
+    return safeValue === null || safeValue === undefined ? '' : String(safeValue);
+}
+
+function parseEditorValue(rawValue, valueType) {
+    const normalizedType = normalizeValueType(valueType);
+    const text = rawValue === null || rawValue === undefined ? '' : String(rawValue);
+
+    if (normalizedType === 'string') {
+        return text;
+    }
+    if (normalizedType === 'number') {
+        if (text.trim() === '') {
+            throw new Error('数字类型的值不能为空');
+        }
+        const parsed = Number(text);
+        if (!Number.isFinite(parsed)) {
+            throw new Error('数字类型的值无效');
+        }
+        return parsed;
+    }
+    if (normalizedType === 'boolean') {
+        if (text === 'true') return true;
+        if (text === 'false') return false;
+        throw new Error('布尔类型的值必须为 true 或 false');
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(text || (normalizedType === 'array' ? '[]' : '{}'));
+    } catch (error) {
+        throw new Error(`${normalizedType === 'array' ? '数组' : '对象'}类型的值必须是合法 JSON`);
+    }
+
+    if (normalizedType === 'array' && !Array.isArray(parsed)) {
+        throw new Error('数组类型的值必须是 JSON 数组');
+    }
+    if (normalizedType === 'object' && !isPlainObject(parsed)) {
+        throw new Error('对象类型的值必须是 JSON 对象');
+    }
+    return parsed;
+}
+
+function convertEditorRawValue(rawValue, fromType, toType) {
+    const targetType = normalizeValueType(toType);
+    try {
+        const parsed = parseEditorValue(rawValue, fromType);
+        return serializeEditorValue(parsed, targetType);
+    } catch (error) {
+        return serializeEditorValue(getDefaultValueForType(targetType), targetType);
+    }
 }
 
 function getTaskTypeText(type) {
@@ -67,14 +294,394 @@ function getRunStatusText(status) {
     return map[status] || status;
 }
 
+function getTaskConfigSchema(taskType) {
+    return Array.isArray(TASK_CONFIG_SCHEMAS[taskType])
+        ? TASK_CONFIG_SCHEMAS[taskType].map((item) => ({ ...item, default_value: cloneValue(item.default_value) }))
+        : [];
+}
+
+function getDefaultConfigMetaEntry(schemaEntry) {
+    return {
+        key_description: schemaEntry.key_description || '',
+        value_description: schemaEntry.value_description || '',
+        value_type: normalizeValueType(schemaEntry.value_type),
+    };
+}
+
+function createConfigEntry({
+    key = '',
+    keyDescription = '',
+    rawValue = '',
+    valueDescription = '',
+    valueType = 'string',
+    builtin = false,
+    readonlyKey = false,
+} = {}) {
+    return {
+        key,
+        keyDescription,
+        rawValue,
+        valueDescription,
+        valueType: normalizeValueType(valueType),
+        builtin: Boolean(builtin),
+        readonlyKey: Boolean(readonlyKey),
+    };
+}
+
+function buildConfigMetaFromEntries(entries) {
+    const configMeta = {};
+    (Array.isArray(entries) ? entries : []).forEach((entry) => {
+        const key = String(entry?.key || '').trim();
+        if (!key) return;
+        configMeta[key] = {
+            key_description: String(entry.keyDescription || ''),
+            value_description: String(entry.valueDescription || ''),
+            value_type: normalizeValueType(entry.valueType),
+        };
+    });
+    return configMeta;
+}
+
+function buildConfigEntriesFromConfig(taskType, config = {}, configMeta = {}) {
+    const safeConfig = isPlainObject(config) ? config : {};
+    const safeMeta = isPlainObject(configMeta) ? configMeta : {};
+    const schema = getTaskConfigSchema(taskType);
+    const schemaKeys = new Set(schema.map((item) => item.key));
+    const entries = [];
+
+    schema.forEach((schemaEntry) => {
+        const metaEntry = isPlainObject(safeMeta[schemaEntry.key]) ? safeMeta[schemaEntry.key] : {};
+        const valueType = normalizeValueType(metaEntry.value_type || schemaEntry.value_type);
+        const hasConfigValue = Object.prototype.hasOwnProperty.call(safeConfig, schemaEntry.key);
+        const value = hasConfigValue ? safeConfig[schemaEntry.key] : cloneValue(schemaEntry.default_value);
+        entries.push(
+            createConfigEntry({
+                key: schemaEntry.key,
+                keyDescription: metaEntry.key_description ?? schemaEntry.key_description ?? '',
+                rawValue: serializeEditorValue(value, valueType),
+                valueDescription: metaEntry.value_description ?? schemaEntry.value_description ?? '',
+                valueType,
+                builtin: true,
+                readonlyKey: schemaEntry.readonly_key !== false,
+            }),
+        );
+    });
+
+    Object.entries(safeConfig).forEach(([key, value]) => {
+        if (schemaKeys.has(key)) return;
+        const metaEntry = isPlainObject(safeMeta[key]) ? safeMeta[key] : {};
+        const valueType = normalizeValueType(metaEntry.value_type || inferValueType(value));
+        entries.push(
+            createConfigEntry({
+                key,
+                keyDescription: metaEntry.key_description || '',
+                rawValue: serializeEditorValue(value, valueType),
+                valueDescription: metaEntry.value_description || '',
+                valueType,
+                builtin: false,
+                readonlyKey: false,
+            }),
+        );
+    });
+
+    Object.entries(safeMeta).forEach(([key, metaEntry]) => {
+        if (schemaKeys.has(key) || Object.prototype.hasOwnProperty.call(safeConfig, key) || !isPlainObject(metaEntry)) {
+            return;
+        }
+        entries.push(
+            createConfigEntry({
+                key,
+                keyDescription: metaEntry.key_description || '',
+                rawValue: serializeEditorValue(getDefaultValueForType(metaEntry.value_type), metaEntry.value_type),
+                valueDescription: metaEntry.value_description || '',
+                valueType: metaEntry.value_type || 'string',
+                builtin: false,
+                readonlyKey: false,
+            }),
+        );
+    });
+
+    return entries;
+}
+
+function buildConfigPayloadFromEntries(entries) {
+    const config = {};
+    const configMeta = {};
+    const usedKeys = new Set();
+
+    (Array.isArray(entries) ? entries : []).forEach((entry, index) => {
+        const key = String(entry?.key || '').trim();
+        if (!key) {
+            throw new Error(`第 ${index + 1} 行的键不能为空`);
+        }
+        if (usedKeys.has(key)) {
+            throw new Error(`配置键重复: ${key}`);
+        }
+        usedKeys.add(key);
+        config[key] = parseEditorValue(entry.rawValue, entry.valueType);
+        configMeta[key] = {
+            key_description: String(entry.keyDescription || ''),
+            value_description: String(entry.valueDescription || ''),
+            value_type: normalizeValueType(entry.valueType),
+        };
+    });
+
+    return { config, config_meta: configMeta };
+}
+
+function getDefaultConfigEntries(taskType) {
+    return buildConfigEntriesFromConfig(taskType, {}, {});
+}
+
 function getDefaultConfigJson(taskType) {
-    if (taskType === 'cpa_cleanup') {
-        return JSON.stringify({ "max_probe_count": 100, "max_cleanup_count": 10 }, null, 2);
+    const payload = buildConfigPayloadFromEntries(getDefaultConfigEntries(taskType));
+    return JSON.stringify(payload.config, null, 2);
+}
+
+function renderConfigValueInput(entry, index) {
+    const safeValue = escapeHtml(entry.rawValue || '');
+    const commonAttrs = `data-config-index="${index}" data-config-field="rawValue" style="width:100%;"`;
+
+    switch (normalizeValueType(entry.valueType)) {
+        case 'number':
+            return `<input type="number" ${commonAttrs} value="${safeValue}" onchange="handleConfigEntryInput(this)">`;
+        case 'boolean':
+            return `
+                <select ${commonAttrs} onchange="handleConfigEntryInput(this)">
+                    <option value="true" ${entry.rawValue === 'true' ? 'selected' : ''}>true</option>
+                    <option value="false" ${entry.rawValue === 'false' ? 'selected' : ''}>false</option>
+                </select>
+            `;
+        case 'object':
+        case 'array':
+            return `<textarea rows="4" ${commonAttrs} onchange="handleConfigEntryInput(this)">${safeValue}</textarea>`;
+        default:
+            return `<input type="text" ${commonAttrs} value="${safeValue}" onchange="handleConfigEntryInput(this)">`;
     }
-    if (taskType === 'cpa_refill') {
-        return JSON.stringify({ max_consecutive_failures: 10 }, null, 2);
+}
+
+function renderConfigEntries() {
+    const tbody = scheduledTaskElements.planConfigEntriesBody;
+    if (!tbody) return;
+
+    if (!Array.isArray(currentConfigEntries) || currentConfigEntries.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="6">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🧩</div>
+                        <div class="empty-state-title">暂无配置项</div>
+                    </div>
+                </td>
+            </tr>
+        `;
+        return;
     }
-    return '{}';
+
+    tbody.innerHTML = currentConfigEntries
+        .map((entry, index) => {
+            const typeOptions = CONFIG_VALUE_TYPES
+                .map((valueType) => `<option value="${valueType}" ${entry.valueType === valueType ? 'selected' : ''}>${valueType}</option>`)
+                .join('');
+            return `
+                <tr>
+                    <td>
+                        <input
+                            type="text"
+                            data-config-index="${index}"
+                            data-config-field="key"
+                            value="${escapeHtml(entry.key || '')}"
+                            ${entry.readonlyKey ? 'readonly' : ''}
+                            onchange="handleConfigEntryInput(this)"
+                            style="width:100%;"
+                        >
+                    </td>
+                    <td>
+                        <input
+                            type="text"
+                            data-config-index="${index}"
+                            data-config-field="keyDescription"
+                            value="${escapeHtml(entry.keyDescription || '')}"
+                            onchange="handleConfigEntryInput(this)"
+                            style="width:100%;"
+                        >
+                    </td>
+                    <td>${renderConfigValueInput(entry, index)}</td>
+                    <td>
+                        <input
+                            type="text"
+                            data-config-index="${index}"
+                            data-config-field="valueDescription"
+                            value="${escapeHtml(entry.valueDescription || '')}"
+                            onchange="handleConfigEntryInput(this)"
+                            style="width:100%;"
+                        >
+                    </td>
+                    <td>
+                        <select
+                            data-config-index="${index}"
+                            data-config-field="valueType"
+                            onchange="handleConfigEntryInput(this)"
+                            style="width:100%;"
+                        >${typeOptions}</select>
+                    </td>
+                    <td>
+                        ${entry.builtin
+                            ? '<span style="color: var(--text-muted); font-size: 12px;">预置</span>'
+                            : `
+                                <button
+                                    type="button"
+                                    class="btn btn-secondary btn-sm"
+                                    data-config-action="remove"
+                                    data-config-index="${index}"
+                                    onclick="handleConfigEntryAction(this)"
+                                >删除</button>
+                            `}
+                    </td>
+                </tr>
+            `;
+        })
+        .join('');
+}
+
+function updateConfigEditorModeUi() {
+    const isTableMode = currentConfigEditorMode === CONFIG_EDITOR_MODE_TABLE;
+
+    if (scheduledTaskElements.planConfigEditorPanel) {
+        scheduledTaskElements.planConfigEditorPanel.style.display = isTableMode ? '' : 'none';
+    }
+    if (scheduledTaskElements.planConfigJsonPanel) {
+        scheduledTaskElements.planConfigJsonPanel.style.display = isTableMode ? 'none' : '';
+    }
+    if (scheduledTaskElements.planConfigAddEntryBtn) {
+        scheduledTaskElements.planConfigAddEntryBtn.style.display = isTableMode ? '' : 'none';
+    }
+
+    if (scheduledTaskElements.planConfigModeTableBtn) {
+        scheduledTaskElements.planConfigModeTableBtn.className = `btn ${isTableMode ? 'btn-primary' : 'btn-secondary'} btn-sm`;
+    }
+    if (scheduledTaskElements.planConfigModeJsonBtn) {
+        scheduledTaskElements.planConfigModeJsonBtn.className = `btn ${isTableMode ? 'btn-secondary' : 'btn-primary'} btn-sm`;
+    }
+}
+
+function syncRawJsonFromConfigEntries() {
+    const payload = buildConfigPayloadFromEntries(currentConfigEntries);
+    if (scheduledTaskElements.planConfigJsonInput) {
+        scheduledTaskElements.planConfigJsonInput.value = JSON.stringify(payload.config, null, 2);
+    }
+    return payload.config;
+}
+
+function syncConfigEntriesFromRawJson() {
+    const rawText = (scheduledTaskElements.planConfigJsonInput?.value || '').trim() || '{}';
+    let parsedConfig;
+    try {
+        parsedConfig = JSON.parse(rawText);
+    } catch (error) {
+        throw new Error('配置 JSON 解析失败');
+    }
+
+    if (!isPlainObject(parsedConfig)) {
+        throw new Error('配置 JSON 必须是对象');
+    }
+
+    currentConfigEntries = buildConfigEntriesFromConfig(
+        scheduledTaskElements.planTaskTypeInput?.value,
+        parsedConfig,
+        buildConfigMetaFromEntries(currentConfigEntries),
+    );
+    renderConfigEntries();
+    return parsedConfig;
+}
+
+function switchConfigEditorMode(mode) {
+    if (mode === currentConfigEditorMode) {
+        updateConfigEditorModeUi();
+        return;
+    }
+
+    if (mode === CONFIG_EDITOR_MODE_JSON) {
+        syncRawJsonFromConfigEntries();
+        currentConfigEditorMode = CONFIG_EDITOR_MODE_JSON;
+        updateConfigEditorModeUi();
+        return;
+    }
+
+    syncConfigEntriesFromRawJson();
+    currentConfigEditorMode = CONFIG_EDITOR_MODE_TABLE;
+    updateConfigEditorModeUi();
+}
+
+function setConfigEditorState(taskType, config = {}, configMeta = {}) {
+    currentConfigEntries = buildConfigEntriesFromConfig(taskType, config, configMeta);
+    currentConfigEditorMode = CONFIG_EDITOR_MODE_TABLE;
+    renderConfigEntries();
+    syncRawJsonFromConfigEntries();
+    updateConfigEditorModeUi();
+}
+
+function addCustomConfigEntry() {
+    currentConfigEntries.push(
+        createConfigEntry({
+            key: '',
+            keyDescription: '',
+            rawValue: '',
+            valueDescription: '',
+            valueType: 'string',
+            builtin: false,
+            readonlyKey: false,
+        }),
+    );
+    renderConfigEntries();
+}
+
+function handleConfigEntryInput(element) {
+    const index = Number.parseInt(element?.dataset?.configIndex || '', 10);
+    const field = element?.dataset?.configField;
+    const entry = currentConfigEntries[index];
+    if (!entry || !field) return;
+
+    if (field === 'valueType') {
+        const nextType = normalizeValueType(element.value);
+        entry.rawValue = convertEditorRawValue(entry.rawValue, entry.valueType, nextType);
+        entry.valueType = nextType;
+    } else if (field === 'rawValue') {
+        entry.rawValue = element.value;
+    } else if (field === 'key') {
+        entry.key = element.value;
+    } else if (field === 'keyDescription') {
+        entry.keyDescription = element.value;
+    } else if (field === 'valueDescription') {
+        entry.valueDescription = element.value;
+    }
+
+    renderConfigEntries();
+}
+
+function handleConfigEntryAction(button) {
+    const action = button?.dataset?.configAction;
+    const index = Number.parseInt(button?.dataset?.configIndex || '', 10);
+    if (action !== 'remove' || !Number.isInteger(index) || index < 0 || index >= currentConfigEntries.length) {
+        return;
+    }
+    currentConfigEntries.splice(index, 1);
+    renderConfigEntries();
+}
+
+function maybeSetDefaultConfigForTaskType() {
+    const taskType = scheduledTaskElements.planTaskTypeInput?.value;
+    if (!taskType) return;
+
+    try {
+        const config = currentConfigEditorMode === CONFIG_EDITOR_MODE_JSON
+            ? JSON.parse((scheduledTaskElements.planConfigJsonInput?.value || '').trim() || '{}')
+            : buildConfigPayloadFromEntries(currentConfigEntries).config;
+        const configMeta = buildConfigMetaFromEntries(currentConfigEntries);
+        setConfigEditorState(taskType, config, configMeta);
+    } catch (error) {
+        setConfigEditorState(taskType, {}, {});
+    }
 }
 
 async function withButtonBusy(button, action) {
@@ -132,37 +739,11 @@ function renderPlans(plans) {
                     <td>${format.date(plan.last_run_started_at)}</td>
                     <td>
                         <div style="display:flex;gap:4px;flex-wrap:wrap;">
-                            <button
-                                class="btn btn-secondary btn-sm"
-                                data-action="detail"
-                                data-plan-id="${plan.id}"
-                                onclick="handlePlanAction(this)"
-                            >详情</button>
-                            <button
-                                class="btn btn-secondary btn-sm"
-                                data-action="logs"
-                                data-plan-id="${plan.id}"
-                                onclick="handlePlanAction(this)"
-                            >记录</button>
-                            <button
-                                class="btn btn-secondary btn-sm"
-                                data-action="edit"
-                                data-plan-id="${plan.id}"
-                                onclick="handlePlanAction(this)"
-                            >编辑</button>
-                            <button
-                                class="btn btn-secondary btn-sm"
-                                data-action="toggle"
-                                data-plan-id="${plan.id}"
-                                data-should-enable="${shouldEnable}"
-                                onclick="handlePlanAction(this)"
-                            >${toggleLabel}</button>
-                            <button
-                                class="btn btn-primary btn-sm"
-                                data-action="run-now"
-                                data-plan-id="${plan.id}"
-                                onclick="handlePlanAction(this)"
-                            >立即执行</button>
+                            <button class="btn btn-secondary btn-sm" data-action="detail" data-plan-id="${plan.id}" onclick="handlePlanAction(this)">详情</button>
+                            <button class="btn btn-secondary btn-sm" data-action="logs" data-plan-id="${plan.id}" onclick="handlePlanAction(this)">记录</button>
+                            <button class="btn btn-secondary btn-sm" data-action="edit" data-plan-id="${plan.id}" onclick="handlePlanAction(this)">编辑</button>
+                            <button class="btn btn-secondary btn-sm" data-action="toggle" data-plan-id="${plan.id}" data-should-enable="${shouldEnable}" onclick="handlePlanAction(this)">${toggleLabel}</button>
+                            <button class="btn btn-primary btn-sm" data-action="run-now" data-plan-id="${plan.id}" onclick="handlePlanAction(this)">立即执行</button>
                         </div>
                     </td>
                 </tr>
@@ -251,20 +832,6 @@ function updateTriggerInputs() {
     }
 }
 
-function maybeSetDefaultConfigForTaskType() {
-    if (!scheduledTaskElements.planConfigJsonInput || !scheduledTaskElements.planTaskTypeInput) {
-        return;
-    }
-
-    const current = (scheduledTaskElements.planConfigJsonInput.value || '').trim();
-    if (current !== '' && current !== '{}' && current !== '{\n}') {
-        return;
-    }
-
-    const taskType = scheduledTaskElements.planTaskTypeInput.value;
-    scheduledTaskElements.planConfigJsonInput.value = getDefaultConfigJson(taskType);
-}
-
 async function openCreatePlanModal() {
     if (!scheduledTaskElements.planFormModal || !scheduledTaskElements.planForm) return;
 
@@ -276,13 +843,12 @@ async function openCreatePlanModal() {
     scheduledTaskElements.planTriggerTypeInput.value = 'interval';
     scheduledTaskElements.planIntervalValueInput.value = 60;
     scheduledTaskElements.planIntervalUnitInput.value = 'minutes';
-    scheduledTaskElements.planConfigJsonInput.value = getDefaultConfigJson('cpa_cleanup');
     scheduledTaskElements.planEnabledInput.checked = true;
+    setConfigEditorState('cpa_cleanup', {}, {});
 
     await loadCpaServices(true);
     renderCpaServiceOptions();
-    scheduledTaskElements.planCpaServiceIdInput.value =
-        scheduledTaskElements.planCpaServiceSelect.value || '';
+    scheduledTaskElements.planCpaServiceIdInput.value = scheduledTaskElements.planCpaServiceSelect.value || '';
     updateTriggerInputs();
 
     scheduledTaskElements.planFormModal.classList.add('active');
@@ -305,12 +871,7 @@ async function openEditPlanModal(planId) {
     scheduledTaskElements.planIntervalValueInput.value = plan.interval_value || 60;
     scheduledTaskElements.planIntervalUnitInput.value = plan.interval_unit || 'minutes';
     scheduledTaskElements.planEnabledInput.checked = Boolean(plan.enabled);
-
-    try {
-        scheduledTaskElements.planConfigJsonInput.value = JSON.stringify(plan.config || {}, null, 2);
-    } catch (error) {
-        scheduledTaskElements.planConfigJsonInput.value = '{}';
-    }
+    setConfigEditorState(plan.task_type || 'cpa_cleanup', plan.config || {}, plan.config_meta || {});
 
     await loadCpaServices(true);
     renderCpaServiceOptions(plan.cpa_service_id);
@@ -328,8 +889,6 @@ function buildPlanPayloadFromForm() {
 
     const taskType = scheduledTaskElements.planTaskTypeInput?.value;
     const triggerType = scheduledTaskElements.planTriggerTypeInput?.value;
-    const rawConfig = (scheduledTaskElements.planConfigJsonInput?.value || '').trim() || '{}';
-
     const cpaServiceRaw =
         (scheduledTaskElements.planCpaServiceIdInput?.value || '').trim() ||
         (scheduledTaskElements.planCpaServiceSelect?.value || '').trim();
@@ -339,15 +898,21 @@ function buildPlanPayloadFromForm() {
         throw new Error('CPA 服务 ID 无效');
     }
 
-    let config;
-    try {
-        config = JSON.parse(rawConfig);
-    } catch (error) {
-        throw new Error('配置 JSON 解析失败');
-    }
-
-    if (!config || typeof config !== 'object' || Array.isArray(config)) {
-        throw new Error('配置 JSON 必须是对象');
+    let payloadConfig;
+    if (currentConfigEditorMode === CONFIG_EDITOR_MODE_JSON) {
+        let rawConfig;
+        try {
+            rawConfig = JSON.parse((scheduledTaskElements.planConfigJsonInput?.value || '').trim() || '{}');
+        } catch (error) {
+            throw new Error('配置 JSON 解析失败');
+        }
+        if (!isPlainObject(rawConfig)) {
+            throw new Error('配置 JSON 必须是对象');
+        }
+        const derivedEntries = buildConfigEntriesFromConfig(taskType, rawConfig, buildConfigMetaFromEntries(currentConfigEntries));
+        payloadConfig = buildConfigPayloadFromEntries(derivedEntries);
+    } else {
+        payloadConfig = buildConfigPayloadFromEntries(currentConfigEntries);
     }
 
     const payload = {
@@ -355,7 +920,8 @@ function buildPlanPayloadFromForm() {
         task_type: taskType,
         cpa_service_id: cpaServiceId,
         trigger_type: triggerType,
-        config,
+        config: payloadConfig.config,
+        config_meta: payloadConfig.config_meta,
         enabled: Boolean(scheduledTaskElements.planEnabledInput?.checked),
     };
 
@@ -428,30 +994,12 @@ function showPlanDetail(planId) {
 
     scheduledTaskElements.planModalBody.innerHTML = `
         <div class="info-grid">
-            <div class="info-item">
-                <span class="label">计划名称</span>
-                <span class="value">${escapeHtml(plan.name || '-')}</span>
-            </div>
-            <div class="info-item">
-                <span class="label">任务类型</span>
-                <span class="value">${getTaskTypeText(plan.task_type)}</span>
-            </div>
-            <div class="info-item">
-                <span class="label">触发方式</span>
-                <span class="value">${escapeHtml(getTriggerText(plan))}</span>
-            </div>
-            <div class="info-item">
-                <span class="label">主 CPA 服务 ID</span>
-                <span class="value">${plan.cpa_service_id ?? '-'}</span>
-            </div>
-            <div class="info-item">
-                <span class="label">下次执行</span>
-                <span class="value">${format.date(plan.next_run_at)}</span>
-            </div>
-            <div class="info-item">
-                <span class="label">最近状态</span>
-                <span class="value">${getRunStatusText(plan.last_run_status)}</span>
-            </div>
+            <div class="info-item"><span class="label">计划名称</span><span class="value">${escapeHtml(plan.name || '-')}</span></div>
+            <div class="info-item"><span class="label">任务类型</span><span class="value">${getTaskTypeText(plan.task_type)}</span></div>
+            <div class="info-item"><span class="label">触发方式</span><span class="value">${escapeHtml(getTriggerText(plan))}</span></div>
+            <div class="info-item"><span class="label">主 CPA 服务 ID</span><span class="value">${plan.cpa_service_id ?? '-'}</span></div>
+            <div class="info-item"><span class="label">下次执行</span><span class="value">${format.date(plan.next_run_at)}</span></div>
+            <div class="info-item"><span class="label">最近状态</span><span class="value">${getRunStatusText(plan.last_run_status)}</span></div>
         </div>
     `;
 
@@ -459,9 +1007,7 @@ function showPlanDetail(planId) {
 }
 
 async function togglePlanEnabled(planId, shouldEnable) {
-    const endpoint = shouldEnable
-        ? `/scheduled-plans/${planId}/enable`
-        : `/scheduled-plans/${planId}/disable`;
+    const endpoint = shouldEnable ? `/scheduled-plans/${planId}/enable` : `/scheduled-plans/${planId}/disable`;
 
     try {
         await api.post(endpoint, {});
@@ -514,9 +1060,7 @@ function renderRunLogModal(runs) {
                     </tr>
                 </thead>
                 <tbody>
-                    ${runs
-                        .map(
-                            (run) => `
+                    ${runs.map((run) => `
                         <tr>
                             <td>${run.id}</td>
                             <td>${escapeHtml(run.trigger_source || '-')}</td>
@@ -525,17 +1069,10 @@ function renderRunLogModal(runs) {
                             <td>${format.date(run.finished_at)}</td>
                             <td>${escapeHtml(JSON.stringify(run.summary || {}))}</td>
                             <td>
-                                <button
-                                    class="btn btn-secondary btn-sm"
-                                    data-action="view-run-log"
-                                    data-run-id="${run.id}"
-                                    onclick="handleRunLogAction(this)"
-                                >查看</button>
+                                <button class="btn btn-secondary btn-sm" data-action="view-run-log" data-run-id="${run.id}" onclick="handleRunLogAction(this)">查看</button>
                             </td>
                         </tr>
-                    `,
-                        )
-                        .join('')}
+                    `).join('')}
                 </tbody>
             </table>
         </div>
@@ -550,11 +1087,7 @@ async function viewRunLog(runId) {
         scheduledTaskElements.runLogModalBody.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <strong>运行日志 #${runId}</strong>
-                <button
-                    class="btn btn-secondary btn-sm"
-                    data-action="back-to-runs"
-                    onclick="handleRunLogAction(this)"
-                >返回记录</button>
+                <button class="btn btn-secondary btn-sm" data-action="back-to-runs" onclick="handleRunLogAction(this)">返回记录</button>
             </div>
             <pre style="white-space:pre-wrap;word-break:break-word;background:var(--surface-hover);padding:12px;border-radius:8px;max-height:420px;overflow:auto;">${escapeHtml(data.logs || '暂无日志')}</pre>
         `;
@@ -615,6 +1148,7 @@ function closeModal(modalId) {
 document.addEventListener('DOMContentLoaded', () => {
     loadPlans();
     loadCpaServices();
+    setConfigEditorState('cpa_cleanup', {}, {});
 
     if (scheduledTaskElements.refreshBtn) {
         scheduledTaskElements.refreshBtn.addEventListener('click', (event) => {
@@ -638,6 +1172,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (scheduledTaskElements.planTaskTypeInput) {
         scheduledTaskElements.planTaskTypeInput.addEventListener('change', maybeSetDefaultConfigForTaskType);
+    }
+
+    if (scheduledTaskElements.planConfigModeTableBtn) {
+        scheduledTaskElements.planConfigModeTableBtn.addEventListener('click', () => {
+            try {
+                switchConfigEditorMode(CONFIG_EDITOR_MODE_TABLE);
+            } catch (error) {
+                toast.warning(error.message || '无法切回键值对编辑模式');
+            }
+        });
+    }
+
+    if (scheduledTaskElements.planConfigModeJsonBtn) {
+        scheduledTaskElements.planConfigModeJsonBtn.addEventListener('click', () => {
+            try {
+                switchConfigEditorMode(CONFIG_EDITOR_MODE_JSON);
+            } catch (error) {
+                toast.warning(error.message || '无法切换到原始 JSON 模式');
+            }
+        });
+    }
+
+    if (scheduledTaskElements.planConfigAddEntryBtn) {
+        scheduledTaskElements.planConfigAddEntryBtn.addEventListener('click', (event) => {
+            void withButtonBusy(event.currentTarget, () => addCustomConfigEntry());
+        });
     }
 
     if (scheduledTaskElements.planCpaServiceSelect) {
@@ -674,3 +1234,10 @@ window.togglePlanEnabled = togglePlanEnabled;
 window.viewRunLog = viewRunLog;
 window.handlePlanAction = handlePlanAction;
 window.handleRunLogAction = handleRunLogAction;
+window.handleConfigEntryInput = handleConfigEntryInput;
+window.handleConfigEntryAction = handleConfigEntryAction;
+window.renderConfigEntries = renderConfigEntries;
+window.buildConfigPayloadFromEntries = buildConfigPayloadFromEntries;
+window.syncRawJsonFromConfigEntries = syncRawJsonFromConfigEntries;
+window.syncConfigEntriesFromRawJson = syncConfigEntriesFromRawJson;
+window.switchConfigEditorMode = switchConfigEditorMode;

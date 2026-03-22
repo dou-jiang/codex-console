@@ -143,6 +143,33 @@ def test_postgresql_migrate_tables_adds_scheduler_account_columns(monkeypatch):
     )
 
 
+def test_postgresql_migrate_tables_adds_scheduled_plan_config_meta_column(monkeypatch):
+    connection = _FakeConnection()
+    manager = _build_manager(connection)
+
+    class _FakeInspector:
+        def get_columns(self, table_name: str):
+            if table_name == "scheduled_plans":
+                return [{"name": "id"}, {"name": "config"}]
+            if table_name == "accounts":
+                return [{"name": "id"}, {"name": "primary_cpa_service_id"}, {"name": "invalidated_at"}, {"name": "invalid_reason"}]
+            if table_name == "proxies":
+                return [{"name": "id"}, {"name": "country"}, {"name": "city"}]
+            if table_name == "registration_tasks":
+                return [{"name": "id"}, {"name": "email_address"}]
+            return [{"name": "id"}]
+
+    monkeypatch.setattr(session_module.Base.metadata, "create_all", lambda bind: None)
+    monkeypatch.setattr(session_module, "inspect", lambda conn: _FakeInspector())
+
+    manager.migrate_tables()
+
+    assert any(
+        'ALTER TABLE "scheduled_plans" ADD COLUMN IF NOT EXISTS "config_meta" TEXT' in stmt
+        for stmt in connection.statements
+    )
+
+
 def test_sqlite_migrate_tables_adds_registration_task_email_column(tmp_path):
     db_path = tmp_path / "legacy-registration-tasks.db"
 
@@ -208,3 +235,40 @@ def test_sqlite_migrate_tables_adds_scheduler_account_columns(tmp_path):
     assert "primary_cpa_service_id" in columns
     assert "invalidated_at" in columns
     assert "invalid_reason" in columns
+
+
+def test_sqlite_migrate_tables_adds_scheduled_plan_config_meta_column(tmp_path):
+    db_path = tmp_path / "legacy-scheduled-plans.db"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE scheduled_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name VARCHAR(120) NOT NULL,
+                task_type VARCHAR(32) NOT NULL,
+                enabled BOOLEAN DEFAULT 1,
+                cpa_service_id INTEGER NOT NULL,
+                trigger_type VARCHAR(16) NOT NULL,
+                cron_expression VARCHAR(120),
+                interval_value INTEGER,
+                interval_unit VARCHAR(16),
+                config TEXT NOT NULL,
+                next_run_at DATETIME,
+                created_at DATETIME,
+                updated_at DATETIME
+            )
+            """
+        )
+        conn.commit()
+
+    manager = DatabaseSessionManager(f"sqlite:///{db_path}")
+    manager.migrate_tables()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info('scheduled_plans')").fetchall()
+        }
+
+    assert "config_meta" in columns

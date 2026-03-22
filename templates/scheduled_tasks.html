@@ -74,7 +74,7 @@
     </div>
 
     <div id="plan-form-modal" class="modal">
-        <div class="modal-content" style="max-width: 640px;">
+        <div class="modal-content" style="max-width: 1080px;">
             <div class="modal-header">
                 <h3 id="plan-form-title">新建计划</h3>
                 <button class="modal-close" data-close-modal="plan-form-modal">&times;</button>
@@ -131,8 +131,38 @@
                         </div>
                     </div>
                     <div class="form-group">
-                        <label for="plan-config-json">配置 JSON</label>
-                        <textarea id="plan-config-json" rows="6" placeholder='{"max_consecutive_failures": 10}'>{}</textarea>
+                        <label>配置参数</label>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+                            <button type="button" class="btn btn-secondary btn-sm" id="plan-config-mode-table">键值对编辑</button>
+                            <button type="button" class="btn btn-secondary btn-sm" id="plan-config-mode-json">原始 JSON</button>
+                            <button type="button" class="btn btn-secondary btn-sm" id="plan-config-add-entry-btn">➕ 新增配置项</button>
+                        </div>
+
+                        <div id="plan-config-editor-panel">
+                            <div class="table-container">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th style="width: 180px;">键</th>
+                                            <th style="width: 220px;">键说明</th>
+                                            <th>值</th>
+                                            <th style="width: 220px;">值说明</th>
+                                            <th style="width: 120px;">类型</th>
+                                            <th style="width: 90px;">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="plan-config-entries-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div id="plan-config-json-panel" style="display:none;">
+                            <label for="plan-config-json" style="display:block;margin-bottom:8px;">原始 JSON（高级模式）</label>
+                            <textarea id="plan-config-json" rows="10" placeholder='{"max_consecutive_failures": 10}'>{}</textarea>
+                            <small style="display:block;color:var(--text-muted);margin-top:8px;">
+                                原始 JSON 只编辑 config 值；键说明和值说明请在键值对模式中维护。
+                            </small>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>
