@@ -59,6 +59,13 @@ def test_scheduled_tasks_script_surfaces_cpa_service_load_failures_to_users():
     assert "loadCpaServices(true)" in script
 
 
+def test_scheduled_tasks_script_provides_safe_default_cleanup_config():
+    script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    assert "taskType === 'cpa_cleanup'" in script
+    assert '"max_probe_count"' in script
+    assert '"max_cleanup_count"' in script
+
+
 def test_scheduled_tasks_script_contains_button_busy_guard_logic():
     script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
     assert "data-busy" in script

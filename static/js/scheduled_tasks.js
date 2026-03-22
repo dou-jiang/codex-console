@@ -68,6 +68,9 @@ function getRunStatusText(status) {
 }
 
 function getDefaultConfigJson(taskType) {
+    if (taskType === 'cpa_cleanup') {
+        return JSON.stringify({ "max_probe_count": 100, "max_cleanup_count": 10 }, null, 2);
+    }
     if (taskType === 'cpa_refill') {
         return JSON.stringify({ max_consecutive_failures: 10 }, null, 2);
     }

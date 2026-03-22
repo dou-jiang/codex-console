@@ -138,6 +138,81 @@ def test_probe_invalid_accounts_limit_caps_number_of_401_results(monkeypatch):
     assert post_calls == ["auth-1", "auth-2"]
 
 
+def test_probe_invalid_accounts_max_probe_count_limits_number_of_probe_attempts(monkeypatch):
+    payload = {
+        "files": [
+            {
+                "email": "first@example.com",
+                "name": "first@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-1",
+            },
+            {
+                "email": "second@example.com",
+                "name": "second@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-2",
+            },
+            {
+                "email": "third@example.com",
+                "name": "third@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-3",
+            },
+        ]
+    }
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "get", lambda url, **kwargs: FakeResponse(status_code=200, payload=payload))
+
+    post_calls = []
+
+    def _fake_post(url, **kwargs):
+        post_calls.append(kwargs["json"]["authIndex"])
+        return FakeResponse(status_code=200, payload={"status_code": 401 if kwargs["json"]["authIndex"] == "auth-3" else 200})
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "post", _fake_post)
+
+    assert cpa_client.probe_invalid_accounts(_service(), max_probe_count=2) == []
+    assert post_calls == ["auth-1", "auth-2"]
+
+
+def test_probe_invalid_accounts_reports_progress_for_fallback_probe(monkeypatch):
+    payload = {
+        "files": [
+            {
+                "email": "active@example.com",
+                "name": "active@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-active",
+            },
+            {
+                "email": "invalid@example.com",
+                "name": "invalid@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-invalid",
+            },
+        ]
+    }
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "get", lambda url, **kwargs: FakeResponse(status_code=200, payload=payload))
+
+    def _fake_post(url, **kwargs):
+        auth_index = kwargs["json"]["authIndex"]
+        status_code = 401 if auth_index == "auth-invalid" else 200
+        return FakeResponse(status_code=200, payload={"status_code": status_code})
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "post", _fake_post)
+
+    progress_messages = []
+
+    assert cpa_client.probe_invalid_accounts(_service(), progress_callback=progress_messages.append) == [
+        {"email": "invalid@example.com", "name": "invalid@example.com.json"}
+    ]
+    assert any("probe candidates loaded" in message for message in progress_messages)
+    assert any("scanned=1/2" in message for message in progress_messages)
+    assert any("scanned=2/2" in message for message in progress_messages)
+
+
 def test_probe_invalid_accounts_reads_chatgpt_account_id_from_nested_id_token(monkeypatch):
     payload = {
         "files": [

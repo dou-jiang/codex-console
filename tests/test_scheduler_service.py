@@ -72,6 +72,17 @@ def test_validate_refill_config_requires_failure_threshold():
         )
 
 
+def test_validate_cleanup_config_rejects_negative_max_probe_count():
+    with pytest.raises(ValueError, match="max_probe_count"):
+        validate_plan_payload(
+            task_type="cpa_cleanup",
+            trigger_type="interval",
+            config={"max_cleanup_count": 10, "max_probe_count": -1},
+            interval_value=1,
+            interval_unit="hours",
+        )
+
+
 def test_validate_trigger_payload_rejects_invalid_cron_expression():
     with pytest.raises(ValueError, match="cron_expression is invalid"):
         validate_trigger_payload(trigger_type="cron", cron_expression="not-a-cron")

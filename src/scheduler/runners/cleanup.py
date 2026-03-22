@@ -18,6 +18,15 @@ def _resolve_max_cleanup_count(config: dict[str, Any]) -> int:
     return max(0, parsed)
 
 
+def _resolve_max_probe_count(config: dict[str, Any]) -> int:
+    raw_value = config.get("max_probe_count", 0)
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, parsed)
+
+
 def run_cleanup_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "invalid_items_found": 0,
@@ -46,12 +55,23 @@ def run_cleanup_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
             }
             cpa_service_id = plan.cpa_service_id
             max_cleanup_count = _resolve_max_cleanup_count(plan.config or {})
+            max_probe_count = _resolve_max_probe_count(plan.config or {})
 
         append_run_log(run_id, f"cleanup runner start (plan_id={plan_id})")
+        append_run_log(
+            run_id,
+            (
+                "cleanup probe config "
+                f"(max_probe_count={max_probe_count or 'unlimited'}, "
+                f"max_cleanup_count={max_cleanup_count or 'unlimited'})"
+            ),
+        )
 
         invalid_items = probe_invalid_accounts(
             service=service_payload,
             limit=max_cleanup_count if max_cleanup_count > 0 else None,
+            max_probe_count=max_probe_count if max_probe_count > 0 else None,
+            progress_callback=lambda message: append_run_log(run_id, message),
         )
         summary["invalid_items_found"] = len(invalid_items)
 
