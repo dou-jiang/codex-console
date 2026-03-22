@@ -7,6 +7,13 @@ const scheduledTaskElements = {
     runLogModalBody: document.getElementById('run-log-modal-body'),
 };
 
+function escapeHtml(text) {
+    if (text === null || text === undefined) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+}
+
 function getTaskTypeText(type) {
     const taskTypeMap = {
         cpa_cleanup: 'CPA 清理',
@@ -81,6 +88,7 @@ function renderPlans(plans) {
 }
 
 let scheduledPlansCache = [];
+let currentRunList = [];
 
 async function loadPlans() {
     try {
@@ -155,7 +163,8 @@ async function runPlanNow(planId) {
 async function openRunLogs(planId) {
     try {
         const data = await api.get(`/scheduled-plans/${planId}/runs`);
-        renderRunLogModal(data.runs || []);
+        currentRunList = Array.isArray(data.runs) ? data.runs : [];
+        renderRunLogModal(currentRunList);
     } catch (error) {
         toast.error(`加载运行记录失败: ${error.message}`);
     }
@@ -212,7 +221,7 @@ async function viewRunLog(runId) {
         scheduledTaskElements.runLogModalBody.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <strong>运行日志 #${runId}</strong>
-                <button class="btn btn-secondary btn-sm" onclick="openRunLogs(${data.plan_id || 0})" style="display:none;">返回</button>
+                <button class="btn btn-secondary btn-sm" onclick="renderRunLogModal(currentRunList)">返回记录</button>
             </div>
             <pre style="white-space:pre-wrap;word-break:break-word;background:var(--surface-hover);padding:12px;border-radius:8px;max-height:420px;overflow:auto;">${escapeHtml(data.logs || '暂无日志')}</pre>
         `;
