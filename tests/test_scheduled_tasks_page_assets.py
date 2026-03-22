@@ -74,3 +74,15 @@ def test_scheduled_tasks_script_renders_plan_row_action_markers():
     assert 'data-action="toggle"' in script
     assert 'data-action="run-now"' in script
     assert 'data-plan-id="${plan.id}"' in script
+    assert 'data-should-enable="${shouldEnable}"' in script
+    assert 'onclick="handlePlanAction(this)"' in script
+
+
+def test_scheduled_tasks_script_routes_actions_through_busy_guard_handlers():
+    script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    assert "async function withButtonBusy(" in script
+    assert "async function handlePlanAction(button)" in script
+    assert "async function handleRunLogAction(button)" in script
+    assert "return withButtonBusy(button, async () => {" in script
+    assert "onclick=\"handleRunLogAction(this)\"" in script
+    assert "withButtonBusy(event.currentTarget, () => loadPlans())" in script
