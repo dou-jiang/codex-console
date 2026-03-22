@@ -55,3 +55,113 @@ def test_probe_invalid_accounts_returns_only_items_with_positive_invalid_markers
         {"email": "expired@example.com", "name": "expired@example.com.json"},
         {"email": "disabled@example.com", "name": "disabled@example.com.json"},
     ]
+
+
+def test_probe_invalid_accounts_falls_back_to_api_call_401_probe_when_filter_payload_has_no_invalid_markers(monkeypatch):
+    payload = {
+        "files": [
+            {
+                "email": "active@example.com",
+                "name": "active@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-active",
+                "account_id": "acct-active",
+            },
+            {
+                "email": "invalid@example.com",
+                "name": "invalid@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-invalid",
+                "account_id": "acct-invalid",
+            },
+        ]
+    }
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "get", lambda url, **kwargs: FakeResponse(status_code=200, payload=payload))
+
+    post_calls = []
+
+    def _fake_post(url, **kwargs):
+        post_calls.append({"url": url, "json": kwargs.get("json")})
+        auth_index = kwargs["json"]["authIndex"]
+        status_code = 401 if auth_index == "auth-invalid" else 200
+        return FakeResponse(status_code=200, payload={"status_code": status_code})
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "post", _fake_post)
+
+    assert cpa_client.probe_invalid_accounts(_service()) == [
+        {"email": "invalid@example.com", "name": "invalid@example.com.json"}
+    ]
+    assert len(post_calls) == 2
+    assert post_calls[0]["url"] == "https://cpa.example.com/v0/management/api-call"
+    assert post_calls[0]["json"]["header"]["Chatgpt-Account-Id"] == "acct-active"
+
+
+def test_probe_invalid_accounts_limit_caps_number_of_401_results(monkeypatch):
+    payload = {
+        "files": [
+            {
+                "email": "invalid1@example.com",
+                "name": "invalid1@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-1",
+            },
+            {
+                "email": "invalid2@example.com",
+                "name": "invalid2@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-2",
+            },
+            {
+                "email": "invalid3@example.com",
+                "name": "invalid3@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-3",
+            },
+        ]
+    }
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "get", lambda url, **kwargs: FakeResponse(status_code=200, payload=payload))
+
+    post_calls = []
+
+    def _fake_post(url, **kwargs):
+        post_calls.append(kwargs["json"]["authIndex"])
+        return FakeResponse(status_code=200, payload={"status_code": 401})
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "post", _fake_post)
+
+    assert cpa_client.probe_invalid_accounts(_service(), limit=2) == [
+        {"email": "invalid1@example.com", "name": "invalid1@example.com.json"},
+        {"email": "invalid2@example.com", "name": "invalid2@example.com.json"},
+    ]
+    assert post_calls == ["auth-1", "auth-2"]
+
+
+def test_probe_invalid_accounts_reads_chatgpt_account_id_from_nested_id_token(monkeypatch):
+    payload = {
+        "files": [
+            {
+                "email": "invalid@example.com",
+                "name": "invalid@example.com.json",
+                "type": "codex",
+                "auth_index": "auth-invalid",
+                "id_token": {"chatgpt_account_id": "acct-nested"},
+            },
+        ]
+    }
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "get", lambda url, **kwargs: FakeResponse(status_code=200, payload=payload))
+
+    captured = {}
+
+    def _fake_post(url, **kwargs):
+        captured["json"] = kwargs["json"]
+        return FakeResponse(status_code=200, payload={"status_code": 401})
+
+    monkeypatch.setattr(cpa_client.cffi_requests, "post", _fake_post)
+
+    assert cpa_client.probe_invalid_accounts(_service(), limit=1) == [
+        {"email": "invalid@example.com", "name": "invalid@example.com.json"},
+    ]
+    assert captured["json"]["header"]["Chatgpt-Account-Id"] == "acct-nested"

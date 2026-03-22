@@ -77,6 +77,13 @@ def _build_headers(service: Any) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _build_api_call_endpoint(service: Any) -> str:
+    endpoint = _build_endpoint(service)
+    if endpoint.lower().endswith("/auth-files"):
+        return f"{endpoint[:-len('/auth-files')]}/api-call"
+    return f"{endpoint}/api-call"
+
+
 def _extract_items(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
@@ -169,6 +176,109 @@ def _has_any_validity_marker(item: dict[str, Any]) -> bool:
     return any(key in item for key in _VALIDITY_MARKER_KEYS)
 
 
+def _normalize_invalid_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    email = str(item.get("email") or "").strip()
+    name = str(item.get("name") or item.get("filename") or item.get("id") or "").strip()
+
+    if not email and name.endswith(".json"):
+        email = name[:-5]
+    if not name and email:
+        name = f"{email}.json"
+
+    if not email:
+        return None
+
+    return {"email": email, "name": name}
+
+
+def _extract_chatgpt_account_id(item: dict[str, Any]) -> str | None:
+    for key in ("chatgpt_account_id", "chatgptAccountId", "account_id", "accountId"):
+        value = item.get(key)
+        if value:
+            return str(value).strip()
+
+    id_token = item.get("id_token")
+    if isinstance(id_token, dict):
+        for key in ("chatgpt_account_id", "chatgptAccountId", "account_id", "accountId"):
+            value = id_token.get(key)
+            if value:
+                return str(value).strip()
+
+    return None
+
+
+def _is_probe_candidate(item: dict[str, Any]) -> bool:
+    item_type = _normalize_text(item.get("type") or item.get("provider"))
+    return item_type in {"", "codex"}
+
+
+def _build_probe_payload(item: dict[str, Any]) -> dict[str, Any] | None:
+    auth_index = str(item.get("auth_index") or "").strip()
+    if not auth_index:
+        return None
+
+    headers = {
+        "Authorization": "Bearer $TOKEN$",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0",
+    }
+
+    chatgpt_account_id = _extract_chatgpt_account_id(item)
+    if chatgpt_account_id:
+        headers["Chatgpt-Account-Id"] = chatgpt_account_id
+
+    return {
+        "authIndex": auth_index,
+        "method": "GET",
+        "url": "https://chatgpt.com/backend-api/wham/usage",
+        "header": headers,
+    }
+
+
+def _probe_invalid_accounts_via_api_call(
+    service: Any,
+    items: list[dict[str, Any]],
+    *,
+    limit: int | None = None,
+    timeout: int = 20,
+) -> list[dict[str, Any]]:
+    api_call_endpoint = _build_api_call_endpoint(service)
+    headers = {**_build_headers(service), "Content-Type": "application/json"}
+    normalized: list[dict[str, Any]] = []
+
+    for item in items:
+        if not _is_probe_candidate(item):
+            continue
+
+        payload = _build_probe_payload(item)
+        if payload is None:
+            continue
+
+        response = cffi_requests.post(
+            api_call_endpoint,
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+            proxies=None,
+            impersonate="chrome110",
+        )
+        _raise_for_http_error(response, "probe api-call")
+
+        data = _safe_json(response)
+        if not isinstance(data, dict) or data.get("status_code") != 401:
+            continue
+
+        normalized_item = _normalize_invalid_item(item)
+        if normalized_item is None:
+            continue
+
+        normalized.append(normalized_item)
+        if isinstance(limit, int) and limit > 0 and len(normalized) >= limit:
+            break
+
+    return normalized
+
+
 def count_valid_accounts(service, *, timeout: int = 20) -> int:
     endpoint = _build_endpoint(service)
     response = cffi_requests.get(
@@ -230,22 +340,23 @@ def probe_invalid_accounts(service, *, limit: int | None = None, timeout: int = 
         if not _has_positive_invalid_evidence(item):
             continue
 
-        email = str(item.get("email") or "").strip()
-        name = str(item.get("name") or item.get("filename") or "").strip()
-
-        if not email and name.endswith(".json"):
-            email = name[:-5]
-        if not name and email:
-            name = f"{email}.json"
-
-        if not email:
+        normalized_item = _normalize_invalid_item(item)
+        if normalized_item is None:
             continue
 
-        normalized.append({"email": email, "name": name})
+        normalized.append(normalized_item)
 
     if isinstance(limit, int) and limit > 0:
-        return normalized[:limit]
-    return normalized
+        normalized = normalized[:limit]
+    if normalized:
+        return normalized
+
+    return _probe_invalid_accounts_via_api_call(
+        service,
+        items,
+        limit=limit,
+        timeout=timeout,
+    )
 
 
 def _extract_delete_counts(payload: Any, total: int) -> dict[str, int]:
