@@ -127,6 +127,36 @@ def update_account(
     return db_account
 
 
+def mark_account_expired_by_email_and_cpa(
+    db: Session,
+    *,
+    email: str,
+    cpa_service_id: int,
+    reason: str,
+) -> int:
+    """按邮箱 + 主 CPA 服务标记账号为失效。"""
+    if not email:
+        return 0
+
+    now = datetime.utcnow()
+    updated = (
+        db.query(Account)
+        .filter(Account.email == email)
+        .filter(Account.primary_cpa_service_id == cpa_service_id)
+        .update(
+            {
+                Account.status: "expired",
+                Account.invalidated_at: now,
+                Account.invalid_reason: reason,
+                Account.updated_at: now,
+            },
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    return int(updated)
+
+
 def delete_account(db: Session, account_id: int) -> bool:
     """删除账户"""
     db_account = get_account_by_id(db, account_id)
