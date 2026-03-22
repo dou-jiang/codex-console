@@ -162,10 +162,23 @@ git commit -m "feat: add registration batch metrics helpers"
 
 ```python
 from src.database import crud
+from src.database import session as session_module
 
 
 def test_postgresql_migrate_tables_adds_registration_task_email_column(monkeypatch):
-    ...
+    connection = _FakeConnection()
+    manager = _build_manager(connection)
+
+    class _FakeInspector:
+        def get_columns(self, table_name: str):
+            if table_name == "registration_tasks":
+                return [{"name": "id"}, {"name": "task_uuid"}]
+            return [{"name": "id"}]
+
+    monkeypatch.setattr(session_module.Base.metadata, "create_all", lambda bind: None)
+    monkeypatch.setattr(session_module, "inspect", lambda conn: _FakeInspector())
+
+    manager.migrate_tables()
     assert any(
         'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "email_address" VARCHAR(255)' in stmt
         for stmt in connection.statements
@@ -202,23 +215,44 @@ Expected: FAIL because the model/migration/helper signatures do not expose `emai
 
 ```python
 class RegistrationTask(Base):
-    ...
+    __tablename__ = "registration_tasks"
     email_address = Column(String(255), index=True)
 
 
 SQLITE_MIGRATIONS = [
-    ...,
+    ("accounts", "cpa_uploaded", "BOOLEAN DEFAULT 0"),
+    ("accounts", "cpa_uploaded_at", "DATETIME"),
+    ("accounts", "source", "VARCHAR(20) DEFAULT 'register'"),
+    ("accounts", "subscription_type", "VARCHAR(20)"),
+    ("accounts", "subscription_at", "DATETIME"),
+    ("accounts", "cookies", "TEXT"),
+    ("proxies", "is_default", "BOOLEAN DEFAULT 0"),
+    ("proxies", "country", "VARCHAR(100)"),
+    ("proxies", "city", "VARCHAR(100)"),
     ("registration_tasks", "email_address", "VARCHAR(255)"),
 ]
 
 POSTGRESQL_MIGRATIONS = [
-    ...,
+    ("proxies", "country", "VARCHAR(100)"),
+    ("proxies", "city", "VARCHAR(100)"),
     ("registration_tasks", "email_address", "VARCHAR(255)"),
 ]
 
 
-def create_registration_task(..., email_address: Optional[str] = None, ...):
-    db_task = RegistrationTask(..., email_address=email_address)
+def create_registration_task(
+    db: Session,
+    task_uuid: str,
+    email_service_id: Optional[int] = None,
+    proxy: Optional[str] = None,
+    email_address: Optional[str] = None,
+) -> RegistrationTask:
+    db_task = RegistrationTask(
+        task_uuid=task_uuid,
+        email_service_id=email_service_id,
+        proxy=proxy,
+        email_address=email_address,
+        status="pending",
+    )
 ```
 
 Implementation notes:
@@ -352,8 +386,15 @@ def _init_batch_state(batch_id: str, task_uuids: list[str], *, is_unlimited: boo
         domain_stats=[],
     )
     batch_tasks[batch_id] = {
-        ...,
         "total": computed_total,
+        "completed": 0,
+        "success": 0,
+        "failed": 0,
+        "cancelled": False,
+        "task_uuids": list(task_uuids),
+        "current_index": 0,
+        "logs": [],
+        "finished": False,
         "is_unlimited": is_unlimited,
         "consecutive_failures": 0,
         "max_consecutive_failures": 10,
@@ -435,7 +476,7 @@ def test_run_sync_registration_task_persists_email_address_even_on_failure(route
 def test_run_batch_registration_attaches_sorted_domain_stats(route_db, fake_task_manager, monkeypatch):
     task_ids = []
     for name in ["a", "b", "c"]:
-        task = crud.create_registration_task(route_db, task_uuid=f"task-{{name}}")
+        task = crud.create_registration_task(route_db, task_uuid=f"task-{name}")
         task_ids.append(task.task_uuid)
 
     outcomes = iter([
@@ -478,7 +519,7 @@ def test_run_batch_registration_attaches_sorted_domain_stats(route_db, fake_task
 
 
 def test_run_unlimited_batch_registration_stops_after_eleven_consecutive_failures(route_db, fake_task_manager, monkeypatch):
-    outcomes = iter([("failed", f"user{{i}}@bad.com") for i in range(11)] + [("completed", "late@good.com")])
+    outcomes = iter([("failed", f"user{i}@bad.com") for i in range(11)] + [("completed", "late@good.com")])
 
     async def fake_run_registration_task(task_uuid, *args, **kwargs):
         status, email = next(outcomes)
@@ -545,12 +586,60 @@ if getattr(result, "email", ""):
     crud.update_registration_task(db, task_uuid, email_address=result.email)
 
 
-async def run_unlimited_batch_registration(...):
+async def run_unlimited_batch_registration(
+    batch_id: str,
+    email_service_type: str,
+    proxy: Optional[str],
+    email_service_config: Optional[dict],
+    email_service_id: Optional[int],
+    interval_min: int,
+    interval_max: int,
+    concurrency: int,
+    mode: str,
+):
     _init_batch_state(batch_id, [], is_unlimited=True, total=0)
-    # loop: create one DB task UUID at a time, run up to `concurrency`,
-    # call apply_task_outcome() when each task finishes,
-    # stop dispatch when cancelled or consecutive_failures > max_consecutive_failures,
-    # wait for in-flight tasks, then finalize domain stats + finished status.
+    semaphore = asyncio.Semaphore(concurrency)
+    counter_lock = asyncio.Lock()
+    running: set[asyncio.Task] = set()
+    task_uuids: list[str] = []
+
+    async def _spawn_one(index: int):
+        task_uuid = str(uuid.uuid4())
+        task_uuids.append(task_uuid)
+        with get_db() as db:
+            crud.create_registration_task(db, task_uuid=task_uuid, proxy=proxy)
+
+        async with semaphore:
+            await run_registration_task(
+                task_uuid,
+                email_service_type,
+                proxy,
+                email_service_config,
+                email_service_id,
+                log_prefix=f"[任务{index}]",
+                batch_id=batch_id,
+            )
+
+        with get_db() as db:
+            task = crud.get_registration_task(db, task_uuid)
+
+        async with counter_lock:
+            apply_task_outcome(batch_tasks[batch_id], task.status)
+            if batch_tasks[batch_id]["consecutive_failures"] > batch_tasks[batch_id]["max_consecutive_failures"]:
+                batch_tasks[batch_id]["stop_reason"] = "too_many_consecutive_failures"
+                task_manager.update_batch_status(batch_id, stop_reason="too_many_consecutive_failures")
+
+    while not task_manager.is_batch_cancelled(batch_id) and batch_tasks[batch_id]["stop_reason"] is None:
+        running.add(asyncio.create_task(_spawn_one(len(task_uuids) + 1)))
+        if mode == "pipeline":
+            await asyncio.sleep(random.randint(interval_min, interval_max))
+        if len(running) >= concurrency:
+            done, running = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+
+    if running:
+        await asyncio.gather(*running)
+
+    _finalize_batch_domain_stats(batch_id, task_uuids)
 ```
 
 Implementation notes:
@@ -642,7 +731,12 @@ async function handleBatchRegistration(requestData) {
     : Math.min(500, Math.max(1, parseInt(elements.batchCount.value, 10) || 5));
 
   requestData.count = count;
-  ...
+  requestData.interval_min = parseInt(elements.intervalMin.value, 10) || 5;
+  requestData.interval_max = parseInt(elements.intervalMax.value, 10) || 30;
+  requestData.concurrency = Math.min(50, Math.max(1, parseInt(elements.concurrencyCount.value, 10) || 3));
+  requestData.mode = elements.concurrencyMode.value || 'pipeline';
+
+  const data = await api.post('/registration/batch', requestData);
   sessionStorage.setItem('activeTask', JSON.stringify({
     batch_id: data.batch_id,
     mode: isUnlimitedRegistrationMode() ? 'unlimited' : 'batch',
@@ -660,7 +754,15 @@ function updateBatchProgress(data) {
     renderBatchDomainStats(data.domain_stats || []);
     return;
   }
-  ...existing fixed-batch path...
+  elements.progressBar.classList.remove('indeterminate');
+  const progress = ((data.completed / data.total) * 100).toFixed(0);
+  elements.batchProgressText.textContent = `${data.completed}/${data.total}`;
+  elements.batchProgressPercent.textContent = `${progress}%`;
+  elements.progressBar.style.width = `${progress}%`;
+  elements.batchSuccess.textContent = data.success;
+  elements.batchFailed.textContent = data.failed;
+  elements.batchRemaining.textContent = data.total - data.completed;
+  renderBatchDomainStats(data.finished ? (data.domain_stats || []) : []);
 }
 ```
 
