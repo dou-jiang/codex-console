@@ -8,6 +8,7 @@ from src.core.proxy_import import (
     allocate_proxy_names,
     canonicalize_proxy_host,
     parse_proxy_line,
+    proxy_identity_key,
     proxy_host_port_key,
 )
 
@@ -60,6 +61,12 @@ def test_canonicalize_proxy_host_lowercases_domains_but_not_ipv4():
 
 def test_proxy_host_port_key_is_case_insensitive_for_domains():
     assert proxy_host_port_key("Example.COM", 8080) == proxy_host_port_key("example.com", 8080)
+
+
+def test_proxy_identity_key_distinguishes_different_credentials_on_same_host_port():
+    assert proxy_identity_key("socks5", "change4.owlproxy.com", 7778, "user-a", "same-pass") != proxy_identity_key(
+        "socks5", "change4.owlproxy.com", 7778, "user-b", "same-pass"
+    )
 
 
 def test_lookup_locations_falls_back_and_caches():
