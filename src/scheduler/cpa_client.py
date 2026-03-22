@@ -4,7 +4,55 @@ from typing import Any
 
 from curl_cffi import requests as cffi_requests
 
-from ..core.upload.cpa_upload import _normalize_cpa_auth_files_url
+
+_INVALID_TEXT_HINTS = (
+    "invalid",
+    "expired",
+    "401",
+    "unauthorized",
+    "disabled",
+    "unusable",
+)
+
+_VALIDITY_MARKER_KEYS = {
+    "invalid",
+    "is_valid",
+    "valid",
+    "expired",
+    "disabled",
+    "usable",
+    "status",
+    "state",
+    "account_status",
+    "result",
+    "http_status",
+    "status_code",
+    "code",
+    "error_code",
+    "reason",
+    "error",
+    "message",
+    "detail",
+}
+
+
+def _normalize_auth_files_url(api_url: str) -> str:
+    normalized = (api_url or "").strip().rstrip("/")
+    lower_url = normalized.lower()
+
+    if not normalized:
+        return ""
+
+    if lower_url.endswith("/auth-files"):
+        return normalized
+
+    if lower_url.endswith("/v0/management") or lower_url.endswith("/management"):
+        return f"{normalized}/auth-files"
+
+    if lower_url.endswith("/v0"):
+        return f"{normalized}/management/auth-files"
+
+    return f"{normalized}/v0/management/auth-files"
 
 
 def _service_value(service: Any, key: str) -> str:
@@ -16,7 +64,7 @@ def _service_value(service: Any, key: str) -> str:
 
 
 def _build_endpoint(service: Any) -> str:
-    endpoint = _normalize_cpa_auth_files_url(_service_value(service, "api_url"))
+    endpoint = _normalize_auth_files_url(_service_value(service, "api_url"))
     if not endpoint:
         raise ValueError("cpa service api_url is required")
     return endpoint
@@ -55,17 +103,70 @@ def _raise_for_http_error(response: Any, action: str) -> None:
     raise RuntimeError(f"CPA {action} failed: HTTP {response.status_code}")
 
 
-def _is_invalid_item(item: dict[str, Any]) -> bool:
-    if "invalid" in item:
-        return bool(item.get("invalid"))
-    if "is_valid" in item:
-        return not bool(item.get("is_valid"))
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip().lower()
 
-    status = str(item.get("status") or "").lower()
-    if status:
-        return status in {"invalid", "expired", "disabled", "dead"}
 
-    return True
+def _as_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+
+    return None
+
+
+def _contains_invalid_text_hint(value: Any) -> bool:
+    text = _normalize_text(value)
+    if not text:
+        return False
+    return any(hint in text for hint in _INVALID_TEXT_HINTS)
+
+
+def _has_positive_invalid_evidence(item: dict[str, Any]) -> bool:
+    for key in ("invalid", "expired", "disabled"):
+        if key in item:
+            parsed = _as_bool(item.get(key))
+            if parsed is True:
+                return True
+
+    for key in ("is_valid", "valid", "usable"):
+        if key in item:
+            parsed = _as_bool(item.get(key))
+            if parsed is False:
+                return True
+
+    for key in ("status", "state", "account_status", "result"):
+        if key in item and _contains_invalid_text_hint(item.get(key)):
+            return True
+
+    for key in ("http_status", "status_code", "code", "error_code"):
+        if key not in item:
+            continue
+
+        raw_value = item.get(key)
+        if isinstance(raw_value, (int, float)) and int(raw_value) == 401:
+            return True
+        if _contains_invalid_text_hint(raw_value):
+            return True
+
+    for key in ("reason", "error", "message", "detail"):
+        if key in item and _contains_invalid_text_hint(item.get(key)):
+            return True
+
+    return False
+
+
+def _has_any_validity_marker(item: dict[str, Any]) -> bool:
+    return any(key in item for key in _VALIDITY_MARKER_KEYS)
 
 
 def count_valid_accounts(service, *, timeout: int = 20) -> int:
@@ -90,9 +191,9 @@ def count_valid_accounts(service, *, timeout: int = 20) -> int:
     if not items:
         return 0
 
-    explicit_validity = any(("invalid" in item) or ("is_valid" in item) or ("status" in item) for item in items)
-    if explicit_validity:
-        return sum(1 for item in items if not _is_invalid_item(item))
+    if any(_has_any_validity_marker(item) for item in items):
+        return sum(1 for item in items if not _has_positive_invalid_evidence(item))
+
     return len(items)
 
 
@@ -126,7 +227,7 @@ def probe_invalid_accounts(service, *, limit: int | None = None, timeout: int = 
 
     normalized: list[dict[str, Any]] = []
     for item in items:
-        if any(k in item for k in ("invalid", "is_valid", "status")) and not _is_invalid_item(item):
+        if not _has_positive_invalid_evidence(item):
             continue
 
         email = str(item.get("email") or "").strip()
