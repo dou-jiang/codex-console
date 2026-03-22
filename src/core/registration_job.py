@@ -191,6 +191,9 @@ def run_registration_job(
     task_uuid: str | None = None,
 ) -> RegistrationJobResult:
     """执行单账号注册并落库，返回统一结果供路由和定时任务复用。"""
+    known_email: str | None = None
+    known_service_id: int | None = email_service_id
+    known_result_payload: dict[str, Any] | None = None
     try:
         service_type, config, resolved_service_id = _resolve_email_service(
             db=db,
@@ -199,6 +202,7 @@ def run_registration_job(
             proxy=proxy,
             email_service_config=email_service_config,
         )
+        known_service_id = resolved_service_id if resolved_service_id is not None else known_service_id
 
         email_service = EmailServiceFactory.create(service_type, config)
         engine = RegistrationEngine(
@@ -209,6 +213,8 @@ def run_registration_job(
         )
         result = engine.run()
         result_payload = result.to_dict()
+        known_email = result.email or known_email
+        known_result_payload = result_payload
 
         if not result.success:
             return RegistrationJobResult(
@@ -251,4 +257,10 @@ def run_registration_job(
         )
     except Exception as exc:
         logger.error("run_registration_job failed: %s", exc)
-        return RegistrationJobResult(success=False, error_message=str(exc) or "注册异常")
+        return RegistrationJobResult(
+            success=False,
+            email=known_email,
+            email_service_id=known_service_id,
+            error_message=str(exc) or "注册异常",
+            result_payload=known_result_payload,
+        )

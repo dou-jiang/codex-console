@@ -185,7 +185,21 @@ def run_refill_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                 f"auto_disabled={summary['auto_disabled']})"
             ),
         )
-        finalize_run(run_id, status="success", summary=summary)
+        target_met = summary["uploaded_success"] >= refill_target
+        run_status = "success" if target_met else "failed"
+        run_error_message = None
+        if run_status == "failed":
+            if summary["auto_disabled"]:
+                run_error_message = "refill plan auto-disabled before target reached"
+            else:
+                run_error_message = "refill target not reached"
+
+        finalize_run(
+            run_id,
+            status=run_status,
+            summary=summary,
+            error_message=run_error_message,
+        )
         return summary
 
     except Exception as exc:
