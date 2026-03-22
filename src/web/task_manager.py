@@ -211,7 +211,17 @@ class TaskManager:
 
     # ============== 批量任务管理 ==============
 
-    def init_batch(self, batch_id: str, total: int, **extra):
+    def init_batch(
+        self,
+        batch_id: str,
+        total: int,
+        *,
+        is_unlimited: bool = False,
+        consecutive_failures: int = 0,
+        max_consecutive_failures: int = 10,
+        stop_reason: Optional[str] = None,
+        domain_stats: Optional[List[dict]] = None,
+    ):
         """初始化批量任务"""
         _batch_status[batch_id] = {
             "status": "running",
@@ -222,7 +232,11 @@ class TaskManager:
             "skipped": 0,
             "current_index": 0,
             "finished": False,
-            **extra,
+            "is_unlimited": is_unlimited,
+            "consecutive_failures": consecutive_failures,
+            "max_consecutive_failures": max_consecutive_failures,
+            "stop_reason": stop_reason,
+            "domain_stats": [] if domain_stats is None else list(domain_stats),
         }
         logger.info(f"批量任务 {batch_id} 已初始化，总数: {total}")
 
