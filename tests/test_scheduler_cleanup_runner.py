@@ -27,13 +27,16 @@ def temp_db(tmp_path, monkeypatch):
         session.close()
 
 
-def _create_cleanup_plan_and_run(temp_db, *, max_cleanup_count: int = 10):
+def _create_cleanup_plan_and_run(temp_db, *, max_cleanup_count: int = 10, max_probe_count: int | None = None):
     service = crud.create_cpa_service(
         temp_db,
         name="cleanup-cpa",
         api_url="https://example.test/v0/management",
         api_token="token",
     )
+    config = {"max_cleanup_count": max_cleanup_count}
+    if max_probe_count is not None:
+        config["max_probe_count"] = max_probe_count
     plan = crud.create_scheduled_plan(
         temp_db,
         name="cleanup",
@@ -42,7 +45,7 @@ def _create_cleanup_plan_and_run(temp_db, *, max_cleanup_count: int = 10):
         trigger_type="interval",
         interval_value=1,
         interval_unit="hours",
-        config={"max_cleanup_count": max_cleanup_count},
+        config=config,
     )
     run = crud.create_scheduled_run(temp_db, plan_id=plan.id, trigger_source="manual")
     return service, plan, run
@@ -149,6 +152,44 @@ def test_cleanup_runner_persists_success_summary_logs_and_final_status(temp_db, 
     assert persisted_run.summary == summary
     assert "cleanup runner start" in (persisted_run.logs or "")
     assert "cleanup runner complete" in (persisted_run.logs or "")
+
+
+def test_cleanup_runner_passes_max_probe_count_to_probe_invalid_accounts(temp_db, monkeypatch):
+    _, plan, run = _create_cleanup_plan_and_run(temp_db, max_probe_count=25)
+
+    captured: dict[str, Any] = {}
+
+    def _fake_probe_invalid_accounts(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cleanup_runner, "probe_invalid_accounts", _fake_probe_invalid_accounts)
+    monkeypatch.setattr(cleanup_runner, "delete_invalid_accounts", lambda **_: {"deleted": 0, "failed": 0})
+
+    run_cleanup_plan(plan_id=plan.id, run_id=run.id)
+
+    assert captured["max_probe_count"] == 25
+    assert callable(captured["progress_callback"])
+
+
+def test_cleanup_runner_persists_probe_progress_logs(temp_db, monkeypatch):
+    _, plan, run = _create_cleanup_plan_and_run(temp_db, max_probe_count=20)
+
+    def _fake_probe_invalid_accounts(**kwargs):
+        kwargs["progress_callback"]("probe candidates loaded (total=200, selected=20)")
+        kwargs["progress_callback"]("probe progress (scanned=20/20, invalid=0)")
+        return []
+
+    monkeypatch.setattr(cleanup_runner, "probe_invalid_accounts", _fake_probe_invalid_accounts)
+    monkeypatch.setattr(cleanup_runner, "delete_invalid_accounts", lambda **_: {"deleted": 0, "failed": 0})
+
+    run_cleanup_plan(plan_id=plan.id, run_id=run.id)
+
+    temp_db.expire_all()
+    persisted_run = temp_db.get(ScheduledRun, run.id)
+    assert persisted_run is not None
+    assert "probe candidates loaded (total=200, selected=20)" in (persisted_run.logs or "")
+    assert "probe progress (scanned=20/20, invalid=0)" in (persisted_run.logs or "")
 
 
 def test_cleanup_runner_persists_failure_status_when_probe_raises(temp_db, monkeypatch):

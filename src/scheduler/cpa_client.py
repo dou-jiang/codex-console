@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from curl_cffi import requests as cffi_requests
@@ -35,6 +35,9 @@ _VALIDITY_MARKER_KEYS = {
     "message",
     "detail",
 }
+
+ProbeProgressCallback = Callable[[str], None]
+_PROBE_PROGRESS_EVERY = 50
 
 
 def _normalize_auth_files_url(api_url: str) -> str:
@@ -109,6 +112,18 @@ def _raise_for_http_error(response: Any, action: str) -> None:
     if 200 <= response.status_code < 300:
         return
     raise RuntimeError(f"CPA {action} failed: HTTP {response.status_code}")
+
+
+def _normalize_positive_limit(value: Any) -> int | None:
+    if not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _emit_probe_progress(progress_callback: ProbeProgressCallback | None, message: str) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(message)
 
 
 def _normalize_text(value: Any) -> str:
@@ -241,11 +256,13 @@ def _probe_invalid_accounts_via_api_call(
     items: list[dict[str, Any]],
     *,
     limit: int | None = None,
+    progress_callback: ProbeProgressCallback | None = None,
     timeout: int = 20,
 ) -> list[dict[str, Any]]:
     api_call_endpoint = _build_api_call_endpoint(service)
     headers = {**_build_headers(service), "Content-Type": "application/json"}
     normalized: list[dict[str, Any]] = []
+    prepared_items: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
     for item in items:
         if not _is_probe_candidate(item):
@@ -254,7 +271,10 @@ def _probe_invalid_accounts_via_api_call(
         payload = _build_probe_payload(item)
         if payload is None:
             continue
+        prepared_items.append((item, payload))
 
+    total_candidates = len(prepared_items)
+    for scanned, (item, payload) in enumerate(prepared_items, start=1):
         response = cffi_requests.post(
             api_call_endpoint,
             json=payload,
@@ -266,14 +286,17 @@ def _probe_invalid_accounts_via_api_call(
         _raise_for_http_error(response, "probe api-call")
 
         data = _safe_json(response)
-        if not isinstance(data, dict) or data.get("status_code") != 401:
-            continue
+        if isinstance(data, dict) and data.get("status_code") == 401:
+            normalized_item = _normalize_invalid_item(item)
+            if normalized_item is not None:
+                normalized.append(normalized_item)
 
-        normalized_item = _normalize_invalid_item(item)
-        if normalized_item is None:
-            continue
+        if scanned == 1 or scanned == total_candidates or scanned % _PROBE_PROGRESS_EVERY == 0:
+            _emit_probe_progress(
+                progress_callback,
+                f"probe progress (scanned={scanned}/{total_candidates}, invalid={len(normalized)})",
+            )
 
-        normalized.append(normalized_item)
         if isinstance(limit, int) and limit > 0 and len(normalized) >= limit:
             break
 
@@ -308,11 +331,21 @@ def count_valid_accounts(service, *, timeout: int = 20) -> int:
     return len(items)
 
 
-def probe_invalid_accounts(service, *, limit: int | None = None, timeout: int = 20) -> list[dict[str, Any]]:
+def probe_invalid_accounts(
+    service,
+    *,
+    limit: int | None = None,
+    max_probe_count: int | None = None,
+    progress_callback: ProbeProgressCallback | None = None,
+    timeout: int = 20,
+) -> list[dict[str, Any]]:
     endpoint = _build_endpoint(service)
     params: dict[str, Any] = {"invalid": "1"}
-    if isinstance(limit, int) and limit > 0:
-        params["limit"] = limit
+    result_limit = _normalize_positive_limit(limit)
+    probe_limit = _normalize_positive_limit(max_probe_count)
+    request_limit = probe_limit or result_limit
+    if request_limit is not None:
+        params["limit"] = request_limit
 
     response = cffi_requests.get(
         endpoint,
@@ -335,6 +368,14 @@ def probe_invalid_accounts(service, *, limit: int | None = None, timeout: int = 
     _raise_for_http_error(response, "probe")
     payload = _safe_json(response)
     items = _extract_items(payload)
+    total_items = len(items)
+    if probe_limit is not None:
+        items = items[:probe_limit]
+
+    _emit_probe_progress(
+        progress_callback,
+        f"probe candidates loaded (total={total_items}, selected={len(items)})",
+    )
 
     normalized: list[dict[str, Any]] = []
     for item in items:
@@ -347,15 +388,16 @@ def probe_invalid_accounts(service, *, limit: int | None = None, timeout: int = 
 
         normalized.append(normalized_item)
 
-    if isinstance(limit, int) and limit > 0:
-        normalized = normalized[:limit]
+    if result_limit is not None:
+        normalized = normalized[:result_limit]
     if normalized:
         return normalized
 
     return _probe_invalid_accounts_via_api_call(
         service,
         items,
-        limit=limit,
+        limit=result_limit,
+        progress_callback=progress_callback,
         timeout=timeout,
     )
 

@@ -9,6 +9,20 @@ SUPPORTED_TRIGGER_TYPES = {"cron", "interval"}
 SUPPORTED_INTERVAL_UNITS = {"minutes", "hours"}
 
 
+def _validate_optional_non_negative_int(config: dict[str, Any], key: str) -> None:
+    if key not in config:
+        return
+
+    raw_value = config.get(key)
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be a non-negative integer") from exc
+
+    if parsed < 0:
+        raise ValueError(f"{key} must be a non-negative integer")
+
+
 def validate_trigger_payload(
     trigger_type: str,
     *,
@@ -52,6 +66,10 @@ def validate_plan_payload(
         interval_value=interval_value,
         interval_unit=interval_unit,
     )
+
+    if task_type == "cpa_cleanup":
+        _validate_optional_non_negative_int(config, "max_cleanup_count")
+        _validate_optional_non_negative_int(config, "max_probe_count")
 
     if task_type == "cpa_refill" and not config.get("max_consecutive_failures"):
         raise ValueError("max_consecutive_failures is required")
