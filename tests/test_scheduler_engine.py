@@ -1,6 +1,14 @@
-from dataclasses import dataclass
 import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from threading import Event
 
+import pytest
+
+from src.database import crud
+from src.database import session as session_module
+from src.database.models import Base, ScheduledRun
+from src.database.session import DatabaseSessionManager
 from src.scheduler.engine import SchedulerEngine
 from src.web.app import create_app
 
@@ -9,6 +17,7 @@ from src.web.app import create_app
 class FakePlan:
     id: int
     cpa_service_id: int = 1
+    task_type: str = "cpa_cleanup"
 
 
 class FakeRepo:
@@ -23,6 +32,43 @@ class FakeRepo:
 
     def create_skipped_run(self, plan_id, trigger_source, reason):
         self.created_runs.append((plan_id, trigger_source, "skipped", reason))
+
+
+@pytest.fixture
+def temp_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "scheduler-engine.db"
+    manager = DatabaseSessionManager(f"sqlite:///{db_path}")
+    Base.metadata.create_all(bind=manager.engine)
+    manager.migrate_tables()
+    monkeypatch.setattr(session_module, "_db_manager", manager)
+
+    session = manager.SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def _create_plan(temp_db, *, task_type: str = "cpa_cleanup", due: bool = True):
+    service = crud.create_cpa_service(
+        temp_db,
+        name=f"svc-{task_type}",
+        api_url="https://cpa.example.com/api",
+        api_token="token",
+    )
+    next_run_at = datetime.utcnow() - timedelta(minutes=5) if due else datetime.utcnow() + timedelta(hours=1)
+    return crud.create_scheduled_plan(
+        temp_db,
+        name=f"plan-{task_type}",
+        task_type=task_type,
+        cpa_service_id=service.id,
+        trigger_type="interval",
+        interval_value=1,
+        interval_unit="hours",
+        config={"max_consecutive_failures": 3},
+        enabled=True,
+        next_run_at=next_run_at,
+    )
 
 
 def test_scheduler_engine_skips_plan_when_same_plan_is_running(monkeypatch):
@@ -49,6 +95,100 @@ def test_scheduler_engine_skips_plan_when_same_cpa_is_locked():
     engine.dispatch_due_plans_once()
 
     assert repo.created_runs == [(2, "scheduled", "skipped", "cpa already busy")]
+
+
+def test_scheduler_engine_dispatches_due_plan_to_matching_runner_and_records_run(temp_db):
+    plan = _create_plan(temp_db, task_type="cpa_cleanup", due=True)
+    calls = []
+
+    def _cleanup_runner(*, plan_id: int, run_id: int):
+        calls.append((plan_id, run_id))
+        with session_module.get_db() as db:
+            crud.finish_scheduled_run(db, run_id=run_id, status="success", summary={"dispatched": True})
+
+    engine = SchedulerEngine(
+        runner_map={"cpa_cleanup": _cleanup_runner},
+        worker_spawner=lambda fn, _name: fn(),
+    )
+
+    engine.dispatch_due_plans_once()
+
+    assert calls
+    assert calls[0][0] == plan.id
+
+    temp_db.expire_all()
+    runs = temp_db.query(ScheduledRun).filter(ScheduledRun.plan_id == plan.id).all()
+    assert len(runs) == 1
+    assert runs[0].trigger_source == "scheduled"
+    assert runs[0].status == "success"
+    assert runs[0].summary == {"dispatched": True}
+
+    persisted_plan = crud.get_scheduled_plan_by_id(temp_db, plan.id)
+    assert persisted_plan is not None
+    assert persisted_plan.last_run_status == "success"
+    assert persisted_plan.last_run_started_at is not None
+    assert persisted_plan.last_run_finished_at is not None
+    assert persisted_plan.next_run_at is not None
+    assert persisted_plan.next_run_at > datetime.utcnow() - timedelta(minutes=1)
+
+
+def test_scheduler_engine_manual_trigger_creates_run_and_dispatches_runner(temp_db):
+    plan = _create_plan(temp_db, task_type="account_refresh", due=False)
+    calls = []
+
+    def _refresh_runner(*, plan_id: int, run_id: int):
+        calls.append((plan_id, run_id))
+        with session_module.get_db() as db:
+            crud.finish_scheduled_run(db, run_id=run_id, status="success", summary={"manual": True})
+
+    engine = SchedulerEngine(
+        runner_map={"account_refresh": _refresh_runner},
+        worker_spawner=lambda fn, _name: fn(),
+    )
+
+    run_id = engine.trigger_plan_now(plan.id)
+
+    assert isinstance(run_id, int)
+    assert calls == [(plan.id, run_id)]
+
+    temp_db.expire_all()
+    run = temp_db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+    assert run is not None
+    assert run.trigger_source == "manual"
+    assert run.status == "success"
+    assert run.summary == {"manual": True}
+
+
+def test_scheduler_engine_manual_trigger_rejects_running_plan(temp_db):
+    plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
+    engine = SchedulerEngine()
+    engine._plan_locks.add(plan.id)
+
+    assert engine.trigger_plan_now(plan.id) is None
+
+
+def test_scheduler_engine_start_launches_single_background_poll_loop(monkeypatch):
+    repo = FakeRepo()
+    engine = SchedulerEngine(repo=repo, poll_seconds=60)
+    called = Event()
+
+    def _dispatch_once():
+        called.set()
+
+    monkeypatch.setattr(engine, "dispatch_due_plans_once", _dispatch_once)
+
+    assert engine.start() is True
+    assert called.wait(timeout=1.0)
+
+    first_thread = engine._poll_thread
+    assert first_thread is not None
+    assert first_thread.is_alive()
+    assert engine.start() is False
+    assert engine._poll_thread is first_thread
+
+    assert engine.stop() is True
+    first_thread.join(timeout=1.0)
+    assert not first_thread.is_alive()
 
 
 def test_create_app_startup_shutdown_uses_isolated_scheduler_engine_instances(monkeypatch):

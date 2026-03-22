@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.database import crud
+from src.database import session as session_module
 from src.database.models import Base
 from src.database.session import DatabaseSessionManager
 from src.scheduler.engine import SchedulerEngine
@@ -15,11 +16,12 @@ from src.web.routes import api_router
 
 
 @pytest.fixture
-def temp_db(tmp_path):
+def temp_db(tmp_path, monkeypatch):
     db_path = tmp_path / "scheduled-tasks-routes.db"
     manager = DatabaseSessionManager(f"sqlite:///{db_path}")
     Base.metadata.create_all(bind=manager.engine)
     manager.migrate_tables()
+    monkeypatch.setattr(session_module, "_db_manager", manager)
 
     session = manager.SessionLocal()
     try:
@@ -42,7 +44,19 @@ def route_db(monkeypatch, temp_db):
 @pytest.fixture
 def client(route_db):
     app = FastAPI()
-    app.state.scheduler_engine = SchedulerEngine()
+
+    def _runner(*, run_id: int, **kwargs):
+        with session_module.get_db() as db:
+            crud.finish_scheduled_run(db, run_id=run_id, status="success", summary={"triggered": True})
+
+    app.state.scheduler_engine = SchedulerEngine(
+        runner_map={
+            "cpa_cleanup": _runner,
+            "cpa_refill": _runner,
+            "account_refresh": _runner,
+        },
+        worker_spawner=lambda fn, _name: fn(),
+    )
     app.include_router(api_router, prefix="/api")
 
     with TestClient(app) as test_client:
@@ -196,10 +210,99 @@ def test_manual_run_route_rejects_when_plan_is_currently_running(client, seeded_
 
 
 def test_manual_run_route_succeeds_when_plan_is_not_running(client, seeded_scheduled_data):
+    plan_id = seeded_scheduled_data["plan"].id
+
     response = client.post(f"/api/scheduled-plans/{seeded_scheduled_data['plan'].id}/run")
 
     assert response.status_code == 200
-    assert response.json() == {"success": True, "plan_id": seeded_scheduled_data["plan"].id}
+    body = response.json()
+    assert body["success"] is True
+    assert body["plan_id"] == plan_id
+
+    with scheduled_routes.get_db() as db:
+        runs = (
+            db.query(scheduled_routes.ScheduledRun)
+            .filter(scheduled_routes.ScheduledRun.plan_id == plan_id)
+            .order_by(scheduled_routes.ScheduledRun.id.desc())
+            .all()
+        )
+        assert len(runs) == 3
+        assert runs[0].trigger_source == "manual"
+        assert runs[0].status == "success"
+        assert runs[0].summary == {"triggered": True}
+        if "run_id" in body:
+            assert runs[0].id == body["run_id"]
+
+
+def test_update_scheduled_plan_route_persists_changes_and_recomputes_next_run_at(
+    client, route_db, seeded_scheduled_data, monkeypatch
+):
+    monkeypatch.setattr(
+        scheduled_routes,
+        "compute_next_run_at",
+        lambda _request: datetime(2026, 3, 24, 9, 30, 0),
+    )
+
+    response = client.put(
+        f"/api/scheduled-plans/{seeded_scheduled_data['plan'].id}",
+        json={
+            "name": "updated cleanup plan",
+            "trigger_type": "cron",
+            "cron_expression": "30 9 * * *",
+            "interval_value": None,
+            "interval_unit": None,
+            "config": {"max_cleanup_count": 5},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "updated cleanup plan"
+    assert body["trigger_type"] == "cron"
+    assert body["cron_expression"] == "30 9 * * *"
+    assert body["next_run_at"] == "2026-03-24T09:30:00"
+
+    route_db.expire_all()
+    persisted = crud.get_scheduled_plan_by_id(route_db, seeded_scheduled_data["plan"].id)
+    assert persisted is not None
+    assert persisted.name == "updated cleanup plan"
+    assert persisted.trigger_type == "cron"
+    assert persisted.cron_expression == "30 9 * * *"
+    assert persisted.next_run_at == datetime(2026, 3, 24, 9, 30, 0)
+
+
+def test_disable_and_enable_routes_toggle_plan_and_next_run_at(client, route_db, seeded_scheduled_data, monkeypatch):
+    plan_id = seeded_scheduled_data["plan"].id
+    disable_response = client.post(f"/api/scheduled-plans/{plan_id}/disable")
+
+    assert disable_response.status_code == 200
+    disabled_body = disable_response.json()
+    assert disabled_body["enabled"] is False
+    assert disabled_body["next_run_at"] is None
+
+    route_db.expire_all()
+    disabled = crud.get_scheduled_plan_by_id(route_db, plan_id)
+    assert disabled is not None
+    assert disabled.enabled is False
+    assert disabled.next_run_at is None
+
+    monkeypatch.setattr(
+        scheduled_routes,
+        "compute_next_run_at",
+        lambda _request: datetime(2026, 3, 24, 10, 0, 0),
+    )
+    enable_response = client.post(f"/api/scheduled-plans/{plan_id}/enable")
+
+    assert enable_response.status_code == 200
+    enabled_body = enable_response.json()
+    assert enabled_body["enabled"] is True
+    assert enabled_body["next_run_at"] == "2026-03-24T10:00:00"
+
+    route_db.expire_all()
+    enabled = crud.get_scheduled_plan_by_id(route_db, plan_id)
+    assert enabled is not None
+    assert enabled.enabled is True
+    assert enabled.next_run_at == datetime(2026, 3, 24, 10, 0, 0)
 
 
 def test_list_plan_runs_route_returns_latest_runs(client, seeded_scheduled_data):

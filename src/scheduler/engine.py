@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 from datetime import datetime
-from threading import Lock
-from typing import Iterable, Protocol
+import logging
+from threading import Event, Lock, Thread, current_thread
+from typing import Any, Callable, Iterable, Protocol
 
 from sqlalchemy import asc
 
 from ..database import crud
-from ..database.models import ScheduledPlan
+from ..database.models import ScheduledPlan, ScheduledRun
 from ..database.session import get_db
-from .time_utils import SCHEDULER_TZ
+from .time_utils import SCHEDULER_TZ, compute_next_run_at
+
+
+logger = logging.getLogger(__name__)
 
 
 class DuePlan(Protocol):
     id: int
     cpa_service_id: int
+    task_type: str
 
 
 class SchedulerRepo(Protocol):
@@ -62,12 +67,42 @@ def now_in_scheduler_tz() -> datetime:
     return datetime.now(SCHEDULER_TZ)
 
 
+def _to_scheduler_naive_time(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(SCHEDULER_TZ).replace(tzinfo=None)
+
+
+def _default_runner_map() -> dict[str, Callable[..., Any]]:
+    from .runners.cleanup import run_cleanup_plan
+    from .runners.refill import run_refill_plan
+    from .runners.refresh import run_refresh_plan
+
+    return {
+        "cpa_cleanup": run_cleanup_plan,
+        "cpa_refill": run_refill_plan,
+        "account_refresh": run_refresh_plan,
+    }
+
+
 class SchedulerEngine:
-    def __init__(self, repo: SchedulerRepo | None = None, poll_seconds: int = 15):
+    def __init__(
+        self,
+        repo: SchedulerRepo | None = None,
+        poll_seconds: int = 15,
+        runner_map: dict[str, Callable[..., Any]] | None = None,
+        worker_spawner: Callable[[Callable[[], None], str], None] | None = None,
+    ):
         self.repo = repo or SchedulerRepository()
         self.poll_seconds = poll_seconds
+        self._runner_map = runner_map or _default_runner_map()
+        self._worker_spawner = worker_spawner or self._spawn_worker
         self._started = False
         self._state_lock = Lock()
+        self._stop_event = Event()
+        self._poll_thread: Thread | None = None
         self._plan_locks: set[int] = set()
         self._cpa_locks: set[int] = set()
 
@@ -76,27 +111,209 @@ class SchedulerEngine:
             if self._started:
                 return False
             self._started = True
+            self._stop_event.clear()
+            self._poll_thread = Thread(target=self._poll_forever, name="scheduler-engine-poller", daemon=True)
+            self._poll_thread.start()
             return True
 
     def stop(self) -> bool:
+        thread: Thread | None = None
         with self._state_lock:
             if not self._started:
                 return False
             self._started = False
-            return True
+            self._stop_event.set()
+            thread = self._poll_thread
+        if thread and thread.is_alive() and thread is not current_thread():
+            thread.join(timeout=max(1.0, float(self.poll_seconds) + 0.5))
+        return True
 
     def dispatch_due_plans_once(self) -> None:
-        for plan in self.repo.get_due_enabled_plans(now_in_scheduler_tz()):
-            if plan.id in self._plan_locks:
-                self.repo.create_skipped_run(plan.id, trigger_source="scheduled", reason="plan already running")
+        schedule_now = now_in_scheduler_tz()
+        for plan in self.repo.get_due_enabled_plans(schedule_now):
+            acquired, reason = self._try_acquire_run_locks(plan.id, plan.cpa_service_id)
+            if not acquired:
+                self.repo.create_skipped_run(plan.id, trigger_source="scheduled", reason=reason or "busy")
                 continue
-            if plan.cpa_service_id in self._cpa_locks:
-                self.repo.create_skipped_run(plan.id, trigger_source="scheduled", reason="cpa already busy")
-                continue
+            run_id = self._dispatch_locked_plan(
+                plan_id=plan.id,
+                cpa_service_id=plan.cpa_service_id,
+                task_type=plan.task_type,
+                trigger_source="scheduled",
+                schedule_now=schedule_now,
+            )
+            if run_id is None:
+                self.repo.create_skipped_run(plan.id, trigger_source="scheduled", reason="dispatch failed")
 
-    def trigger_plan_now(self, plan_id: int) -> bool:
-        """Return whether a manual trigger can be accepted for the given plan now."""
+    def trigger_plan_now(self, plan_id: int) -> int | None:
+        """Trigger a plan immediately and return run_id when accepted."""
+        with get_db() as db:
+            plan = crud.get_scheduled_plan_by_id(db, plan_id)
+            if plan is None:
+                return None
+            cpa_service_id = int(plan.cpa_service_id)
+            task_type = str(plan.task_type)
+
+        acquired, _ = self._try_acquire_run_locks(plan_id, cpa_service_id)
+        if not acquired:
+            return None
+
+        return self._dispatch_locked_plan(
+            plan_id=plan_id,
+            cpa_service_id=cpa_service_id,
+            task_type=task_type,
+            trigger_source="manual",
+            schedule_now=None,
+        )
+
+    def _poll_forever(self) -> None:
+        while True:
+            with self._state_lock:
+                if not self._started:
+                    return
+            try:
+                self.dispatch_due_plans_once()
+            except Exception:
+                logger.exception("scheduler poll loop dispatch failed")
+            if self._stop_event.wait(self.poll_seconds):
+                return
+
+    def _try_acquire_run_locks(self, plan_id: int, cpa_service_id: int) -> tuple[bool, str | None]:
         with self._state_lock:
             if plan_id in self._plan_locks:
-                return False
-            return True
+                return False, "plan already running"
+            if cpa_service_id in self._cpa_locks:
+                return False, "cpa already busy"
+            self._plan_locks.add(plan_id)
+            self._cpa_locks.add(cpa_service_id)
+            return True, None
+
+    def _release_run_locks(self, plan_id: int, cpa_service_id: int) -> None:
+        with self._state_lock:
+            self._plan_locks.discard(plan_id)
+            self._cpa_locks.discard(cpa_service_id)
+
+    def _dispatch_locked_plan(
+        self,
+        *,
+        plan_id: int,
+        cpa_service_id: int,
+        task_type: str,
+        trigger_source: str,
+        schedule_now: datetime | None,
+    ) -> int | None:
+        run_id: int | None = None
+        worker_spawned = False
+        try:
+            run_id = self._create_run_and_mark_started(
+                plan_id=plan_id,
+                trigger_source=trigger_source,
+                schedule_now=schedule_now,
+            )
+            if run_id is None:
+                return None
+
+            runner = self._runner_map.get(task_type)
+            if runner is None:
+                self._ensure_run_failed(run_id, f"unsupported task_type: {task_type}")
+                self._sync_plan_state_from_run(plan_id, run_id)
+                return run_id
+
+            def _worker() -> None:
+                try:
+                    runner(plan_id=plan_id, run_id=run_id)
+                except Exception as exc:
+                    logger.exception("scheduled runner failed (plan_id=%s, run_id=%s)", plan_id, run_id)
+                    self._ensure_run_failed(run_id, str(exc))
+                finally:
+                    self._sync_plan_state_from_run(plan_id, run_id)
+                    self._release_run_locks(plan_id, cpa_service_id)
+
+            self._worker_spawner(_worker, f"scheduler-run-{plan_id}-{run_id}")
+            worker_spawned = True
+            return run_id
+        except Exception:
+            logger.exception("failed to dispatch plan (plan_id=%s)", plan_id)
+            if run_id is not None:
+                self._ensure_run_failed(run_id, "dispatch failed")
+                self._sync_plan_state_from_run(plan_id, run_id)
+            return None
+        finally:
+            if not worker_spawned:
+                self._release_run_locks(plan_id, cpa_service_id)
+
+    def _create_run_and_mark_started(
+        self,
+        *,
+        plan_id: int,
+        trigger_source: str,
+        schedule_now: datetime | None,
+    ) -> int | None:
+        with get_db() as db:
+            plan = crud.get_scheduled_plan_by_id(db, plan_id)
+            if plan is None:
+                return None
+
+            next_run_at: datetime | None = None
+            if trigger_source == "scheduled" and schedule_now is not None:
+                next_run_at = _to_scheduler_naive_time(compute_next_run_at(plan, now=schedule_now))
+
+            run = crud.create_scheduled_run(
+                db,
+                plan_id=plan_id,
+                trigger_source=trigger_source,
+                status="running",
+            )
+            updates: dict[str, Any] = {
+                "last_run_started_at": run.started_at,
+                "last_run_finished_at": None,
+                "last_run_status": "running",
+            }
+            if next_run_at is not None:
+                updates["next_run_at"] = next_run_at
+
+            crud.update_scheduled_plan(db, plan_id, **updates)
+            return int(run.id)
+
+    def _ensure_run_failed(self, run_id: int, error_message: str) -> None:
+        with get_db() as db:
+            run = db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+            if run is None or run.status != "running":
+                return
+            crud.finish_scheduled_run(
+                db,
+                run_id=run_id,
+                status="failed",
+                error_message=error_message,
+                finished_at=datetime.utcnow(),
+            )
+
+    def _sync_plan_state_from_run(self, plan_id: int, run_id: int) -> None:
+        with get_db() as db:
+            run = db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+            if run is None:
+                return
+            if run.status == "running":
+                run = crud.finish_scheduled_run(
+                    db,
+                    run_id=run_id,
+                    status="failed",
+                    error_message="runner did not finalize status",
+                    finished_at=datetime.utcnow(),
+                )
+                if run is None:
+                    return
+
+            finished_at = run.finished_at or datetime.utcnow()
+            updates: dict[str, Any] = {
+                "last_run_finished_at": finished_at,
+                "last_run_status": run.status,
+            }
+            if run.status == "success":
+                updates["last_success_at"] = finished_at
+            crud.update_scheduled_plan(db, plan_id, **updates)
+
+    @staticmethod
+    def _spawn_worker(worker: Callable[[], None], worker_name: str) -> None:
+        thread = Thread(target=worker, name=worker_name, daemon=True)
+        thread.start()
