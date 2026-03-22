@@ -94,6 +94,13 @@ def test_start_batch_registration_rejects_counts_outside_zero_to_500():
                 BackgroundTasks(),
             )
         )
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            registration_routes.start_batch_registration(
+                registration_routes.BatchRegistrationRequest(count=-1, email_service_type="tempmail"),
+                BackgroundTasks(),
+            )
+        )
 
 
 def test_get_batch_status_includes_unlimited_metadata(monkeypatch):
@@ -118,3 +125,4 @@ def test_get_batch_status_includes_unlimited_metadata(monkeypatch):
     assert result["consecutive_failures"] == 2
     assert result["max_consecutive_failures"] == 10
     assert result["stop_reason"] is None
+    assert result["domain_stats"] == []
