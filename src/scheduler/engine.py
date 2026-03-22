@@ -181,6 +181,11 @@ class SchedulerEngine:
 
         acquired, reason = self._try_acquire_run_locks(plan_id, cpa_service_id)
         if not acquired:
+            self.repo.create_skipped_run(
+                plan_id,
+                trigger_source="manual",
+                reason=reason or "busy",
+            )
             raise SchedulerPlanConflictError(reason or "plan is busy")
 
         dispatch_result = self._dispatch_locked_plan(

@@ -202,11 +202,23 @@ def test_create_scheduled_plan_route_rejects_invalid_refill_config(client, seede
 
 
 def test_manual_run_route_rejects_when_plan_is_currently_running(client, seeded_scheduled_data):
-    client.app.state.scheduler_engine._plan_locks.add(seeded_scheduled_data["plan"].id)
+    plan_id = seeded_scheduled_data["plan"].id
+    client.app.state.scheduler_engine._plan_locks.add(plan_id)
 
-    response = client.post(f"/api/scheduled-plans/{seeded_scheduled_data['plan'].id}/run")
+    response = client.post(f"/api/scheduled-plans/{plan_id}/run")
 
     assert response.status_code == 409
+
+    with scheduled_routes.get_db() as db:
+        runs = (
+            db.query(scheduled_routes.ScheduledRun)
+            .filter(scheduled_routes.ScheduledRun.plan_id == plan_id)
+            .order_by(scheduled_routes.ScheduledRun.id.desc())
+            .all()
+        )
+        assert len(runs) == 3
+        assert runs[0].status == "skipped"
+        assert runs[0].trigger_source == "manual"
 
 
 def test_manual_run_route_succeeds_when_plan_is_not_running(client, seeded_scheduled_data):

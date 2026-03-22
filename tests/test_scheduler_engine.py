@@ -167,6 +167,12 @@ def test_scheduler_engine_manual_trigger_rejects_running_plan(temp_db):
     with pytest.raises(SchedulerPlanConflictError):
         engine.trigger_plan_now(plan.id)
 
+    temp_db.expire_all()
+    runs = temp_db.query(ScheduledRun).filter(ScheduledRun.plan_id == plan.id).all()
+    assert len(runs) == 1
+    assert runs[0].status == "skipped"
+    assert runs[0].trigger_source == "manual"
+
 
 def test_scheduler_engine_manual_trigger_raises_dispatch_error_on_internal_failure(temp_db):
     plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
