@@ -1,3 +1,4 @@
+import sqlite3
 from types import SimpleNamespace
 
 from src.database.session import DatabaseSessionManager
@@ -107,3 +108,38 @@ def test_postgresql_migrate_tables_adds_registration_task_email_column(monkeypat
         'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "email_address" VARCHAR(255)' in stmt
         for stmt in connection.statements
     )
+
+
+def test_sqlite_migrate_tables_adds_registration_task_email_column(tmp_path):
+    db_path = tmp_path / "legacy-registration-tasks.db"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE registration_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_uuid VARCHAR(36) NOT NULL,
+                status VARCHAR(20),
+                email_service_id INTEGER,
+                proxy VARCHAR(255),
+                logs TEXT,
+                result TEXT,
+                error_message TEXT,
+                created_at DATETIME,
+                started_at DATETIME,
+                completed_at DATETIME
+            )
+            """
+        )
+        conn.commit()
+
+    manager = DatabaseSessionManager(f"sqlite:///{db_path}")
+    manager.migrate_tables()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info('registration_tasks')").fetchall()
+        }
+
+    assert "email_address" in columns
