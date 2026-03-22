@@ -355,6 +355,33 @@ def test_batch_import_proxies_dedupes_domain_hosts_case_insensitively(route_db, 
     ]
 
 
+def test_batch_import_proxies_allows_same_host_port_with_different_credentials(route_db, monkeypatch):
+    monkeypatch.setattr(settings_routes, "lookup_locations", lambda hosts, **_: {})
+
+    result = asyncio.run(settings_routes.batch_import_proxies(
+        settings_routes.ProxyBatchImportRequest(
+            data=(
+                "socks5://change4.owlproxy.com:7778:user_a:2539361\n"
+                "socks5://change4.owlproxy.com:7778:user_b:2539361\n"
+                "socks5://change4.owlproxy.com:7778:user_c:2539361"
+            ),
+            default_type="http",
+        )
+    ))
+
+    rows = crud.get_proxies(route_db)
+    credentials = sorted((row.username, row.password) for row in rows)
+
+    assert result["success"] == 3
+    assert result["skipped"] == 0
+    assert result["failed"] == 0
+    assert credentials == [
+        ("user_a", "2539361"),
+        ("user_b", "2539361"),
+        ("user_c", "2539361"),
+    ]
+
+
 def test_batch_import_proxies_uses_asyncio_to_thread_for_geolocation(route_db, monkeypatch):
     tracker = {"called": False}
 

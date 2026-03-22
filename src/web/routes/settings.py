@@ -14,7 +14,7 @@ from ...config.settings import get_settings, update_settings
 from ...core.ip_location import lookup_locations
 from ...core.proxy_import import (
     allocate_proxy_names,
-    proxy_host_port_key,
+    proxy_identity_key,
     collect_proxy_name_counters,
     iter_proxy_import_lines,
     parse_proxy_line,
@@ -552,12 +552,18 @@ async def batch_import_proxies(request: ProxyBatchImportRequest):
     results = []
     skipped = 0
     failed = 0
-    pending_host_ports: set[tuple[str, int]] = set()
+    pending_identities: set[tuple[str, str, int, str, str]] = set()
 
     with get_db() as db:
-        existing_host_ports = {
-            proxy_host_port_key(host, port)
-            for host, port in db.query(Proxy.host, Proxy.port).all()
+        existing_identities = {
+            proxy_identity_key(proxy_type, host, port, username, password)
+            for proxy_type, host, port, username, password in db.query(
+                Proxy.type,
+                Proxy.host,
+                Proxy.port,
+                Proxy.username,
+                Proxy.password,
+            ).all()
         }
 
         for line_no, raw_line in iter_proxy_import_lines(request.data):
@@ -573,8 +579,8 @@ async def batch_import_proxies(request: ProxyBatchImportRequest):
                 })
                 continue
 
-            host_port = proxy_host_port_key(parsed.host, parsed.port)
-            if host_port in pending_host_ports or host_port in existing_host_ports:
+            identity = proxy_identity_key(parsed.type, parsed.host, parsed.port, parsed.username, parsed.password)
+            if identity in pending_identities or identity in existing_identities:
                 skipped += 1
                 results.append({
                     "line_no": line_no,
@@ -584,7 +590,7 @@ async def batch_import_proxies(request: ProxyBatchImportRequest):
                 })
                 continue
 
-            pending_host_ports.add(host_port)
+            pending_identities.add(identity)
             import_candidates.append(parsed)
 
         if not import_candidates:
@@ -605,9 +611,15 @@ async def batch_import_proxies(request: ProxyBatchImportRequest):
 
     with get_db() as db:
         existing_names = [row[0] for row in db.query(Proxy.name).all()]
-        existing_host_ports = {
-            proxy_host_port_key(host, port)
-            for host, port in db.query(Proxy.host, Proxy.port).all()
+        existing_identities = {
+            proxy_identity_key(proxy_type, host, port, username, password)
+            for proxy_type, host, port, username, password in db.query(
+                Proxy.type,
+                Proxy.host,
+                Proxy.port,
+                Proxy.username,
+                Proxy.password,
+            ).all()
         }
         prefixes_in_db = collect_proxy_name_counters(existing_names)
         allocated_names = allocate_proxy_names(
@@ -624,10 +636,10 @@ async def batch_import_proxies(request: ProxyBatchImportRequest):
         )
 
         success = 0
-        seen_host_ports: set[tuple[str, int]] = set()
+        seen_identities: set[tuple[str, str, int, str, str]] = set()
         for item in import_candidates:
-            key = proxy_host_port_key(item.host, item.port)
-            if key in seen_host_ports or key in existing_host_ports:
+            identity = proxy_identity_key(item.type, item.host, item.port, item.username, item.password)
+            if identity in seen_identities or identity in existing_identities:
                 skipped += 1
                 results.append({
                     "line_no": item.line_no,
@@ -637,7 +649,7 @@ async def batch_import_proxies(request: ProxyBatchImportRequest):
                 })
                 continue
 
-            seen_host_ports.add(key)
+            seen_identities.add(identity)
             location = locations_by_host.get(item.host)
             proxy = crud.create_proxy(
                 db,

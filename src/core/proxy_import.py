@@ -203,6 +203,22 @@ def proxy_host_port_key(host: str, port: int) -> tuple[str, int]:
     return canonicalize_proxy_host(host), int(port)
 
 
+def proxy_identity_key(
+    proxy_type: str,
+    host: str,
+    port: int,
+    username: str | None = None,
+    password: str | None = None,
+) -> tuple[str, str, int, str, str]:
+    return (
+        _normalize_protocol(proxy_type),
+        canonicalize_proxy_host(host),
+        int(port),
+        (username or "").strip(),
+        (password or "").strip(),
+    )
+
+
 def collect_proxy_name_counters(existing_names: list[str]) -> dict[str, int]:
     counters: dict[str, int] = {}
 
