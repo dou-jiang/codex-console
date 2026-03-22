@@ -245,13 +245,15 @@ def create_registration_task(
     db: Session,
     task_uuid: str,
     email_service_id: Optional[int] = None,
-    proxy: Optional[str] = None
+    proxy: Optional[str] = None,
+    email_address: Optional[str] = None,
 ) -> RegistrationTask:
     """创建注册任务"""
     db_task = RegistrationTask(
         task_uuid=task_uuid,
         email_service_id=email_service_id,
         proxy=proxy,
+        email_address=email_address,
         status='pending'
     )
     db.add(db_task)

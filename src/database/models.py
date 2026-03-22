@@ -108,6 +108,7 @@ class RegistrationTask(Base):
     status = Column(String(20), default='pending')  # 'pending', 'running', 'completed', 'failed', 'cancelled'
     email_service_id = Column(Integer, ForeignKey('email_services.id'), index=True)  # 使用的邮箱服务
     proxy = Column(String(255))  # 使用的代理
+    email_address = Column(String(255), index=True)  # 注册时使用的邮箱地址
     logs = Column(Text)  # 注册过程日志
     result = Column(JSONEncodedDict)  # 注册结果
     error_message = Column(Text)

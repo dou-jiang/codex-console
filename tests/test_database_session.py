@@ -86,3 +86,24 @@ def test_postgresql_migrate_tables_skips_existing_proxy_location_columns(monkeyp
     manager.migrate_tables()
 
     assert not any('ALTER TABLE "proxies"' in stmt for stmt in connection.statements)
+
+
+def test_postgresql_migrate_tables_adds_registration_task_email_column(monkeypatch):
+    connection = _FakeConnection()
+    manager = _build_manager(connection)
+
+    class _FakeInspector:
+        def get_columns(self, table_name: str):
+            if table_name == "registration_tasks":
+                return [{"name": "id"}, {"name": "task_uuid"}]
+            return [{"name": "id"}]
+
+    monkeypatch.setattr(session_module.Base.metadata, "create_all", lambda bind: None)
+    monkeypatch.setattr(session_module, "inspect", lambda conn: _FakeInspector())
+
+    manager.migrate_tables()
+
+    assert any(
+        'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "email_address" VARCHAR(255)' in stmt
+        for stmt in connection.statements
+    )
