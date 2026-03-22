@@ -349,6 +349,92 @@ def test_run_unlimited_batch_registration_stops_after_eleven_consecutive_failure
     assert state["stop_reason"] == "too_many_consecutive_failures"
 
 
+def test_run_unlimited_batch_registration_preserves_pre_start_cancellation(route_db, fake_task_manager, monkeypatch):
+    batch_id = "unlimited-pre-cancelled"
+    registration_routes._init_batch_state(batch_id, [], is_unlimited=True, total=0)
+    registration_routes.batch_tasks[batch_id]["cancelled"] = True
+    fake_task_manager._status[batch_id]["cancelled"] = True
+    calls = []
+
+    async def fake_run_registration_task(task_uuid, *args, **kwargs):
+        calls.append(task_uuid)
+        crud.update_registration_task(
+            route_db,
+            task_uuid,
+            status="failed",
+            completed_at=datetime.utcnow(),
+            error_message="should-not-run",
+        )
+
+    monkeypatch.setattr(registration_routes, "run_registration_task", fake_run_registration_task)
+
+    asyncio.run(
+        registration_routes.run_unlimited_batch_registration(
+            batch_id=batch_id,
+            email_service_type="tempmail",
+            proxy=None,
+            email_service_config=None,
+            email_service_id=None,
+            interval_min=0,
+            interval_max=0,
+            concurrency=1,
+            mode="parallel",
+        )
+    )
+
+    assert calls == []
+    state = registration_routes.batch_tasks[batch_id]
+    assert state["cancelled"] is True
+    assert state["finished"] is True
+    assert state["completed"] == 0
+    assert state["domain_stats"] == []
+    assert fake_task_manager.get_batch_status(batch_id)["status"] == "cancelled"
+    assert fake_task_manager.get_batch_status(batch_id)["finished"] is True
+
+
+def test_run_unlimited_batch_registration_propagates_child_task_exception_and_finalizes(route_db, fake_task_manager, monkeypatch):
+    batch_id = "unlimited-child-exception"
+    calls = []
+    wait_calls = 0
+    original_wait = registration_routes.asyncio.wait
+
+    async def fake_run_registration_task(task_uuid, *args, **kwargs):
+        calls.append(task_uuid)
+        raise RuntimeError("boom")
+
+    async def counting_wait(*args, **kwargs):
+        nonlocal wait_calls
+        wait_calls += 1
+        if wait_calls > 1:
+            raise AssertionError("runner kept waiting after a child task exception")
+        return await original_wait(*args, **kwargs)
+
+    monkeypatch.setattr(registration_routes, "run_registration_task", fake_run_registration_task)
+    monkeypatch.setattr(registration_routes.asyncio, "wait", counting_wait)
+
+    asyncio.run(
+        registration_routes.run_unlimited_batch_registration(
+            batch_id=batch_id,
+            email_service_type="tempmail",
+            proxy=None,
+            email_service_config=None,
+            email_service_id=None,
+            interval_min=0,
+            interval_max=0,
+            concurrency=1,
+            mode="parallel",
+        )
+    )
+
+    assert len(calls) == 1
+    assert wait_calls == 1
+    state = registration_routes.batch_tasks[batch_id]
+    assert state["finished"] is True
+    assert state["domain_stats"] == []
+    assert fake_task_manager.get_batch_status(batch_id)["status"] == "failed"
+    assert fake_task_manager.get_batch_status(batch_id)["finished"] is True
+
+
 def test_get_outlook_batch_status_includes_domain_stats_if_present(batch_state):
     registration_routes.batch_tasks["outlook-1"] = {
         "total": 2,

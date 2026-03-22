@@ -669,12 +669,15 @@ async def run_unlimited_batch_registration(
     tm_service_ids: List[int] = None,
 ):
     """无限注册模式：持续创建任务直到取消或连续失败超过阈值。"""
-    _init_batch_state(batch_id, [], is_unlimited=True, total=0)
+    if batch_id not in batch_tasks:
+        _init_batch_state(batch_id, [], is_unlimited=True, total=0)
+
     add_batch_log, update_batch_status = _make_batch_helpers(batch_id)
     semaphore = asyncio.Semaphore(concurrency)
     counter_lock = asyncio.Lock()
     running: set[asyncio.Task] = set()
     task_uuids: List[str] = []
+    next_index = 0
     add_batch_log(f"[系统] 无限模式启动，并发数: {concurrency}，模式: {mode}")
 
     async def _spawn_one(index: int):
@@ -730,7 +733,7 @@ async def run_unlimited_batch_registration(
 
     try:
         while not task_manager.is_batch_cancelled(batch_id) and batch_tasks[batch_id]["stop_reason"] is None:
-            next_index = len(task_uuids) + 1
+            next_index += 1
             running.add(asyncio.create_task(_spawn_one(next_index)))
 
             if mode == "pipeline":
@@ -738,6 +741,8 @@ async def run_unlimited_batch_registration(
 
             if len(running) >= concurrency:
                 done, pending = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+                for completed_task in done:
+                    await completed_task
                 running = set(pending)
 
         if running:
@@ -752,6 +757,12 @@ async def run_unlimited_batch_registration(
     except Exception as e:
         logger.error(f"无限批量任务 {batch_id} 异常: {e}")
         add_batch_log(f"[错误] 批量任务异常: {str(e)}")
+        if running:
+            for running_task in running:
+                if not running_task.done():
+                    running_task.cancel()
+            await asyncio.gather(*running, return_exceptions=True)
+            running.clear()
         _finalize_batch_domain_stats(batch_id, task_uuids)
         update_batch_status(finished=True, status="failed")
     finally:
