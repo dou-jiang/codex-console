@@ -2,11 +2,11 @@ import asyncio
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
-from types import SimpleNamespace
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
 
+from src.core.registration_job import RegistrationJobResult
 from src.web import task_manager as task_manager_module
 from src.web.routes import registration as registration_routes
 
@@ -195,28 +195,13 @@ def test_run_sync_registration_task_persists_email_address_even_on_failure(route
 
     monkeypatch.setattr(
         registration_routes,
-        "get_settings",
-        lambda: SimpleNamespace(tempmail_base_url="http://mail", tempmail_timeout=1, tempmail_max_retries=0),
+        "run_registration_job",
+        lambda **_: RegistrationJobResult(
+            success=False,
+            email="failed@gmail.com",
+            error_message="boom",
+        ),
     )
-    monkeypatch.setattr(
-        registration_routes.EmailServiceFactory,
-        "create",
-        lambda *args, **kwargs: SimpleNamespace(service_type=SimpleNamespace(value="tempmail")),
-    )
-
-    class FakeEngine:
-        def __init__(self, **kwargs):
-            pass
-
-        def run(self):
-            return SimpleNamespace(
-                success=False,
-                email="failed@gmail.com",
-                error_message="boom",
-                to_dict=lambda: {"email": "failed@gmail.com"},
-            )
-
-    monkeypatch.setattr(registration_routes, "RegistrationEngine", FakeEngine)
 
     registration_routes._run_sync_registration_task("task-1", "tempmail", None, None)
 

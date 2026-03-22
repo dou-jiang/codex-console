@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+import pytest
+
+from src.core.registration_job import RegistrationJobResult
+from src.database import crud
+from src.database.models import Base
+from src.database.session import DatabaseSessionManager
+from src.database import session as session_module
+from src.scheduler.runners import refill as refill_runner
+from src.scheduler.runners.refill import run_refill_plan
+
+
+@pytest.fixture
+def temp_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "scheduler-refill.db"
+    manager = DatabaseSessionManager(f"sqlite:///{db_path}")
+    Base.metadata.create_all(bind=manager.engine)
+    manager.migrate_tables()
+    monkeypatch.setattr(session_module, "_db_manager", manager)
+
+    session = manager.SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def _create_refill_plan_and_run(
+    temp_db,
+    *,
+    target_valid_count: int = 3,
+    max_refill_count: int = 5,
+    max_consecutive_failures: int = 3,
+):
+    service = crud.create_cpa_service(
+        temp_db,
+        name="refill-cpa",
+        api_url="https://example.test/v0/management",
+        api_token="token",
+    )
+    plan = crud.create_scheduled_plan(
+        temp_db,
+        name="refill",
+        task_type="cpa_refill",
+        cpa_service_id=service.id,
+        trigger_type="interval",
+        interval_value=1,
+        interval_unit="hours",
+        config={
+            "target_valid_count": target_valid_count,
+            "max_refill_count": max_refill_count,
+            "max_consecutive_failures": max_consecutive_failures,
+            "email_service_type": "tempmail",
+        },
+    )
+    run = crud.create_scheduled_run(temp_db, plan_id=plan.id, trigger_source="manual")
+    return service, plan, run
+
+
+def test_refill_runner_requires_cpa_upload_for_success(temp_db, monkeypatch):
+    _, plan, run = _create_refill_plan_and_run(temp_db, target_valid_count=3, max_refill_count=2)
+
+    monkeypatch.setattr(refill_runner, "count_valid_accounts", lambda *a, **k: 2)
+    monkeypatch.setattr(
+        refill_runner,
+        "run_registration_job",
+        lambda **_: RegistrationJobResult(success=True, account_id=11),
+    )
+    monkeypatch.setattr(refill_runner, "upload_account_to_bound_cpa", lambda **_: (True, "ok"))
+
+    summary = run_refill_plan(plan_id=plan.id, run_id=run.id)
+
+    assert summary["uploaded_success"] == 1
+
+
+def test_refill_runner_auto_disables_plan_after_consecutive_failures(temp_db, monkeypatch):
+    _, plan, run = _create_refill_plan_and_run(
+        temp_db,
+        target_valid_count=2,
+        max_refill_count=5,
+        max_consecutive_failures=2,
+    )
+
+    monkeypatch.setattr(refill_runner, "count_valid_accounts", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        refill_runner,
+        "run_registration_job",
+        lambda **_: RegistrationJobResult(success=False, error_message="boom"),
+    )
+
+    summary = run_refill_plan(plan_id=plan.id, run_id=run.id)
+
+    temp_db.expire_all()
+    refreshed_plan = crud.get_scheduled_plan_by_id(temp_db, plan.id)
+    assert refreshed_plan is not None
+    assert refreshed_plan.enabled is False
+    assert refreshed_plan.auto_disabled_reason == "consecutive_failures_reached"
+    assert summary["auto_disabled"] is True

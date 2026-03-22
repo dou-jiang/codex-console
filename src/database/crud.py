@@ -719,6 +719,45 @@ def create_scheduled_plan(
     return plan
 
 
+def get_scheduled_plan_by_id(db: Session, plan_id: int) -> Optional[ScheduledPlan]:
+    """按 ID 获取定时计划。"""
+    return db.query(ScheduledPlan).filter(ScheduledPlan.id == plan_id).first()
+
+
+def update_scheduled_plan(
+    db: Session,
+    plan_id: int,
+    **kwargs,
+) -> Optional[ScheduledPlan]:
+    """更新定时计划。"""
+    plan = get_scheduled_plan_by_id(db, plan_id)
+    if not plan:
+        return None
+
+    for key, value in kwargs.items():
+        if hasattr(plan, key):
+            setattr(plan, key, value)
+
+    db.commit()
+    db.refresh(plan)
+    return plan
+
+
+def disable_scheduled_plan(
+    db: Session,
+    *,
+    plan_id: int,
+    reason: str,
+) -> Optional[ScheduledPlan]:
+    """禁用定时计划并记录自动禁用原因。"""
+    return update_scheduled_plan(
+        db,
+        plan_id,
+        enabled=False,
+        auto_disabled_reason=reason,
+    )
+
+
 def get_scheduled_plans(
     db: Session,
     enabled: Optional[bool] = None,
