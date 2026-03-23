@@ -123,19 +123,18 @@
                             </tbody>
                         </table>
                     </div>
-                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px;flex-wrap:wrap;border-top:1px solid var(--border-color);">
-                        <div id="scheduled-run-pagination-summary" style="color:var(--text-muted);">第 1 / 1 页 · 共 0 条</div>
-                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <div>
+                        <div id="scheduled-run-pagination-summary">第 1 / 1 页 · 共 0 条</div>
+                        <div>
                             <button class="btn btn-secondary btn-sm" id="scheduled-run-prev-page">上一页</button>
                             <button class="btn btn-secondary btn-sm" id="scheduled-run-next-page">下一页</button>
-                            <label for="scheduled-run-page-jump-input" style="color:var(--text-muted);">跳转到</label>
+                            <label for="scheduled-run-page-jump-input">跳转到</label>
                             <input
                                 type="number"
                                 id="scheduled-run-page-jump-input"
                                 min="1"
                                 step="1"
                                 inputmode="numeric"
-                                style="width:88px;"
                             >
                             <button class="btn btn-secondary btn-sm" id="scheduled-run-page-jump-btn">前往</button>
                         </div>

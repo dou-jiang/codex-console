@@ -74,6 +74,261 @@ def test_scheduled_tasks_template_contains_run_center_pagination_hooks():
     assert 'id="scheduled-run-pagination-summary"' in template
 
 
+def test_scheduled_tasks_template_keeps_pagination_markup_minimal_without_inline_layout_styles():
+    template = Path("templates/scheduled_tasks.html").read_text(encoding="utf-8")
+    assert 'id="scheduled-run-pagination-summary" style=' not in template
+    assert 'id="scheduled-run-page-jump-input"' in template
+    assert 'id="scheduled-run-page-jump-input"\n                                style=' not in template
+
+
+def run_scheduled_tasks_pagination_scenario(name: str) -> dict:
+    script_source = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    node_script = rf"""
+const vm = require('vm');
+
+const scenarioName = {json.dumps(name)};
+const scriptSource = {json.dumps(script_source)};
+
+function createMockElement(id = '') {{
+  let html = '';
+  let text = '';
+  const classes = new Set();
+  return {{
+    id,
+    dataset: {{}},
+    style: {{}},
+    disabled: false,
+    value: '',
+    checked: false,
+    innerHTML: '',
+    textContent: '',
+    _listeners: {{}},
+    setAttribute() {{}},
+    removeAttribute() {{}},
+    addEventListener(type, handler) {{ this._listeners[type] = handler; }},
+    dispatchEvent(type, event = {{}}) {{
+      if (this._listeners[type]) return this._listeners[type](event);
+      return undefined;
+    }},
+    scrollIntoView() {{}},
+    reset() {{}},
+    classList: {{
+      add(name) {{ classes.add(name); }},
+      remove(name) {{ classes.delete(name); }},
+      contains(name) {{ return classes.has(name); }},
+      toggle(name) {{
+        if (classes.has(name)) {{
+          classes.delete(name);
+          return false;
+        }}
+        classes.add(name);
+        return true;
+      }},
+    }},
+    get innerHTML() {{ return html; }},
+    set innerHTML(next) {{ html = String(next ?? ''); }},
+    get textContent() {{ return text; }},
+    set textContent(next) {{ text = String(next ?? ''); }},
+    querySelectorAll() {{ return []; }},
+    querySelector() {{ return null; }},
+  }};
+}}
+
+const elementsById = new Map();
+function getElement(id) {{
+  if (!elementsById.has(id)) {{
+    elementsById.set(id, createMockElement(id));
+  }}
+  return elementsById.get(id);
+}}
+
+const domListeners = {{}};
+const document = {{
+  getElementById(id) {{ return getElement(id); }},
+  querySelectorAll() {{ return []; }},
+  querySelector() {{ return null; }},
+  addEventListener(type, handler) {{ domListeners[type] = handler; }},
+  createElement() {{
+    let value = '';
+    return {{
+      set textContent(next) {{ value = String(next ?? ''); }},
+      get textContent() {{ return value; }},
+      get innerHTML() {{ return value; }},
+      set innerHTML(next) {{ value = String(next ?? ''); }},
+    }};
+  }},
+}};
+
+const runRequests = [];
+const warnings = [];
+const context = {{
+  console,
+  URLSearchParams,
+  setTimeout,
+  clearTimeout,
+  setInterval,
+  clearInterval,
+  document,
+  window: {{}},
+  theme: {{ toggle() {{}} }},
+  format: {{ date(value) {{ return String(value ?? '-'); }} }},
+  toast: {{
+    warning(message) {{ warnings.push(String(message)); }},
+    error() {{}},
+    success() {{}},
+  }},
+  api: {{
+    async get(path) {{
+      if (path === '/scheduled-plans') return {{ items: [] }};
+      if (path === '/cpa-services') return [];
+      if (path.startsWith('/scheduled-runs?')) {{
+        runRequests.push(path);
+        const query = path.includes('?') ? path.slice(path.indexOf('?') + 1) : '';
+        const params = new URLSearchParams(query);
+        const page = Number.parseInt(params.get('page') || '1', 10);
+        const pageSize = Number.parseInt(params.get('page_size') || '20', 10);
+        return {{
+          items: [],
+          total: 95,
+          page,
+          page_size: pageSize,
+        }};
+      }}
+      if (path.startsWith('/scheduled-runs/')) return {{}};
+      throw new Error('unexpected api path: ' + path);
+    }},
+    async post() {{ return {{}}; }},
+    async put() {{ return {{}}; }},
+  }},
+}};
+context.global = context;
+context.globalThis = context;
+
+vm.createContext(context);
+vm.runInContext(scriptSource, context);
+
+function trigger(type, element, event = {{}}) {{
+  const handler = element && element._listeners ? element._listeners[type] : null;
+  if (!handler) return;
+  handler(event);
+}}
+
+async function flush() {{
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}}
+
+async function runScenario() {{
+  if (typeof domListeners.DOMContentLoaded !== 'function') {{
+    throw new Error('DOMContentLoaded listener missing');
+  }}
+
+  domListeners.DOMContentLoaded();
+  await flush();
+  await flush();
+
+  const jumpInput = getElement('scheduled-run-page-jump-input');
+  const jumpBtn = getElement('scheduled-run-page-jump-btn');
+  const prevBtn = getElement('scheduled-run-prev-page');
+  const nextBtn = getElement('scheduled-run-next-page');
+
+  switch (scenarioName) {{
+    case 'jump_button_click': {{
+      jumpInput.value = '3';
+      trigger('click', jumpBtn, {{ preventDefault() {{}} }});
+      await flush();
+      await flush();
+      return {{ runRequests, warnings }};
+    }}
+    case 'jump_enter_key': {{
+      jumpInput.value = '4';
+      let enterPrevented = false;
+      trigger('keydown', jumpInput, {{ key: 'Enter', preventDefault() {{ enterPrevented = true; }} }});
+      await flush();
+      await flush();
+      return {{ runRequests, warnings, enterPrevented }};
+    }}
+    case 'jump_invalid_input': {{
+      jumpInput.value = 'abc';
+      trigger('click', jumpBtn, {{ preventDefault() {{}} }});
+      await flush();
+      await flush();
+      return {{ runRequests, warnings }};
+    }}
+    case 'jump_out_of_range_clamp': {{
+      jumpInput.value = '999';
+      trigger('click', jumpBtn, {{ preventDefault() {{}} }});
+      await flush();
+      await flush();
+      return {{ runRequests, warnings }};
+    }}
+    case 'prev_next_wiring': {{
+      jumpInput.value = '3';
+      trigger('click', jumpBtn, {{ preventDefault() {{}} }});
+      await flush();
+      await flush();
+      trigger('click', prevBtn, {{ preventDefault() {{}} }});
+      await flush();
+      await flush();
+      trigger('click', nextBtn, {{ preventDefault() {{}} }});
+      await flush();
+      await flush();
+      return {{ runRequests, warnings }};
+    }}
+    default:
+      throw new Error('unknown scenario: ' + scenarioName);
+  }}
+}}
+
+runScenario()
+  .then((result) => {{
+    process.stdout.write(JSON.stringify(result));
+  }})
+  .catch((error) => {{
+    console.error(error && error.stack ? error.stack : String(error));
+    process.exit(1);
+  }});
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout or "{}")
+
+
+def test_scheduled_tasks_pagination_jump_button_click_updates_requested_page():
+    result = run_scheduled_tasks_pagination_scenario("jump_button_click")
+    assert result["runRequests"][-1].endswith("page=3&page_size=20")
+
+
+def test_scheduled_tasks_pagination_enter_key_updates_requested_page():
+    result = run_scheduled_tasks_pagination_scenario("jump_enter_key")
+    assert result["enterPrevented"] is True
+    assert result["runRequests"][-1].endswith("page=4&page_size=20")
+
+
+def test_scheduled_tasks_pagination_invalid_input_warns_without_extra_request():
+    result = run_scheduled_tasks_pagination_scenario("jump_invalid_input")
+    assert len(result["runRequests"]) == 1
+    assert result["runRequests"][0].endswith("page=1&page_size=20")
+    assert result["warnings"]
+
+
+def test_scheduled_tasks_pagination_out_of_range_input_clamps_and_warns():
+    result = run_scheduled_tasks_pagination_scenario("jump_out_of_range_clamp")
+    assert result["runRequests"][-1].endswith("page=5&page_size=20")
+    assert result["warnings"]
+
+
+def test_scheduled_tasks_pagination_prev_next_buttons_change_requested_page():
+    result = run_scheduled_tasks_pagination_scenario("prev_next_wiring")
+    assert any(request.endswith("page=2&page_size=20") for request in result["runRequests"])
+    assert result["runRequests"][-1].endswith("page=3&page_size=20")
+
+
 def test_shared_list_templates_opt_into_table_shell_styling():
     scheduled_template = Path("templates/scheduled_tasks.html").read_text(encoding="utf-8")
     accounts_template = Path("templates/accounts.html").read_text(encoding="utf-8")
