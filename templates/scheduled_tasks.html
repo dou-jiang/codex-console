@@ -70,6 +70,61 @@
                     </div>
                 </div>
             </div>
+
+            <div class="card" id="scheduled-runs-card">
+                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <h3>运行中心</h3>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <select id="scheduled-run-filter-task-type">
+                            <option value="">全部任务类型</option>
+                            <option value="cpa_cleanup">CPA 清理</option>
+                            <option value="cpa_refill">CPA 补量</option>
+                            <option value="account_refresh">账号刷新</option>
+                        </select>
+                        <select id="scheduled-run-filter-status">
+                            <option value="">全部状态</option>
+                            <option value="running">运行中</option>
+                            <option value="success">成功</option>
+                            <option value="failed">失败</option>
+                            <option value="skipped">已跳过</option>
+                            <option value="cancelled">已取消</option>
+                        </select>
+                        <input type="datetime-local" id="scheduled-run-filter-started-from" title="开始时间从">
+                        <input type="datetime-local" id="scheduled-run-filter-started-to" title="开始时间到">
+                        <button class="btn btn-secondary btn-sm" id="scheduled-run-filter-apply-btn">筛选</button>
+                        <button class="btn btn-secondary btn-sm" id="scheduled-run-filter-reset-btn">重置</button>
+                    </div>
+                </div>
+                <div class="card-body" style="padding:0;">
+                    <div class="table-container">
+                        <table id="scheduled-runs-table" class="data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 70px;">Run ID</th>
+                                    <th style="width: 180px;">计划</th>
+                                    <th style="width: 110px;">任务类型</th>
+                                    <th style="width: 90px;">触发源</th>
+                                    <th style="width: 100px;">状态</th>
+                                    <th style="width: 180px;">开始时间</th>
+                                    <th style="width: 180px;">结束时间</th>
+                                    <th>摘要</th>
+                                    <th style="width: 180px;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="scheduled-runs-table-body">
+                                <tr>
+                                    <td colspan="9">
+                                        <div class="empty-state">
+                                            <div class="empty-state-icon">⏳</div>
+                                            <div class="empty-state-title">运行记录加载中</div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </main>
     </div>
 
@@ -192,13 +247,30 @@
     </div>
 
     <div id="run-log-modal" class="modal">
-        <div class="modal-content" style="max-width: 760px;">
+        <div class="modal-content" style="max-width: 960px;">
             <div class="modal-header">
                 <h3>运行记录</h3>
                 <button class="modal-close" data-close-modal="run-log-modal">&times;</button>
             </div>
-            <div class="modal-body" id="run-log-modal-body">
-                <div style="color: var(--text-muted);">暂无记录</div>
+            <div class="modal-body">
+                <div id="run-log-status-bar" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding:12px;border-radius:8px;background:var(--surface-hover);margin-bottom:12px;">
+                    <span>未选择运行记录</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <button class="btn btn-secondary btn-sm" id="run-log-refresh-btn">刷新</button>
+                        <label style="display:flex;align-items:center;gap:6px;color:var(--text-muted);">
+                            <input type="checkbox" id="run-log-auto-scroll" checked>
+                            自动滚动
+                        </label>
+                    </div>
+                    <div id="run-log-stop-actions">
+                        <button class="btn btn-secondary btn-sm" id="run-log-stop-btn" data-action="stop-run" style="display:none;" onclick="handleRunLogAction(this)">停止运行</button>
+                    </div>
+                </div>
+                <div id="run-log-modal-body">
+                    <div style="color: var(--text-muted);">暂无记录</div>
+                </div>
             </div>
         </div>
     </div>

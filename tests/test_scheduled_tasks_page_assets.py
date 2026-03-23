@@ -48,6 +48,23 @@ def test_scheduled_tasks_template_contains_plan_management_hooks():
     assert 'id="plan-config-add-entry-btn"' in template
 
 
+def test_scheduled_tasks_template_contains_run_center_hooks():
+    template = Path("templates/scheduled_tasks.html").read_text(encoding="utf-8")
+    assert 'id="scheduled-runs-table"' in template
+    assert 'id="scheduled-runs-table-body"' in template
+    assert 'id="scheduled-run-filter-task-type"' in template
+    assert 'id="scheduled-run-filter-status"' in template
+    assert 'id="scheduled-run-filter-started-from"' in template
+    assert 'id="scheduled-run-filter-started-to"' in template
+    assert 'id="scheduled-run-filter-apply-btn"' in template
+    assert 'id="scheduled-run-filter-reset-btn"' in template
+    assert 'id="run-log-status-bar"' in template
+    assert 'id="run-log-refresh-btn"' in template
+    assert 'id="run-log-auto-scroll"' in template
+    assert 'id="run-log-stop-actions"' in template
+    assert 'id="run-log-stop-btn"' in template
+
+
 def test_scheduled_tasks_script_contains_create_edit_enable_disable_hooks():
     script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
     assert "function openCreatePlanModal(" in script
@@ -117,6 +134,25 @@ def test_scheduled_tasks_script_routes_actions_through_busy_guard_handlers():
     assert "return withButtonBusy(button, async () => {" in script
     assert "onclick=\"handleRunLogAction(this)\"" in script
     assert "withButtonBusy(event.currentTarget, () => loadPlans())" in script
+
+
+def test_scheduled_tasks_script_contains_run_center_live_log_and_stop_hooks():
+    script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    assert "function buildScheduledRunQuery(" in script
+    assert "async function loadScheduledRuns(" in script
+    assert "function renderScheduledRuns(" in script
+    assert "function openScheduledRunDetail(" in script
+    assert "function openScheduledRunLog(" in script
+    assert "function startScheduledRunLogPolling(" in script
+    assert "function stopScheduledRunLogPolling(" in script
+    assert "function appendScheduledRunLogChunk(" in script
+    assert "setInterval(" in script and "scheduled-runs" in script
+    assert 'data-action="filter-plan-runs"' in script
+    assert 'data-action="view-run-detail"' in script
+    assert 'data-action="view-run-log"' in script
+    assert 'data-action="stop-run"' in script
+    assert "async function stopScheduledRun(" in script
+    assert '"stopping"' in script or "'stopping'" in script
 
 
 def test_scheduled_tasks_script_drops_stale_builtin_keys_when_task_type_switches():

@@ -1,7 +1,15 @@
 const scheduledTaskElements = {
     plansBody: document.getElementById('scheduled-plans-table-body'),
+    runsCard: document.getElementById('scheduled-runs-card'),
+    runsBody: document.getElementById('scheduled-runs-table-body'),
     refreshBtn: document.getElementById('refresh-plans-btn'),
     createPlanBtn: document.getElementById('create-plan-btn'),
+    runFilterTaskTypeInput: document.getElementById('scheduled-run-filter-task-type'),
+    runFilterStatusInput: document.getElementById('scheduled-run-filter-status'),
+    runFilterStartedFromInput: document.getElementById('scheduled-run-filter-started-from'),
+    runFilterStartedToInput: document.getElementById('scheduled-run-filter-started-to'),
+    runFilterApplyBtn: document.getElementById('scheduled-run-filter-apply-btn'),
+    runFilterResetBtn: document.getElementById('scheduled-run-filter-reset-btn'),
     planFormModal: document.getElementById('plan-form-modal'),
     planFormTitle: document.getElementById('plan-form-title'),
     planForm: document.getElementById('plan-form'),
@@ -28,6 +36,11 @@ const scheduledTaskElements = {
     planModal: document.getElementById('plan-modal'),
     planModalBody: document.getElementById('plan-modal-body'),
     runLogModal: document.getElementById('run-log-modal'),
+    runLogStatusBar: document.getElementById('run-log-status-bar'),
+    runLogRefreshBtn: document.getElementById('run-log-refresh-btn'),
+    runLogAutoScrollInput: document.getElementById('run-log-auto-scroll'),
+    runLogStopActions: document.getElementById('run-log-stop-actions'),
+    runLogStopBtn: document.getElementById('run-log-stop-btn'),
     runLogModalBody: document.getElementById('run-log-modal-body'),
 };
 
@@ -144,12 +157,26 @@ const TASK_CONFIG_SCHEMAS = {
 };
 
 let scheduledPlansCache = [];
+let scheduledRunsCache = [];
 let currentRunList = [];
 let cpaServicesCache = [];
 let submittingPlanForm = false;
 let currentConfigEntries = [];
 let currentConfigEditorMode = CONFIG_EDITOR_MODE_TABLE;
 let currentConfigTaskType = 'cpa_cleanup';
+let scheduledRunFilters = {
+    taskType: '',
+    status: '',
+    startedFrom: '',
+    startedTo: '',
+    planId: null,
+    page: 1,
+    pageSize: 20,
+};
+let activeScheduledRunId = null;
+let activeScheduledRunDetail = null;
+let currentScheduledRunLogOffset = 0;
+let scheduledRunLogPollingTimer = null;
 
 function escapeHtml(text) {
     if (text === null || text === undefined) return '';
@@ -288,11 +315,21 @@ function getRunStatusText(status) {
     if (!status) return '-';
     const map = {
         running: '运行中',
+        stopping: '停止中',
         success: '成功',
         failed: '失败',
         skipped: '已跳过',
+        cancelled: '已取消',
     };
     return map[status] || status;
+}
+
+function getScheduledRunUiStatus(run) {
+    if (!run) return '';
+    if (run.status === 'running' && run.stop_requested_at) {
+        return 'stopping';
+    }
+    return run.status || '';
 }
 
 function getTaskConfigSchema(taskType) {
@@ -1067,76 +1104,369 @@ async function runPlanNow(planId) {
         await api.post(`/scheduled-plans/${planId}/run`, {});
         toast.success('已触发执行');
         await loadPlans();
+        await loadScheduledRuns();
     } catch (error) {
         toast.error(`触发失败: ${error.message}`);
     }
 }
 
-async function openRunLogs(planId) {
-    try {
-        const data = await api.get(`/scheduled-plans/${planId}/runs`);
-        currentRunList = Array.isArray(data.runs) ? data.runs : [];
-        renderRunLogModal(currentRunList);
-    } catch (error) {
-        toast.error(`加载运行记录失败: ${error.message}`);
+function buildScheduledRunQuery(filters = scheduledRunFilters) {
+    const params = new URLSearchParams();
+    if (filters.taskType) params.set('task_type', filters.taskType);
+    if (filters.status) params.set('status', filters.status);
+    if (filters.planId) params.set('plan_id', String(filters.planId));
+    if (filters.startedFrom) params.set('started_from', filters.startedFrom);
+    if (filters.startedTo) params.set('started_to', filters.startedTo);
+    params.set('page', String(filters.page || 1));
+    params.set('page_size', String(filters.pageSize || 20));
+    const query = params.toString();
+    return query ? `?${query}` : '';
+}
+
+function syncScheduledRunFiltersToInputs() {
+    if (scheduledTaskElements.runFilterTaskTypeInput) {
+        scheduledTaskElements.runFilterTaskTypeInput.value = scheduledRunFilters.taskType || '';
+    }
+    if (scheduledTaskElements.runFilterStatusInput) {
+        scheduledTaskElements.runFilterStatusInput.value = scheduledRunFilters.status || '';
+    }
+    if (scheduledTaskElements.runFilterStartedFromInput) {
+        scheduledTaskElements.runFilterStartedFromInput.value = scheduledRunFilters.startedFrom || '';
+    }
+    if (scheduledTaskElements.runFilterStartedToInput) {
+        scheduledTaskElements.runFilterStartedToInput.value = scheduledRunFilters.startedTo || '';
     }
 }
 
-function renderRunLogModal(runs) {
-    if (!Array.isArray(runs) || runs.length === 0) {
-        scheduledTaskElements.runLogModalBody.innerHTML = '<div style="color: var(--text-muted);">暂无运行记录</div>';
-        scheduledTaskElements.runLogModal.classList.add('active');
+function updateScheduledRunFiltersFromInputs() {
+    scheduledRunFilters = {
+        ...scheduledRunFilters,
+        taskType: scheduledTaskElements.runFilterTaskTypeInput?.value || '',
+        status: scheduledTaskElements.runFilterStatusInput?.value || '',
+        startedFrom: scheduledTaskElements.runFilterStartedFromInput?.value || '',
+        startedTo: scheduledTaskElements.runFilterStartedToInput?.value || '',
+        page: 1,
+    };
+}
+
+function summarizeScheduledRun(run) {
+    if (run?.error_message) {
+        return String(run.error_message);
+    }
+    if (run?.summary && Object.keys(run.summary).length > 0) {
+        try {
+            return JSON.stringify(run.summary);
+        } catch (error) {
+            return String(run.summary);
+        }
+    }
+    return '-';
+}
+
+function updateScheduledRunCacheItem(runId, updater) {
+    const targetId = Number(runId);
+    scheduledRunsCache = scheduledRunsCache.map((run) => {
+        if (Number(run.id) !== targetId) return run;
+        return typeof updater === 'function' ? updater(run) : { ...run, ...updater };
+    });
+    currentRunList = scheduledRunsCache;
+}
+
+function focusScheduledRunsCard() {
+    if (!scheduledTaskElements.runsCard) return;
+    scheduledTaskElements.runsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderScheduledRuns(runs) {
+    const tbody = scheduledTaskElements.runsBody;
+    if (!tbody) return;
+
+    const rows = Array.isArray(runs) ? runs : [];
+    if (rows.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="9">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📭</div>
+                        <div class="empty-state-title">暂无运行记录</div>
+                    </div>
+                </td>
+            </tr>
+        `;
         return;
     }
 
-    scheduledTaskElements.runLogModalBody.innerHTML = `
-        <div class="table-container">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th style="width: 90px;">Run ID</th>
-                        <th style="width: 100px;">触发源</th>
-                        <th style="width: 100px;">状态</th>
-                        <th style="width: 180px;">开始时间</th>
-                        <th style="width: 180px;">结束时间</th>
-                        <th>摘要</th>
-                        <th style="width: 90px;">日志</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${runs.map((run) => `
-                        <tr>
-                            <td>${run.id}</td>
-                            <td>${escapeHtml(run.trigger_source || '-')}</td>
-                            <td>${getRunStatusText(run.status)}</td>
-                            <td>${format.date(run.started_at)}</td>
-                            <td>${format.date(run.finished_at)}</td>
-                            <td>${escapeHtml(JSON.stringify(run.summary || {}))}</td>
-                            <td>
-                                <button class="btn btn-secondary btn-sm" data-action="view-run-log" data-run-id="${run.id}" onclick="handleRunLogAction(this)">查看</button>
-                            </td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        </div>
-    `;
-
-    scheduledTaskElements.runLogModal.classList.add('active');
+    tbody.innerHTML = rows.map((run) => {
+        const uiStatus = getScheduledRunUiStatus(run);
+        const stopAction = run.can_stop
+            ? `<button class="btn btn-secondary btn-sm" data-action="stop-run" data-run-id="${run.id}" onclick="handleRunLogAction(this)">停止</button>`
+            : '';
+        return `
+            <tr class="${uiStatus === 'stopping' ? 'stopping' : ''}" data-run-id="${run.id}" data-run-state="${uiStatus}">
+                <td>${run.id}</td>
+                <td>${escapeHtml(run.plan_name || `计划 #${run.plan_id}`)}</td>
+                <td>${getTaskTypeText(run.task_type)}</td>
+                <td>${escapeHtml(run.trigger_source || '-')}</td>
+                <td><span class="status-badge ${uiStatus}">${getRunStatusText(uiStatus)}</span></td>
+                <td>${format.date(run.started_at)}</td>
+                <td>${format.date(run.finished_at)}</td>
+                <td>${escapeHtml(summarizeScheduledRun(run))}</td>
+                <td>
+                    <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                        <button class="btn btn-secondary btn-sm" data-action="view-run-detail" data-run-id="${run.id}" onclick="handleRunLogAction(this)">详情</button>
+                        <button class="btn btn-secondary btn-sm" data-action="view-run-log" data-run-id="${run.id}" onclick="handleRunLogAction(this)">日志</button>
+                        <button class="btn btn-secondary btn-sm" data-action="filter-plan-runs" data-plan-id="${run.plan_id}" onclick="handlePlanAction(this)">同计划</button>
+                        ${stopAction}
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
 }
 
-async function viewRunLog(runId) {
+async function loadScheduledRuns() {
+    const tbody = scheduledTaskElements.runsBody;
+    if (!tbody) return;
+
     try {
-        const data = await api.get(`/scheduled-plans/runs/${runId}/logs`);
-        scheduledTaskElements.runLogModalBody.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <strong>运行日志 #${runId}</strong>
-                <button class="btn btn-secondary btn-sm" data-action="back-to-runs" onclick="handleRunLogAction(this)">返回记录</button>
-            </div>
-            <pre style="white-space:pre-wrap;word-break:break-word;background:var(--surface-hover);padding:12px;border-radius:8px;max-height:420px;overflow:auto;">${escapeHtml(data.logs || '暂无日志')}</pre>
-        `;
+        const data = await api.get(`/scheduled-runs${buildScheduledRunQuery()}`);
+        scheduledRunsCache = Array.isArray(data.items) ? data.items : [];
+        currentRunList = scheduledRunsCache;
+        renderScheduledRuns(scheduledRunsCache);
     } catch (error) {
-        toast.error(`加载日志失败: ${error.message}`);
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="9">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">❌</div>
+                        <div class="empty-state-title">运行记录加载失败</div>
+                        <div class="empty-state-description">${escapeHtml(error.message || '请求失败')}</div>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }
+}
+
+async function openRunLogs(planId) {
+    scheduledRunFilters = {
+        ...scheduledRunFilters,
+        planId: Number(planId),
+        page: 1,
+    };
+    syncScheduledRunFiltersToInputs();
+    await loadScheduledRuns();
+    focusScheduledRunsCard();
+}
+
+function resetScheduledRunModalState() {
+    activeScheduledRunId = null;
+    activeScheduledRunDetail = null;
+    currentScheduledRunLogOffset = 0;
+    stopScheduledRunLogPolling();
+    if (scheduledTaskElements.runLogStatusBar) {
+        scheduledTaskElements.runLogStatusBar.innerHTML = '<span>未选择运行记录</span>';
+    }
+    if (scheduledTaskElements.runLogModalBody) {
+        scheduledTaskElements.runLogModalBody.innerHTML = '<div style="color: var(--text-muted);">暂无记录</div>';
+    }
+    if (scheduledTaskElements.runLogStopBtn) {
+        scheduledTaskElements.runLogStopBtn.style.display = 'none';
+        scheduledTaskElements.runLogStopBtn.textContent = '停止运行';
+        scheduledTaskElements.runLogStopBtn.disabled = false;
+        scheduledTaskElements.runLogStopBtn.removeAttribute('data-run-id');
+        scheduledTaskElements.runLogStopBtn.removeAttribute('data-stopping');
+    }
+}
+
+function renderScheduledRunStatusBar(detail) {
+    if (!scheduledTaskElements.runLogStatusBar) return;
+    if (!detail) {
+        scheduledTaskElements.runLogStatusBar.innerHTML = '<span>未选择运行记录</span>';
+        return;
+    }
+    const uiStatus = getScheduledRunUiStatus(detail);
+    scheduledTaskElements.runLogStatusBar.innerHTML = `
+        <span><strong>Run #${detail.id}</strong> · ${escapeHtml(detail.plan_name || `计划 #${detail.plan_id}`)}</span>
+        <span>状态：<strong>${getRunStatusText(uiStatus)}</strong></span>
+        <span>最后日志：${format.date(detail.last_log_at)}</span>
+    `;
+}
+
+function renderScheduledRunDetailBody(detail, initialLogs = '') {
+    if (!scheduledTaskElements.runLogModalBody) return;
+    scheduledTaskElements.runLogModalBody.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+            <strong>运行详情 #${detail.id}</strong>
+            <button class="btn btn-secondary btn-sm" data-action="back-to-runs" onclick="handleRunLogAction(this)">返回运行中心</button>
+        </div>
+        <div class="info-grid">
+            <div class="info-item"><span class="label">计划</span><span class="value">${escapeHtml(detail.plan_name || `计划 #${detail.plan_id}`)}</span></div>
+            <div class="info-item"><span class="label">任务类型</span><span class="value">${getTaskTypeText(detail.task_type)}</span></div>
+            <div class="info-item"><span class="label">触发源</span><span class="value">${escapeHtml(detail.trigger_source || '-')}</span></div>
+            <div class="info-item"><span class="label">状态</span><span class="value">${getRunStatusText(getScheduledRunUiStatus(detail))}</span></div>
+            <div class="info-item"><span class="label">开始时间</span><span class="value">${format.date(detail.started_at)}</span></div>
+            <div class="info-item"><span class="label">结束时间</span><span class="value">${format.date(detail.finished_at)}</span></div>
+            <div class="info-item"><span class="label">错误信息</span><span class="value">${escapeHtml(detail.error_message || '-')}</span></div>
+            <div class="info-item"><span class="label">摘要</span><span class="value">${escapeHtml(summarizeScheduledRun(detail))}</span></div>
+        </div>
+        <div style="margin-top:12px;">
+            <div style="margin-bottom:8px;font-weight:600;">实时日志</div>
+            <pre id="scheduled-run-log-output" style="white-space:pre-wrap;word-break:break-word;background:var(--surface-hover);padding:12px;border-radius:8px;max-height:420px;overflow:auto;">${escapeHtml(initialLogs || '暂无日志')}</pre>
+        </div>
+    `;
+}
+
+function appendScheduledRunLogChunk(chunk, options = {}) {
+    const logOutput = document.getElementById('scheduled-run-log-output');
+    if (!logOutput) return;
+    const reset = options.reset === true;
+    const nextText = reset ? String(chunk || '') : `${logOutput.textContent === '暂无日志' ? '' : logOutput.textContent}${chunk || ''}`;
+    logOutput.textContent = nextText || '暂无日志';
+    if (scheduledTaskElements.runLogAutoScrollInput?.checked) {
+        logOutput.scrollTop = logOutput.scrollHeight;
+    }
+}
+
+function setScheduledRunStopButtonState(detail) {
+    const button = scheduledTaskElements.runLogStopBtn;
+    if (!button) return;
+    if (!detail || !detail.is_running) {
+        button.style.display = 'none';
+        button.disabled = false;
+        button.textContent = '停止运行';
+        button.removeAttribute('data-run-id');
+        button.removeAttribute('data-stopping');
+        return;
+    }
+
+    button.style.display = '';
+    button.dataset.runId = String(detail.id);
+    if (getScheduledRunUiStatus(detail) === 'stopping') {
+        button.textContent = '停止中';
+        button.disabled = true;
+        button.setAttribute('data-stopping', 'true');
+        return;
+    }
+
+    button.textContent = '停止运行';
+    button.disabled = false;
+    button.removeAttribute('data-stopping');
+}
+
+function stopScheduledRunLogPolling() {
+    if (scheduledRunLogPollingTimer) {
+        clearInterval(scheduledRunLogPollingTimer);
+        scheduledRunLogPollingTimer = null;
+    }
+}
+
+function startScheduledRunLogPolling(runId) {
+    stopScheduledRunLogPolling();
+    scheduledRunLogPollingTimer = setInterval(() => {
+        if (activeScheduledRunId !== Number(runId)) {
+            stopScheduledRunLogPolling();
+            return;
+        }
+        void loadScheduledRunLogChunk(runId).catch(() => {
+            stopScheduledRunLogPolling();
+        });
+    }, 2000);
+}
+
+async function loadScheduledRunLogChunk(runId, { reset = false } = {}) {
+    const offset = reset ? 0 : currentScheduledRunLogOffset;
+    const data = await api.get(`/scheduled-runs/${runId}/logs?offset=${offset}`);
+    currentScheduledRunLogOffset = Number(data.next_offset || 0);
+
+    if (activeScheduledRunDetail && Number(activeScheduledRunDetail.id) === Number(runId)) {
+        activeScheduledRunDetail = {
+            ...activeScheduledRunDetail,
+            status: data.status,
+            stop_requested_at: data.stop_requested_at,
+            log_version: data.log_version,
+            last_log_at: data.last_log_at,
+            is_running: data.is_running,
+            can_stop: Boolean(data.is_running) && !data.stop_requested_at,
+        };
+        renderScheduledRunStatusBar(activeScheduledRunDetail);
+        setScheduledRunStopButtonState(activeScheduledRunDetail);
+    }
+
+    updateScheduledRunCacheItem(runId, (run) => ({
+        ...run,
+        status: data.status,
+        stop_requested_at: data.stop_requested_at,
+        last_log_at: data.last_log_at,
+        can_stop: Boolean(data.is_running) && !data.stop_requested_at,
+    }));
+    renderScheduledRuns(scheduledRunsCache);
+    appendScheduledRunLogChunk(data.chunk, { reset });
+
+    if (!data.is_running) {
+        stopScheduledRunLogPolling();
+    }
+
+    return data;
+}
+
+async function openScheduledRunDetail(runId) {
+    resetScheduledRunModalState();
+    activeScheduledRunId = Number(runId);
+    if (scheduledTaskElements.runLogModal) {
+        scheduledTaskElements.runLogModal.classList.add('active');
+    }
+
+    try {
+        const detail = await api.get(`/scheduled-runs/${runId}`);
+        activeScheduledRunDetail = detail;
+        renderScheduledRunStatusBar(detail);
+        renderScheduledRunDetailBody(detail, '');
+        setScheduledRunStopButtonState(detail);
+        const logChunk = await loadScheduledRunLogChunk(runId, { reset: true });
+        if (logChunk.is_running) {
+            startScheduledRunLogPolling(runId);
+        }
+    } catch (error) {
+        renderScheduledRunStatusBar(null);
+        scheduledTaskElements.runLogModalBody.innerHTML = `<div style="color: var(--danger-color, #d9534f);">加载运行详情失败：${escapeHtml(error.message || '请求失败')}</div>`;
+        toast.error(`加载运行详情失败: ${error.message}`);
+    }
+}
+
+async function openScheduledRunLog(runId) {
+    await openScheduledRunDetail(runId);
+}
+
+async function stopScheduledRun(runId) {
+    const targetId = Number(runId);
+    if (!Number.isInteger(targetId) || targetId <= 0) return;
+
+    try {
+        await api.post(`/scheduled-runs/${targetId}/stop`, {});
+        toast.success('已发送停止请求');
+        const optimisticStopRequestedAt = new Date().toISOString();
+        updateScheduledRunCacheItem(targetId, (run) => ({
+            ...run,
+            stop_requested_at: optimisticStopRequestedAt,
+            can_stop: false,
+        }));
+        renderScheduledRuns(scheduledRunsCache);
+
+        if (activeScheduledRunDetail && Number(activeScheduledRunDetail.id) === targetId) {
+            activeScheduledRunDetail = {
+                ...activeScheduledRunDetail,
+                stop_requested_at: optimisticStopRequestedAt,
+                can_stop: false,
+            };
+            renderScheduledRunStatusBar(activeScheduledRunDetail);
+            setScheduledRunStopButtonState(activeScheduledRunDetail);
+        }
+
+        await loadScheduledRuns();
+    } catch (error) {
+        toast.error(`停止失败: ${error.message}`);
+        throw error;
     }
 }
 
@@ -1150,6 +1480,7 @@ async function handlePlanAction(button) {
                 showPlanDetail(planId);
                 return;
             case 'logs':
+            case 'filter-plan-runs':
                 await openRunLogs(planId);
                 return;
             case 'edit':
@@ -1171,14 +1502,27 @@ async function handleRunLogAction(button) {
     const action = button?.dataset?.action;
 
     return withButtonBusy(button, async () => {
+        if (action === 'view-run-detail') {
+            const runId = Number.parseInt(button?.dataset?.runId || '', 10);
+            await openScheduledRunDetail(runId);
+            return;
+        }
+
         if (action === 'view-run-log') {
             const runId = Number.parseInt(button?.dataset?.runId || '', 10);
-            await viewRunLog(runId);
+            await openScheduledRunLog(runId);
+            return;
+        }
+
+        if (action === 'stop-run') {
+            const runId = Number.parseInt(button?.dataset?.runId || scheduledTaskElements.runLogStopBtn?.dataset?.runId || '', 10);
+            await stopScheduledRun(runId);
             return;
         }
 
         if (action === 'back-to-runs') {
-            renderRunLogModal(currentRunList);
+            closeModal('run-log-modal');
+            focusScheduledRunsCard();
         }
     });
 }
@@ -1186,11 +1530,15 @@ async function handleRunLogAction(button) {
 function closeModal(modalId) {
     const modal = document.getElementById(modalId);
     if (!modal) return;
+    if (modalId === 'run-log-modal') {
+        resetScheduledRunModalState();
+    }
     modal.classList.remove('active');
 }
 
 document.addEventListener('DOMContentLoaded', () => {
     loadPlans();
+    loadScheduledRuns();
     loadCpaServices();
     setConfigEditorState('cpa_cleanup', {}, {});
 
@@ -1203,6 +1551,29 @@ document.addEventListener('DOMContentLoaded', () => {
     if (scheduledTaskElements.createPlanBtn) {
         scheduledTaskElements.createPlanBtn.addEventListener('click', (event) => {
             void withButtonBusy(event.currentTarget, () => openCreatePlanModal());
+        });
+    }
+
+    if (scheduledTaskElements.runFilterApplyBtn) {
+        scheduledTaskElements.runFilterApplyBtn.addEventListener('click', (event) => {
+            updateScheduledRunFiltersFromInputs();
+            void withButtonBusy(event.currentTarget, () => loadScheduledRuns());
+        });
+    }
+
+    if (scheduledTaskElements.runFilterResetBtn) {
+        scheduledTaskElements.runFilterResetBtn.addEventListener('click', (event) => {
+            scheduledRunFilters = {
+                taskType: '',
+                status: '',
+                startedFrom: '',
+                startedTo: '',
+                planId: null,
+                page: 1,
+                pageSize: 20,
+            };
+            syncScheduledRunFiltersToInputs();
+            void withButtonBusy(event.currentTarget, () => loadScheduledRuns());
         });
     }
 
@@ -1251,6 +1622,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    if (scheduledTaskElements.runLogRefreshBtn) {
+        scheduledTaskElements.runLogRefreshBtn.addEventListener('click', (event) => {
+            if (!activeScheduledRunId) return;
+            void withButtonBusy(event.currentTarget, () => openScheduledRunDetail(activeScheduledRunId));
+        });
+    }
+
     document.querySelectorAll('[data-close-modal]').forEach((btn) => {
         btn.addEventListener('click', (event) => {
             void withButtonBusy(event.currentTarget, () => closeModal(btn.dataset.closeModal));
@@ -1261,13 +1639,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!modal) return;
         modal.addEventListener('click', (event) => {
             if (event.target === modal) {
-                modal.classList.remove('active');
+                closeModal(modal.id);
             }
         });
     });
 });
 
 window.loadPlans = loadPlans;
+window.loadScheduledRuns = loadScheduledRuns;
+window.buildScheduledRunQuery = buildScheduledRunQuery;
+window.renderScheduledRuns = renderScheduledRuns;
 window.openCreatePlanModal = openCreatePlanModal;
 window.openEditPlanModal = openEditPlanModal;
 window.submitPlanForm = submitPlanForm;
@@ -1275,7 +1656,13 @@ window.openRunLogs = openRunLogs;
 window.runPlanNow = runPlanNow;
 window.showPlanDetail = showPlanDetail;
 window.togglePlanEnabled = togglePlanEnabled;
-window.viewRunLog = viewRunLog;
+window.openScheduledRunDetail = openScheduledRunDetail;
+window.openScheduledRunLog = openScheduledRunLog;
+window.viewRunLog = openScheduledRunLog;
+window.startScheduledRunLogPolling = startScheduledRunLogPolling;
+window.stopScheduledRunLogPolling = stopScheduledRunLogPolling;
+window.appendScheduledRunLogChunk = appendScheduledRunLogChunk;
+window.stopScheduledRun = stopScheduledRun;
 window.handlePlanAction = handlePlanAction;
 window.handleRunLogAction = handleRunLogAction;
 window.handleConfigEntryInput = handleConfigEntryInput;
