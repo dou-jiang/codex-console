@@ -43,9 +43,12 @@ def batch_state():
     original_batch_tasks = deepcopy(registration_routes.batch_tasks)
     original_batch_status = deepcopy(task_manager_module._batch_status)
     original_batch_logs = deepcopy(task_manager_module._batch_logs)
+    original_task_steps = deepcopy(getattr(task_manager_module, "_task_steps", {}))
     registration_routes.batch_tasks.clear()
     task_manager_module._batch_status.clear()
     task_manager_module._batch_logs.clear()
+    if hasattr(task_manager_module, "_task_steps"):
+        task_manager_module._task_steps.clear()
     try:
         yield
     finally:
@@ -55,6 +58,9 @@ def batch_state():
         task_manager_module._batch_status.update(original_batch_status)
         task_manager_module._batch_logs.clear()
         task_manager_module._batch_logs.update(original_batch_logs)
+        if hasattr(task_manager_module, "_task_steps"):
+            task_manager_module._task_steps.clear()
+            task_manager_module._task_steps.update(original_task_steps)
 
 
 def test_create_and_update_registration_task_persist_email_address(temp_db):
@@ -75,11 +81,92 @@ def test_create_and_update_registration_task_persist_email_address(temp_db):
     assert updated.email_address == "second@gmail.com"
 
 
+def test_start_registration_persists_pipeline_key(route_db, batch_state, monkeypatch):
+    monkeypatch.setattr(registration_routes, "task_manager", FakeTaskManager())
+    background = BackgroundTasks()
+
+    response = asyncio.run(
+        registration_routes.start_registration(
+            registration_routes.RegistrationTaskCreate(
+                email_service_type="tempmail",
+                pipeline_key="codexgen_pipeline",
+            ),
+            background,
+        )
+    )
+
+    task = crud.get_registration_task(route_db, response.task_uuid)
+    assert task is not None
+    assert task.pipeline_key == "codexgen_pipeline"
+
+
+def test_start_batch_registration_persists_pipeline_key_for_each_task(route_db, batch_state, monkeypatch):
+    monkeypatch.setattr(registration_routes, "task_manager", FakeTaskManager())
+    background = BackgroundTasks()
+
+    response = asyncio.run(
+        registration_routes.start_batch_registration(
+            registration_routes.BatchRegistrationRequest(
+                count=2,
+                email_service_type="tempmail",
+                pipeline_key="codexgen_pipeline",
+            ),
+            background,
+        )
+    )
+
+    assert len(response.tasks) == 2
+    for item in response.tasks:
+        task = crud.get_registration_task(route_db, item.task_uuid)
+        assert task is not None
+        assert task.pipeline_key == "codexgen_pipeline"
+
+
+def test_get_task_returns_step_aware_pipeline_payload(route_db):
+    task = crud.create_registration_task(route_db, task_uuid="task-step-aware")
+    crud.update_registration_task(
+        route_db,
+        task.task_uuid,
+        pipeline_key="codexgen_pipeline",
+        current_step_key="submit_login_email",
+        pipeline_status="running",
+        total_duration_ms=3210,
+    )
+    crud.create_pipeline_step_run(
+        route_db,
+        task_uuid=task.task_uuid,
+        pipeline_key="codexgen_pipeline",
+        step_key="create_email",
+        step_order=1,
+        status="completed",
+        duration_ms=123,
+    )
+    crud.create_pipeline_step_run(
+        route_db,
+        task_uuid=task.task_uuid,
+        pipeline_key="codexgen_pipeline",
+        step_key="submit_login_email",
+        step_order=2,
+        status="running",
+        duration_ms=456,
+    )
+
+    response = asyncio.run(registration_routes.get_task(task.task_uuid))
+
+    assert response.pipeline_key == "codexgen_pipeline"
+    assert response.current_step_key == "submit_login_email"
+    assert response.pipeline_status == "running"
+    assert response.total_duration_ms == 3210
+    assert [item["step_key"] for item in response.steps] == ["create_email", "submit_login_email"]
+
+
 class FakeTaskManager:
     def __init__(self):
         self._status = {}
         self._task_status = {}
         self._batch_logs = {}
+        self._task_steps = {}
+        self.set_task_steps_calls = 0
 
     def is_cancelled(self, task_uuid):
         return self._task_status.get(task_uuid, {}).get("cancelled", False)
@@ -122,6 +209,16 @@ class FakeTaskManager:
 
     def is_batch_cancelled(self, batch_id):
         return self._status.get(batch_id, {}).get("cancelled", False)
+
+    def set_task_steps(self, task_uuid, steps):
+        self.set_task_steps_calls += 1
+        self._task_steps[task_uuid] = list(steps or [])
+
+    def get_task_steps(self, task_uuid):
+        return list(self._task_steps.get(task_uuid, []))
+
+    def clear_task_steps(self, task_uuid):
+        self._task_steps.pop(task_uuid, None)
 
 
 @pytest.fixture
@@ -208,6 +305,81 @@ def test_run_sync_registration_task_persists_email_address_even_on_failure(route
     task = crud.get_registration_task(route_db, "task-1")
     assert task.status == "failed"
     assert task.email_address == "failed@gmail.com"
+
+
+def test_run_sync_registration_task_passes_pipeline_key_to_registration_job(route_db, fake_task_manager, monkeypatch):
+    crud.create_registration_task(route_db, task_uuid="task-pipeline-key")
+    crud.update_registration_task(route_db, "task-pipeline-key", pipeline_key="codexgen_pipeline")
+
+    captured = {}
+
+    def fake_run_registration_job(**kwargs):
+        captured.update(kwargs)
+        return RegistrationJobResult(
+            success=False,
+            email="failed@gmail.com",
+            error_message="boom",
+        )
+
+    monkeypatch.setattr(registration_routes, "run_registration_job", fake_run_registration_job)
+
+    registration_routes._run_sync_registration_task("task-pipeline-key", "tempmail", None, None)
+
+    assert captured.get("pipeline_key") == "codexgen_pipeline"
+
+
+def test_task_manager_step_state_roundtrip():
+    manager = task_manager_module.task_manager
+    task_uuid = "task-step-state"
+
+    manager.set_task_steps(task_uuid, [{"step_key": "create_email"}])
+    assert manager.get_task_steps(task_uuid) == [{"step_key": "create_email"}]
+    manager.clear_task_steps(task_uuid)
+    assert manager.get_task_steps(task_uuid) == []
+
+
+def test_get_task_prefers_task_manager_steps_when_db_steps_missing(route_db, fake_task_manager):
+    task = crud.create_registration_task(route_db, task_uuid="task-step-fallback")
+    fake_task_manager.set_task_steps(task.task_uuid, [{"step_key": "memory-step"}])
+
+    response = asyncio.run(registration_routes.get_task(task.task_uuid))
+
+    assert [item["step_key"] for item in response.steps] == ["memory-step"]
+
+
+def test_get_task_prefers_db_steps_over_task_manager_snapshot(route_db, fake_task_manager):
+    task = crud.create_registration_task(route_db, task_uuid="task-step-db-priority")
+    fake_task_manager.set_task_steps(task.task_uuid, [{"step_key": "memory-step"}])
+    crud.create_pipeline_step_run(
+        route_db,
+        task_uuid=task.task_uuid,
+        pipeline_key="current_pipeline",
+        step_key="db-step",
+        step_order=1,
+        status="completed",
+    )
+
+    response = asyncio.run(registration_routes.get_task(task.task_uuid))
+
+    assert [item["step_key"] for item in response.steps] == ["db-step"]
+
+
+def test_run_sync_registration_task_does_not_cache_terminal_task_steps(route_db, fake_task_manager, monkeypatch):
+    crud.create_registration_task(route_db, task_uuid="task-no-terminal-cache")
+    monkeypatch.setattr(
+        registration_routes,
+        "run_registration_job",
+        lambda **_: RegistrationJobResult(
+            success=True,
+            account_id=101,
+            email="ok@gmail.com",
+            result_payload={"success": True, "email": "ok@gmail.com"},
+        ),
+    )
+
+    registration_routes._run_sync_registration_task("task-no-terminal-cache", "tempmail", None, None)
+
+    assert fake_task_manager.set_task_steps_calls == 0
 
 
 def test_run_sync_registration_task_persists_full_result_payload_on_success(route_db, fake_task_manager, monkeypatch):

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实验对比看板 - OpenAI 注册系统</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar">
+            <div class="nav-brand">
+                <h1>OpenAI 注册系统</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/" class="nav-link">注册</a>
+                <a href="/registration-experiments" class="nav-link active">实验对比</a>
+                <a href="/accounts" class="nav-link">账号管理</a>
+                <a href="/email-services" class="nav-link">邮箱服务</a>
+                <a href="/scheduled-tasks" class="nav-link">定时任务</a>
+                <a href="/payment" class="nav-link">支付</a>
+                <a href="/settings" class="nav-link">设置</a>
+                <a href="/logout" class="nav-link">退出</a>
+            </div>
+        </nav>
+
+        <main class="main-content experiment-dashboard">
+            <div class="page-header">
+                <h2>实验对比 + 存活看板</h2>
+                <p class="subtitle">查看实验批次概览、步骤对比与存活统计</p>
+            </div>
+
+            <div class="card">
+                <div class="card-body">
+                    <div class="form-row experiment-toolbar">
+                        <div class="form-group">
+                            <label for="experiment-id-input">实验批次 ID</label>
+                            <input type="number" id="experiment-id-input" min="1" placeholder="输入实验 ID">
+                        </div>
+                        <div class="form-group experiment-toolbar-actions">
+                            <label>&nbsp;</label>
+                            <button type="button" class="btn btn-primary" id="load-experiment-btn">加载看板</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="experiment-summary-grid" id="experiment-summary"></div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3>步骤对比</h3>
+                </div>
+                <div class="card-body">
+                    <div id="experiment-step-compare"></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3>存活摘要</h3>
+                </div>
+                <div class="card-body">
+                    <div class="survival-summary-grid" id="survival-summary"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/static/js/registration_experiments.js?v={{ static_version }}"></script>
+</body>
+</html>

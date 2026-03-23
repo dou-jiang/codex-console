@@ -29,6 +29,15 @@ SQLITE_MIGRATIONS = [
     ("proxies", "country", "VARCHAR(100)"),
     ("proxies", "city", "VARCHAR(100)"),
     ("registration_tasks", "email_address", "VARCHAR(255)"),
+    ("registration_tasks", "pipeline_key", "VARCHAR(64)"),
+    ("registration_tasks", "pair_key", "VARCHAR(64)"),
+    ("registration_tasks", "experiment_batch_id", "INTEGER"),
+    ("registration_tasks", "current_step_key", "VARCHAR(64)"),
+    ("registration_tasks", "assigned_proxy_id", "INTEGER"),
+    ("registration_tasks", "assigned_proxy_url", "VARCHAR(255)"),
+    ("registration_tasks", "proxy_check_run_id", "INTEGER"),
+    ("registration_tasks", "total_duration_ms", "INTEGER"),
+    ("registration_tasks", "pipeline_status", "VARCHAR(20)"),
     ("scheduled_plans", "config_meta", "TEXT"),
     ("scheduled_runs", "task_type", "VARCHAR(32)"),
     ("scheduled_runs", "stop_requested_at", "DATETIME"),
@@ -45,6 +54,15 @@ POSTGRESQL_MIGRATIONS = [
     ("proxies", "country", "VARCHAR(100)"),
     ("proxies", "city", "VARCHAR(100)"),
     ("registration_tasks", "email_address", "VARCHAR(255)"),
+    ("registration_tasks", "pipeline_key", "VARCHAR(64)"),
+    ("registration_tasks", "pair_key", "VARCHAR(64)"),
+    ("registration_tasks", "experiment_batch_id", "INTEGER"),
+    ("registration_tasks", "current_step_key", "VARCHAR(64)"),
+    ("registration_tasks", "assigned_proxy_id", "INTEGER"),
+    ("registration_tasks", "assigned_proxy_url", "VARCHAR(255)"),
+    ("registration_tasks", "proxy_check_run_id", "INTEGER"),
+    ("registration_tasks", "total_duration_ms", "INTEGER"),
+    ("registration_tasks", "pipeline_status", "VARCHAR(20)"),
     ("scheduled_plans", "config_meta", "TEXT"),
     ("scheduled_runs", "task_type", "VARCHAR(32)"),
     ("scheduled_runs", "stop_requested_at", "TIMESTAMP"),
@@ -52,6 +70,29 @@ POSTGRESQL_MIGRATIONS = [
     ("scheduled_runs", "stop_reason", "TEXT"),
     ("scheduled_runs", "last_log_at", "TIMESTAMP"),
     ("scheduled_runs", "log_version", "INTEGER DEFAULT 0"),
+]
+
+# 为升级数据库补齐 registration_tasks 在 Task 1 中新增的索引字段。
+# 说明：SQLite 不支持通过 ALTER TABLE 回填外键约束，这里优先补齐索引，
+# 以降低升级库与全新建库在查询性能上的结构差异。
+SQLITE_INDEX_MIGRATIONS = [
+    ("registration_tasks", "ix_registration_tasks_pipeline_key", "pipeline_key"),
+    ("registration_tasks", "ix_registration_tasks_pair_key", "pair_key"),
+    ("registration_tasks", "ix_registration_tasks_experiment_batch_id", "experiment_batch_id"),
+    ("registration_tasks", "ix_registration_tasks_current_step_key", "current_step_key"),
+    ("registration_tasks", "ix_registration_tasks_assigned_proxy_id", "assigned_proxy_id"),
+    ("registration_tasks", "ix_registration_tasks_proxy_check_run_id", "proxy_check_run_id"),
+    ("registration_tasks", "ix_registration_tasks_pipeline_status", "pipeline_status"),
+]
+
+POSTGRESQL_INDEX_MIGRATIONS = [
+    ("registration_tasks", "ix_registration_tasks_pipeline_key", "pipeline_key"),
+    ("registration_tasks", "ix_registration_tasks_pair_key", "pair_key"),
+    ("registration_tasks", "ix_registration_tasks_experiment_batch_id", "experiment_batch_id"),
+    ("registration_tasks", "ix_registration_tasks_current_step_key", "current_step_key"),
+    ("registration_tasks", "ix_registration_tasks_assigned_proxy_id", "assigned_proxy_id"),
+    ("registration_tasks", "ix_registration_tasks_proxy_check_run_id", "proxy_check_run_id"),
+    ("registration_tasks", "ix_registration_tasks_pipeline_status", "pipeline_status"),
 ]
 
 
@@ -153,8 +194,10 @@ class DatabaseSessionManager:
 
             if dialect_name == "sqlite":
                 self._migrate_sqlite_columns(conn)
+                self._migrate_sqlite_indexes(conn)
             elif dialect_name == "postgresql":
                 self._migrate_postgresql_columns(conn)
+                self._migrate_postgresql_indexes(conn)
             else:
                 logger.info(f"数据库类型 {dialect_name} 暂不支持自动列迁移，已跳过")
 
@@ -173,6 +216,16 @@ class DatabaseSessionManager:
                     logger.info(f"成功添加列 {table_name}.{column_name}")
             except Exception as e:
                 logger.warning(f"迁移列 {table_name}.{column_name} 时出错: {e}")
+
+    def _migrate_sqlite_indexes(self, conn) -> None:
+        for table_name, index_name, column_name in SQLITE_INDEX_MIGRATIONS:
+            try:
+                conn.execute(text(
+                    f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{table_name}" ("{column_name}")'
+                ))
+                conn.commit()
+            except Exception as e:
+                logger.warning(f"迁移 SQLite 索引 {index_name} 时出错: {e}")
 
     def _migrate_postgresql_columns(self, conn) -> None:
         inspector = inspect(conn)
@@ -201,6 +254,20 @@ class DatabaseSessionManager:
                 except Exception:
                     pass
                 logger.warning(f"迁移 PostgreSQL 列 {table_name}.{column_name} 时出错: {e}")
+
+    def _migrate_postgresql_indexes(self, conn) -> None:
+        for table_name, index_name, column_name in POSTGRESQL_INDEX_MIGRATIONS:
+            try:
+                conn.execute(text(
+                    f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{table_name}" ("{column_name}")'
+                ))
+                conn.commit()
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.warning(f"迁移 PostgreSQL 索引 {index_name} 时出错: {e}")
 
 
 # 全局数据库会话管理器实例

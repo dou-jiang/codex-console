@@ -9,7 +9,12 @@ from sqlalchemy import and_, or_, desc, asc, func
 
 from .models import (
     Account,
+    AccountSurvivalCheck,
+    ExperimentBatch,
     EmailService,
+    PipelineStepRun,
+    ProxyCheckResult,
+    ProxyCheckRun,
     RegistrationTask,
     Setting,
     Proxy,
@@ -362,6 +367,7 @@ def create_registration_task(
     email_service_id: Optional[int] = None,
     proxy: Optional[str] = None,
     email_address: Optional[str] = None,
+    pipeline_key: Optional[str] = None,
 ) -> RegistrationTask:
     """创建注册任务"""
     db_task = RegistrationTask(
@@ -369,7 +375,8 @@ def create_registration_task(
         email_service_id=email_service_id,
         proxy=proxy,
         email_address=email_address,
-        status='pending'
+        status='pending',
+        pipeline_key=pipeline_key,
     )
     db.add(db_task)
     db.commit()
@@ -441,6 +448,167 @@ def delete_registration_task(db: Session, task_uuid: str) -> bool:
     db.delete(db_task)
     db.commit()
     return True
+
+
+# ============================================================================
+# 流水线/实验/代理预检/存活检查 CRUD
+# ============================================================================
+
+def create_pipeline_step_run(db: Session, **kwargs) -> PipelineStepRun:
+    """创建流水线 Step 执行记录"""
+    row = PipelineStepRun(**kwargs)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def get_pipeline_step_runs_by_task_uuid(db: Session, task_uuid: str) -> List[PipelineStepRun]:
+    """按 step_order 获取任务的 Step 运行记录列表。"""
+    return (
+        db.query(PipelineStepRun)
+        .filter(PipelineStepRun.task_uuid == task_uuid)
+        .order_by(asc(PipelineStepRun.step_order), asc(PipelineStepRun.id))
+        .all()
+    )
+
+
+def create_experiment_batch(
+    db: Session,
+    name: str,
+    mode: str,
+    pipelines: str,
+    email_service_type: Optional[str] = None,
+    email_service_config_snapshot: Optional[Dict[str, Any]] = None,
+    proxy_strategy_snapshot: Optional[Dict[str, Any]] = None,
+    target_count: int = 0,
+    notes: Optional[str] = None,
+    status: str = 'pending',
+) -> ExperimentBatch:
+    """创建实验批次"""
+    row = ExperimentBatch(
+        name=name,
+        mode=mode,
+        status=status,
+        pipelines=pipelines,
+        email_service_type=email_service_type,
+        email_service_config_snapshot=email_service_config_snapshot,
+        proxy_strategy_snapshot=proxy_strategy_snapshot,
+        target_count=target_count,
+        notes=notes,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def create_proxy_check_run(
+    db: Session,
+    scope_type: str,
+    scope_id: Optional[str] = None,
+    status: str = 'pending',
+    total_count: Optional[int] = None,
+    available_count: Optional[int] = None,
+) -> ProxyCheckRun:
+    """创建代理预检运行记录"""
+    row = ProxyCheckRun(
+        scope_type=scope_type,
+        scope_id=scope_id,
+        status=status,
+        total_count=total_count,
+        available_count=available_count,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def create_proxy_check_result(
+    db: Session,
+    proxy_check_run_id: int,
+    status: str,
+    proxy_id: Optional[int] = None,
+    proxy_url: Optional[str] = None,
+    latency_ms: Optional[int] = None,
+    country_code: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> ProxyCheckResult:
+    """创建代理预检结果"""
+    row = ProxyCheckResult(
+        proxy_check_run_id=proxy_check_run_id,
+        proxy_id=proxy_id,
+        proxy_url=proxy_url,
+        status=status,
+        latency_ms=latency_ms,
+        country_code=country_code,
+        ip_address=ip_address,
+        error_message=error_message,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def finalize_proxy_check_run(
+    db: Session,
+    proxy_check_run_id: int,
+    *,
+    status: str,
+    total_count: Optional[int] = None,
+    available_count: Optional[int] = None,
+    completed_at: Optional[datetime] = None,
+) -> Optional[ProxyCheckRun]:
+    """更新代理预检运行状态和统计结果"""
+    row = db.query(ProxyCheckRun).filter(ProxyCheckRun.id == proxy_check_run_id).first()
+    if not row:
+        return None
+
+    row.status = status
+    if total_count is not None:
+        row.total_count = total_count
+    if available_count is not None:
+        row.available_count = available_count
+    row.completed_at = completed_at or datetime.utcnow()
+
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def create_account_survival_check(
+    db: Session,
+    account_id: int,
+    check_source: str,
+    check_stage: str,
+    result_level: str,
+    task_uuid: Optional[str] = None,
+    pipeline_key: Optional[str] = None,
+    experiment_batch_id: Optional[int] = None,
+    signal_type: Optional[str] = None,
+    latency_ms: Optional[int] = None,
+    detail_json: Optional[Dict[str, Any]] = None,
+) -> AccountSurvivalCheck:
+    """创建账号存活检查记录"""
+    row = AccountSurvivalCheck(
+        account_id=account_id,
+        task_uuid=task_uuid,
+        pipeline_key=pipeline_key,
+        experiment_batch_id=experiment_batch_id,
+        check_source=check_source,
+        check_stage=check_stage,
+        result_level=result_level,
+        signal_type=signal_type,
+        latency_ms=latency_ms,
+        detail_json=detail_json,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 # 为 API 路由添加别名

@@ -18,6 +18,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..config.settings import get_settings
+from ..core.account_survival_dispatcher import (
+    AccountSurvivalDispatcher,
+    DatabaseAccountSurvivalRepository,
+)
 from ..scheduler.engine import SchedulerEngine
 from .routes import api_router
 from .routes.websocket import router as ws_router
@@ -59,6 +63,7 @@ def create_app() -> FastAPI:
         redoc_url="/api/redoc" if settings.debug else None,
     )
     app.state.scheduler_engine = SchedulerEngine()
+    app.state.account_survival_dispatcher = None
 
     # CORS 中间件
     app.add_middleware(
@@ -175,6 +180,13 @@ def create_app() -> FastAPI:
         """支付页面"""
         return templates.TemplateResponse("payment.html", {"request": request})
 
+    @app.get("/registration-experiments", response_class=HTMLResponse)
+    async def registration_experiments_page(request: Request):
+        """实验对比页面"""
+        if not _is_authenticated(request):
+            return _redirect_to_login(request)
+        return templates.TemplateResponse("registration_experiments.html", {"request": request})
+
     @app.on_event("startup")
     async def startup_event():
         """应用启动事件"""
@@ -191,6 +203,11 @@ def create_app() -> FastAPI:
         loop = asyncio.get_event_loop()
         task_manager.set_loop(loop)
         app.state.scheduler_engine.start()
+        if app.state.account_survival_dispatcher is None:
+            app.state.account_survival_dispatcher = AccountSurvivalDispatcher(
+                repo=DatabaseAccountSurvivalRepository(),
+            )
+        app.state.account_survival_dispatcher.start()
 
         logger.info("=" * 50)
         logger.info(f"{settings.app_name} v{settings.app_version} 启动中，程序正在伸懒腰...")
@@ -201,6 +218,9 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def shutdown_event():
         """应用关闭事件"""
+        dispatcher = getattr(app.state, "account_survival_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.stop()
         app.state.scheduler_engine.stop()
         logger.info("应用关闭，今天先收摊啦")
 

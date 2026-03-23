@@ -1,5 +1,6 @@
 import base64
 import json
+import pytest
 
 from src.config.constants import EmailServiceType, OPENAI_API_ENDPOINTS, OPENAI_PAGE_TYPES
 from src.core.http_client import OpenAIHTTPClient
@@ -294,3 +295,22 @@ def test_existing_account_login_uses_auto_sent_otp_without_manual_send():
     assert len(email_service.otp_requests) == 1
     assert email_service.otp_requests[0]["otp_sent_at"] is not None
     assert result.metadata["token_acquired_via_relogin"] is False
+
+
+def test_run_create_email_step_returns_payload():
+    email_service = FakeEmailService(["123456"])
+    engine = RegistrationEngine(email_service)
+
+    payload = engine.run_create_email_step()
+
+    assert payload["email"] == "tester@example.com"
+    assert payload["metadata"]["email_info"]["service_id"] == "mailbox-1"
+
+
+def test_run_create_email_step_raises_when_create_email_failed(monkeypatch):
+    email_service = FakeEmailService(["123456"])
+    engine = RegistrationEngine(email_service)
+    monkeypatch.setattr(engine, "_create_email", lambda: False)
+
+    with pytest.raises(RuntimeError, match="create_email failed"):
+        engine.run_create_email_step()
