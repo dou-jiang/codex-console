@@ -33,6 +33,7 @@ _ws_sent_index: Dict[str, Dict] = defaultdict(dict)
 # 任务状态
 _task_status: Dict[str, dict] = {}
 _task_steps: Dict[str, List[dict]] = {}
+_experiment_status: Dict[int, dict] = {}
 
 # 任务取消标志
 _task_cancelled: Dict[str, bool] = {}
@@ -214,6 +215,38 @@ class TaskManager:
     def clear_task_steps(self, task_uuid: str):
         """清理任务步骤快照。"""
         _task_steps.pop(task_uuid, None)
+
+    def init_experiment(
+        self,
+        experiment_id: int,
+        *,
+        status: str,
+        total_pairs: int,
+        total_tasks: int,
+        pipelines: List[str],
+    ):
+        """初始化实验批次轻量状态。"""
+        _experiment_status[experiment_id] = {
+            "status": status,
+            "total_pairs": total_pairs,
+            "total_tasks": total_tasks,
+            "pipelines": list(pipelines),
+        }
+
+    def update_experiment_status(self, experiment_id: int, **kwargs):
+        """更新实验批次轻量状态。"""
+        if experiment_id not in _experiment_status:
+            _experiment_status[experiment_id] = {}
+        _experiment_status[experiment_id].update(kwargs)
+
+    def get_experiment_status(self, experiment_id: int) -> Optional[dict]:
+        """获取实验批次轻量状态。"""
+        snapshot = _experiment_status.get(experiment_id)
+        return dict(snapshot) if snapshot is not None else None
+
+    def clear_experiment_status(self, experiment_id: int):
+        """清理实验批次轻量状态。"""
+        _experiment_status.pop(experiment_id, None)
 
     def cleanup_task(self, task_uuid: str):
         """清理任务数据"""
