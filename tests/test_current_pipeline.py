@@ -57,10 +57,18 @@ class FakeCurrentPipelineEngine:
 
     def run_prepare_token_acquisition_step(self):
         self.calls.append("run_prepare_token_acquisition_step")
-        return {"metadata": {"token_acquired_via_relogin": True}}
+        return {
+            "metadata": {
+                "token_acquired_via_relogin": True,
+                "relogin_device_id": "did-1",
+                "relogin_sentinel_token": "sentinel-1",
+            }
+        }
 
-    def run_submit_login_email_step(self):
+    def run_submit_login_email_step(self, *, did: str, sentinel_token: str):
         self.calls.append("run_submit_login_email_step")
+        assert did == "did-1"
+        assert sentinel_token == "sentinel-1"
         return {}
 
     def run_submit_login_password_step(self):
@@ -166,3 +174,37 @@ def test_current_pipeline_uses_common_step_bindings():
 
     assert steps["exchange_oauth_token"].impl_key == "common.exchange_oauth_token"
     assert steps["exchange_oauth_token"].handler is common_steps.exchange_oauth_token_step
+
+
+def test_get_pipeline_current_pipeline_is_idempotent():
+    first = get_pipeline("current_pipeline")
+    second = get_pipeline("current_pipeline")
+    assert first is not None
+    assert second is first
+
+
+def test_current_submit_login_email_step_does_not_swallow_typeerror(fake_db):
+    class TypeErrorCurrentPipelineEngine(FakeCurrentPipelineEngine):
+        def run_submit_login_email_step(self, *, did: str, sentinel_token: str):
+            self.calls.append("run_submit_login_email_step")
+            raise TypeError("boom in login email step")
+
+    pipeline = get_pipeline("current_pipeline")
+    assert pipeline is not None
+
+    task_uuid = "task-current-pipeline-typeerror"
+    crud.create_registration_task(fake_db, task_uuid=task_uuid)
+
+    ctx = PipelineContext(
+        task_uuid=task_uuid,
+        pipeline_key="current_pipeline",
+        metadata={
+            "registration_engine": TypeErrorCurrentPipelineEngine(),
+            "proxy_preflight_results": [
+                {"proxy_id": 1, "proxy_url": "http://proxy-a", "status": "available"},
+            ],
+        },
+    )
+
+    with pytest.raises(TypeError, match="boom in login email step"):
+        PipelineRunner(fake_db).run(pipeline, ctx)

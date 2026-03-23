@@ -62,15 +62,10 @@ def current_prepare_token_acquisition_step(ctx: PipelineContext) -> dict[str, An
 
 def current_submit_login_email_step(ctx: PipelineContext) -> dict[str, Any]:
     metadata = ctx.metadata or {}
-    engine = get_registration_engine(ctx)
-    try:
-        return engine.run_submit_login_email_step(
-            did=metadata.get("relogin_device_id"),
-            sentinel_token=metadata.get("relogin_sentinel_token"),
-        )
-    except TypeError:
-        # Keep compatibility with simple test doubles that expose a no-arg method.
-        return engine.run_submit_login_email_step()
+    return get_registration_engine(ctx).run_submit_login_email_step(
+        did=metadata.get("relogin_device_id"),
+        sentinel_token=metadata.get("relogin_sentinel_token"),
+    )
 
 
 def current_submit_login_password_step(ctx: PipelineContext) -> dict[str, Any]:

@@ -870,16 +870,9 @@ class RegistrationEngine:
         return {}
 
     def run_prepare_authorize_flow_step(self) -> dict[str, Any]:
-        if not self.session and not self._init_session():
-            raise RuntimeError("init auth session failed")
-        if not self._start_oauth():
-            raise RuntimeError("start oauth failed")
-
-        did = self._get_device_id()
+        did, sentinel_token = self._prepare_authorize_flow("首次授权")
         if not did:
             raise RuntimeError("get device id failed")
-
-        sentinel_token = self._check_sentinel(did)
         if not sentinel_token:
             raise RuntimeError("sentinel check failed")
 
@@ -958,7 +951,7 @@ class RegistrationEngine:
             }
         }
 
-    def run_submit_login_email_step(self, *, did: Optional[str] = None, sentinel_token: Optional[str] = None) -> dict[str, Any]:
+    def run_submit_login_email_step(self, *, did: str, sentinel_token: str) -> dict[str, Any]:
         if self._is_existing_account:
             return {"metadata": {"submit_login_email_skipped": True}}
         if not did or not sentinel_token:
