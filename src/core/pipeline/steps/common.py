@@ -19,7 +19,8 @@ def get_proxy_ip_step(ctx: PipelineContext) -> dict[str, Any]:
 
     results = (ctx.metadata or {}).get("proxy_preflight_results") or []
     if not results:
-        raise RuntimeError("proxy_preflight_results missing")
+        # 允许无代理运行：当未提供预检结果时跳过代理分配。
+        return {}
 
     selected = choose_available_proxy(results)
     proxy_url = str(selected.get("proxy_url") or "").strip()

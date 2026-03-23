@@ -21,5 +21,9 @@ def get_pipeline(pipeline_key: str) -> PipelineDefinition | None:
         from .steps.current import register_current_pipeline
 
         return register_current_pipeline()
+    if pipeline_key == "codexgen_pipeline":
+        from .steps.codexgen import register_codexgen_pipeline
+
+        return register_codexgen_pipeline()
 
     return None
