@@ -158,8 +158,17 @@ def test_refill_runner_logs_target_resolution_and_progress_summaries(temp_db, mo
     persisted_run = temp_db.get(ScheduledRun, run.id)
     assert persisted_run is not None
     assert summary["uploaded_success"] == 45
-    assert "refill target resolved" in (persisted_run.logs or "")
-    assert "refill progress" in (persisted_run.logs or "")
+    logs = persisted_run.logs or ""
+    assert "refill target resolved" in logs
+    assert (
+        "refill progress (attempted=20, uploaded_success=20, registered_failed=0, "
+        "uploaded_failed=0, refill_target=45)"
+    ) in logs
+    assert (
+        "refill progress (attempted=40, uploaded_success=40, registered_failed=0, "
+        "uploaded_failed=0, refill_target=45)"
+    ) in logs
+    assert "refill progress (attempted=45" not in logs
 
 
 def test_refill_runner_marks_run_cancelled_and_logs_user_stop_when_stop_requested_mid_loop(temp_db, monkeypatch):

@@ -224,10 +224,21 @@ def test_cleanup_runner_logs_staged_probe_expire_and_delete_progress(temp_db, mo
     assert persisted_run is not None
     assert summary["local_marked_expired"] == 250
     assert summary["remote_deleted"] == 250
-    assert "cleanup probe progress (scanned=100, invalid=10)" in (persisted_run.logs or "")
-    assert "cleanup probe progress (scanned=200, invalid=25)" in (persisted_run.logs or "")
-    assert "cleanup expire progress" in (persisted_run.logs or "")
-    assert "cleanup delete progress" in (persisted_run.logs or "")
+    logs = persisted_run.logs or ""
+    assert "cleanup probe progress (scanned=100, invalid=10)" in logs
+    assert "cleanup probe progress (scanned=200, invalid=25)" in logs
+    assert "cleanup expire progress (processed=100, local_expired=100)" in logs
+    assert "cleanup expire progress (processed=200, local_expired=200)" in logs
+    assert "cleanup expire progress (processed=250" not in logs
+    assert (
+        "cleanup delete progress (processed=100, remote_deleted=100, remote_delete_failed=0)"
+        in logs
+    )
+    assert (
+        "cleanup delete progress (processed=200, remote_deleted=200, remote_delete_failed=0)"
+        in logs
+    )
+    assert "cleanup delete progress (processed=250" not in logs
 
 
 def test_cleanup_runner_marks_run_cancelled_and_logs_user_stop_when_stop_requested_mid_loop(temp_db, monkeypatch):
