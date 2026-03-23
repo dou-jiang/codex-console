@@ -65,6 +65,25 @@ def test_scheduled_tasks_template_contains_run_center_hooks():
     assert 'id="run-log-stop-btn"' in template
 
 
+def test_shared_list_templates_opt_into_table_shell_styling():
+    scheduled_template = Path("templates/scheduled_tasks.html").read_text(encoding="utf-8")
+    accounts_template = Path("templates/accounts.html").read_text(encoding="utf-8")
+    email_template = Path("templates/email_services.html").read_text(encoding="utf-8")
+
+    assert scheduled_template.count("table-shell") >= 2
+    assert "table-shell" in accounts_template
+    assert email_template.count("table-shell") >= 2
+
+
+def test_shared_style_sheet_contains_card_list_system_hooks():
+    stylesheet = Path("static/css/style.css").read_text(encoding="utf-8")
+    assert ".table-shell" in stylesheet
+    assert ".table-actions" in stylesheet
+    assert ".scheduled-run-summary" in stylesheet
+    assert ".scheduled-run-detail-head" in stylesheet
+    assert ".scheduled-run-log-panel" in stylesheet
+
+
 def test_scheduled_tasks_script_contains_create_edit_enable_disable_hooks():
     script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
     assert "function openCreatePlanModal(" in script
@@ -153,6 +172,344 @@ def test_scheduled_tasks_script_contains_run_center_live_log_and_stop_hooks():
     assert 'data-action="stop-run"' in script
     assert "async function stopScheduledRun(" in script
     assert '"stopping"' in script or "'stopping'" in script
+
+
+def test_scheduled_tasks_render_summaries_as_concise_business_metrics():
+    node_script = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+function makeElement() {
+  let html = '';
+  const classes = new Set();
+  return {
+    dataset: {},
+    style: {},
+    disabled: false,
+    setAttribute: () => {},
+    removeAttribute: () => {},
+    addEventListener: () => {},
+    scrollIntoView: () => {},
+    get innerHTML() { return html; },
+    set innerHTML(next) { html = String(next ?? ''); },
+    classList: {
+      add: (name) => classes.add(name),
+      remove: (name) => classes.delete(name),
+      contains: (name) => classes.has(name),
+    },
+  };
+}
+
+const runsBody = makeElement();
+
+global.window = {};
+global.document = {
+  getElementById: (id) => (id === 'scheduled-runs-table-body' ? runsBody : null),
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+  createElement: () => {
+    let value = '';
+    return {
+      set textContent(next) { value = String(next ?? ''); },
+      get textContent() { return value; },
+      get innerHTML() { return value; },
+      set innerHTML(next) { value = String(next ?? ''); },
+    };
+  },
+};
+
+global.api = { get: async () => ({}), post: async () => ({}), put: async () => ({}) };
+global.toast = { error: () => {}, warning: () => {}, success: () => {} };
+global.format = { date: (value) => String(value ?? '-') };
+global.theme = { toggle: () => {} };
+
+vm.runInThisContext(fs.readFileSync('static/js/scheduled_tasks.js', 'utf8'), {
+  filename: 'static/js/scheduled_tasks.js',
+});
+
+window.renderScheduledRuns([
+  {
+    id: 1,
+    plan_id: 101,
+    plan_name: 'cleanup',
+    task_type: 'cpa_cleanup',
+    trigger_source: 'manual',
+    status: 'success',
+    started_at: null,
+    finished_at: null,
+    summary: { invalid_items_found: 20, remote_deleted: 18 },
+  },
+  {
+    id: 2,
+    plan_id: 102,
+    plan_name: 'refill',
+    task_type: 'cpa_refill',
+    trigger_source: 'manual',
+    status: 'success',
+    started_at: null,
+    finished_at: null,
+    summary: { uploaded_success: 6 },
+  },
+  {
+    id: 3,
+    plan_id: 103,
+    plan_name: 'refresh',
+    task_type: 'account_refresh',
+    trigger_source: 'manual',
+    status: 'success',
+    started_at: null,
+    finished_at: null,
+    summary: { processed: 30, refreshed_success: 28, uploaded_success: 27 },
+  },
+]);
+
+const html = runsBody.innerHTML;
+if (!html.includes('检测 20 · 清理 18')) throw new Error('missing cleanup concise summary: ' + html);
+if (!html.includes('补号 6')) throw new Error('missing refill concise summary: ' + html);
+if (!html.includes('处理 30 · 刷新 28 · 上传 27')) throw new Error('missing refresh concise summary: ' + html);
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_scheduled_tasks_failed_or_cancelled_runs_append_short_reason_to_summary():
+    node_script = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+function makeElement() {
+  let html = '';
+  const classes = new Set();
+  return {
+    dataset: {},
+    style: {},
+    disabled: false,
+    setAttribute: () => {},
+    removeAttribute: () => {},
+    addEventListener: () => {},
+    scrollIntoView: () => {},
+    get innerHTML() { return html; },
+    set innerHTML(next) { html = String(next ?? ''); },
+    classList: {
+      add: (name) => classes.add(name),
+      remove: (name) => classes.delete(name),
+      contains: (name) => classes.has(name),
+    },
+  };
+}
+
+const runsBody = makeElement();
+
+global.window = {};
+global.document = {
+  getElementById: (id) => (id === 'scheduled-runs-table-body' ? runsBody : null),
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+  createElement: () => {
+    let value = '';
+    return {
+      set textContent(next) { value = String(next ?? ''); },
+      get textContent() { return value; },
+      get innerHTML() { return value; },
+      set innerHTML(next) { value = String(next ?? ''); },
+    };
+  },
+};
+
+global.api = { get: async () => ({}), post: async () => ({}), put: async () => ({}) };
+global.toast = { error: () => {}, warning: () => {}, success: () => {} };
+global.format = { date: (value) => String(value ?? '-') };
+global.theme = { toggle: () => {} };
+
+vm.runInThisContext(fs.readFileSync('static/js/scheduled_tasks.js', 'utf8'), {
+  filename: 'static/js/scheduled_tasks.js',
+});
+
+window.renderScheduledRuns([
+  {
+    id: 1,
+    plan_id: 101,
+    plan_name: 'cleanup',
+    task_type: 'cpa_cleanup',
+    trigger_source: 'manual',
+    status: 'failed',
+    started_at: null,
+    finished_at: null,
+    error_message: '接口超时',
+    summary: { invalid_items_found: 12, remote_deleted: 4 },
+  },
+  {
+    id: 2,
+    plan_id: 102,
+    plan_name: 'refill',
+    task_type: 'cpa_refill',
+    trigger_source: 'manual',
+    status: 'cancelled',
+    started_at: null,
+    finished_at: null,
+    error_message: null,
+    summary: { uploaded_success: 3 },
+  },
+]);
+
+const html = runsBody.innerHTML;
+if (!html.includes('检测 12 · 清理 4 · 原因：接口超时')) {
+  throw new Error('missing failed cleanup reason summary: ' + html);
+}
+if (!html.includes('补号 3 · 原因：用户停止')) {
+  throw new Error('missing cancelled refill fallback summary: ' + html);
+}
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_scheduled_tasks_open_run_detail_renders_structured_summary_and_log_sections():
+    node_script = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+function makeElement() {
+  let html = '';
+  let text = '';
+  const classes = new Set();
+  return {
+    dataset: {},
+    style: {},
+    disabled: false,
+    setAttribute: () => {},
+    removeAttribute: () => {},
+    addEventListener: () => {},
+    scrollIntoView: () => {},
+    get innerHTML() { return html; },
+    set innerHTML(next) { html = String(next ?? ''); },
+    get textContent() { return text; },
+    set textContent(next) { text = String(next ?? ''); },
+    classList: {
+      add: (name) => classes.add(name),
+      remove: (name) => classes.delete(name),
+      contains: (name) => classes.has(name),
+    },
+  };
+}
+
+const elements = new Map([
+  ['run-log-modal', makeElement()],
+  ['run-log-status-bar', makeElement()],
+  ['run-log-modal-body', makeElement()],
+  ['run-log-stop-btn', makeElement()],
+]);
+
+global.window = {};
+global.document = {
+  getElementById: (id) => {
+    if (id === 'scheduled-run-log-output') {
+      if (!elements.has(id)) elements.set(id, makeElement());
+      return elements.get(id);
+    }
+    return elements.get(id) ?? null;
+  },
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+  createElement: () => {
+    let value = '';
+    return {
+      set textContent(next) { value = String(next ?? ''); },
+      get textContent() { return value; },
+      get innerHTML() { return value; },
+      set innerHTML(next) { value = String(next ?? ''); },
+    };
+  },
+};
+
+global.api = {
+  get: async (url) => {
+    if (url === '/scheduled-runs/123') {
+      return {
+        id: 123,
+        plan_id: 1,
+        plan_name: 'nightly cleanup',
+        task_type: 'cpa_cleanup',
+        trigger_source: 'manual',
+        started_at: '2026-03-23T10:00:00',
+        finished_at: '2026-03-23T10:05:00',
+        error_message: null,
+        summary: { invalid_items_found: 18, remote_deleted: 16 },
+        status: 'success',
+        last_log_at: '2026-03-23T10:05:00',
+        is_running: false,
+        stop_requested_at: null,
+        can_stop: false,
+      };
+    }
+    if (url.startsWith('/scheduled-runs/123/logs?offset=')) {
+      return {
+        chunk: 'done',
+        next_offset: 4,
+        has_more: false,
+        is_running: false,
+        status: 'success',
+        stop_requested_at: null,
+        log_version: 1,
+        last_log_at: '2026-03-23T10:05:00',
+      };
+    }
+    throw new Error('unexpected url: ' + url);
+  },
+  post: async () => ({}),
+  put: async () => ({}),
+};
+global.toast = { error: () => {}, warning: () => {}, success: () => {} };
+global.format = { date: (value) => String(value ?? '-') };
+global.theme = { toggle: () => {} };
+
+vm.runInThisContext(fs.readFileSync('static/js/scheduled_tasks.js', 'utf8'), {
+  filename: 'static/js/scheduled_tasks.js',
+});
+
+async function main() {
+  await window.openScheduledRunDetail(123);
+  const statusBarHtml = elements.get('run-log-status-bar').innerHTML;
+  const detailBodyHtml = elements.get('run-log-modal-body').innerHTML;
+  const logText = elements.get('scheduled-run-log-output').textContent;
+
+  if (!statusBarHtml.includes('scheduled-run-meta-bar')) throw new Error('missing status bar hook: ' + statusBarHtml);
+  if (!detailBodyHtml.includes('scheduled-run-detail-head')) throw new Error('missing detail head hook: ' + detailBodyHtml);
+  if (!detailBodyHtml.includes('scheduled-run-detail-grid')) throw new Error('missing detail grid hook: ' + detailBodyHtml);
+  if (!detailBodyHtml.includes('scheduled-run-summary')) throw new Error('missing summary hook: ' + detailBodyHtml);
+  if (!detailBodyHtml.includes('scheduled-run-log-panel')) throw new Error('missing log panel hook: ' + detailBodyHtml);
+  if (!detailBodyHtml.includes('检测 18 · 清理 16')) throw new Error('missing concise summary: ' + detailBodyHtml);
+  if (logText !== 'done') throw new Error('expected final log text to be loaded');
+}
+
+main().catch((err) => {
+  console.error(err && err.stack ? err.stack : String(err));
+  process.exit(1);
+});
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_scheduled_tasks_script_drops_stale_builtin_keys_when_task_type_switches():

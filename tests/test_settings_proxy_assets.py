@@ -11,6 +11,11 @@ def test_settings_template_contains_proxy_batch_import_controls():
     assert 'id="batch-delete-proxies-btn"' in template
 
 
+def test_settings_template_uses_shared_table_shell_for_management_lists():
+    template = Path("templates/settings.html").read_text(encoding="utf-8")
+    assert template.count("table-shell") >= 4
+
+
 def test_settings_js_contains_proxy_batch_handlers():
     script = Path("static/js/settings.js").read_text(encoding="utf-8")
     assert "handleProxyBatchImport" in script

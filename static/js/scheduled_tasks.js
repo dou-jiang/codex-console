@@ -1155,10 +1155,45 @@ function updateScheduledRunFiltersFromInputs() {
     };
 }
 
-function summarizeScheduledRun(run) {
-    if (run?.error_message) {
-        return String(run.error_message);
+function toSummaryCount(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 0;
+    return Math.max(0, Math.floor(parsed));
+}
+
+function formatScheduledRunReason(run) {
+    const rawReason = String(run?.error_message || '').trim();
+    if (rawReason) {
+        return rawReason.length > 32 ? `${rawReason.slice(0, 32)}…` : rawReason;
     }
+
+    const uiStatus = getScheduledRunUiStatus(run);
+    if (uiStatus === 'cancelled') return '用户停止';
+    if (uiStatus === 'stopping') return '停止中';
+    if (uiStatus === 'failed') return '执行失败';
+    return '';
+}
+
+function buildScheduledRunSummaryBase(run) {
+    const summary = isPlainObject(run?.summary) ? run.summary : {};
+    const taskType = run?.task_type;
+
+    if (taskType === 'cpa_refill') {
+        return `补号 ${toSummaryCount(summary.uploaded_success)}`;
+    }
+
+    if (taskType === 'cpa_cleanup') {
+        return `检测 ${toSummaryCount(summary.invalid_items_found)} · 清理 ${toSummaryCount(summary.remote_deleted)}`;
+    }
+
+    if (taskType === 'account_refresh') {
+        return (
+            `处理 ${toSummaryCount(summary.processed)} · ` +
+            `刷新 ${toSummaryCount(summary.refreshed_success)} · ` +
+            `上传 ${toSummaryCount(summary.uploaded_success)}`
+        );
+    }
+
     if (run?.summary && Object.keys(run.summary).length > 0) {
         try {
             return JSON.stringify(run.summary);
@@ -1166,7 +1201,22 @@ function summarizeScheduledRun(run) {
             return String(run.summary);
         }
     }
+
     return '-';
+}
+
+function summarizeScheduledRun(run) {
+    const baseSummary = buildScheduledRunSummaryBase(run);
+    const uiStatus = getScheduledRunUiStatus(run);
+
+    if (['failed', 'cancelled', 'stopping'].includes(uiStatus)) {
+        const reason = formatScheduledRunReason(run);
+        if (reason) {
+            return `${baseSummary} · 原因：${reason}`;
+        }
+    }
+
+    return baseSummary;
 }
 
 function updateScheduledRunCacheItem(runId, updater) {
@@ -1216,9 +1266,9 @@ function renderScheduledRuns(runs) {
                 <td><span class="status-badge ${uiStatus}">${getRunStatusText(uiStatus)}</span></td>
                 <td>${format.date(run.started_at)}</td>
                 <td>${format.date(run.finished_at)}</td>
-                <td>${escapeHtml(summarizeScheduledRun(run))}</td>
+                <td class="scheduled-run-summary-cell"><div class="scheduled-run-summary">${escapeHtml(summarizeScheduledRun(run))}</div></td>
                 <td>
-                    <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                    <div class="table-actions">
                         <button class="btn btn-secondary btn-sm" data-action="view-run-detail" data-run-id="${run.id}" onclick="handleRunLogAction(this)">详情</button>
                         <button class="btn btn-secondary btn-sm" data-action="view-run-log" data-run-id="${run.id}" onclick="handleRunLogAction(this)">日志</button>
                         <button class="btn btn-secondary btn-sm" data-action="filter-plan-runs" data-plan-id="${run.plan_id}" onclick="handlePlanAction(this)">同计划</button>
@@ -1295,20 +1345,24 @@ function renderScheduledRunStatusBar(detail) {
     }
     const uiStatus = getScheduledRunUiStatus(detail);
     scheduledTaskElements.runLogStatusBar.innerHTML = `
-        <span><strong>Run #${detail.id}</strong> · ${escapeHtml(detail.plan_name || `计划 #${detail.plan_id}`)}</span>
-        <span>状态：<strong>${getRunStatusText(uiStatus)}</strong></span>
-        <span>最后日志：${format.date(detail.last_log_at)}</span>
+        <div class="scheduled-run-meta-bar">
+            <span><strong>Run #${detail.id}</strong> · ${escapeHtml(detail.plan_name || `计划 #${detail.plan_id}`)}</span>
+            <span>状态：<strong>${getRunStatusText(uiStatus)}</strong></span>
+            <span>最后日志：${format.date(detail.last_log_at)}</span>
+        </div>
     `;
 }
 
 function renderScheduledRunDetailBody(detail, initialLogs = '') {
     if (!scheduledTaskElements.runLogModalBody) return;
     scheduledTaskElements.runLogModalBody.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <div class="scheduled-run-detail-head">
             <strong>运行详情 #${detail.id}</strong>
-            <button class="btn btn-secondary btn-sm" data-action="back-to-runs" onclick="handleRunLogAction(this)">返回运行中心</button>
+            <div class="table-actions">
+                <button class="btn btn-secondary btn-sm" data-action="back-to-runs" onclick="handleRunLogAction(this)">返回运行中心</button>
+            </div>
         </div>
-        <div class="info-grid">
+        <div class="info-grid scheduled-run-detail-grid">
             <div class="info-item"><span class="label">计划</span><span class="value">${escapeHtml(detail.plan_name || `计划 #${detail.plan_id}`)}</span></div>
             <div class="info-item"><span class="label">任务类型</span><span class="value">${getTaskTypeText(detail.task_type)}</span></div>
             <div class="info-item"><span class="label">触发源</span><span class="value">${escapeHtml(detail.trigger_source || '-')}</span></div>
@@ -1316,11 +1370,11 @@ function renderScheduledRunDetailBody(detail, initialLogs = '') {
             <div class="info-item"><span class="label">开始时间</span><span class="value">${format.date(detail.started_at)}</span></div>
             <div class="info-item"><span class="label">结束时间</span><span class="value">${format.date(detail.finished_at)}</span></div>
             <div class="info-item"><span class="label">错误信息</span><span class="value">${escapeHtml(detail.error_message || '-')}</span></div>
-            <div class="info-item"><span class="label">摘要</span><span class="value">${escapeHtml(summarizeScheduledRun(detail))}</span></div>
+            <div class="info-item scheduled-run-summary"><span class="label">摘要</span><span class="value">${escapeHtml(summarizeScheduledRun(detail))}</span></div>
         </div>
-        <div style="margin-top:12px;">
-            <div style="margin-bottom:8px;font-weight:600;">实时日志</div>
-            <pre id="scheduled-run-log-output" style="white-space:pre-wrap;word-break:break-word;background:var(--surface-hover);padding:12px;border-radius:8px;max-height:420px;overflow:auto;">${escapeHtml(initialLogs || '暂无日志')}</pre>
+        <div class="scheduled-run-log-panel">
+            <div class="scheduled-run-log-title">实时日志</div>
+            <pre id="scheduled-run-log-output" class="scheduled-run-log-output">${escapeHtml(initialLogs || '暂无日志')}</pre>
         </div>
     `;
 }
