@@ -5,10 +5,11 @@ import io
 import json
 import logging
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Body
+from fastapi import APIRouter, HTTPException, Query, Body
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -98,6 +99,22 @@ class BatchUpdateRequest(BaseModel):
 
 
 # ============== Helper Functions ==============
+
+def normalize_batch_concurrency(concurrency: Optional[int]) -> int:
+    """限制批处理并发数在 2-10 之间。"""
+    if concurrency is None:
+        return 4
+    return max(2, min(10, concurrency))
+
+
+def run_batch_concurrently(items: List[int], concurrency: Optional[int], worker):
+    """使用本地线程池并发执行批处理任务。"""
+    if not items:
+        return []
+
+    max_workers = min(len(items), normalize_batch_concurrency(concurrency))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="account_batch") as executor:
+        return list(executor.map(worker, items))
 
 def resolve_account_ids(
     db,
@@ -192,7 +209,6 @@ async def list_accounts(
             total=total,
             accounts=[account_to_response(acc) for acc in accounts]
         )
-
 
 @router.get("/{account_id}", response_model=AccountResponse)
 async def get_account(account_id: int):
@@ -576,6 +592,7 @@ class BatchRefreshRequest(BaseModel):
     """批量刷新请求"""
     ids: List[int] = []
     proxy: Optional[str] = None
+    concurrency: Optional[int] = 4
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
@@ -591,6 +608,7 @@ class BatchValidateRequest(BaseModel):
     """批量验证请求"""
     ids: List[int] = []
     proxy: Optional[str] = None
+    concurrency: Optional[int] = 4
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
@@ -598,7 +616,7 @@ class BatchValidateRequest(BaseModel):
 
 
 @router.post("/batch-refresh")
-async def batch_refresh_tokens(request: BatchRefreshRequest, background_tasks: BackgroundTasks):
+def batch_refresh_tokens(request: BatchRefreshRequest):
     """批量刷新账号 Token"""
     proxy = _get_proxy(request.proxy)
 
@@ -614,23 +632,30 @@ async def batch_refresh_tokens(request: BatchRefreshRequest, background_tasks: B
             request.status_filter, request.email_service_filter, request.search_filter
         )
 
-    for account_id in ids:
+    def worker(account_id: int):
         try:
-            result = do_refresh(account_id, proxy)
-            if result.success:
-                results["success_count"] += 1
-            else:
-                results["failed_count"] += 1
-                results["errors"].append({"id": account_id, "error": result.error_message})
+            return {"id": account_id, "result": do_refresh(account_id, proxy)}
         except Exception as e:
+            return {"id": account_id, "error": str(e)}
+
+    for item in run_batch_concurrently(ids, request.concurrency, worker):
+        if item.get("error") is not None:
             results["failed_count"] += 1
-            results["errors"].append({"id": account_id, "error": str(e)})
+            results["errors"].append({"id": item["id"], "error": item["error"]})
+            continue
+
+        result = item["result"]
+        if result.success:
+            results["success_count"] += 1
+        else:
+            results["failed_count"] += 1
+            results["errors"].append({"id": item["id"], "error": result.error_message})
 
     return results
 
 
 @router.post("/{account_id}/refresh")
-async def refresh_account_token(account_id: int, request: Optional[TokenRefreshRequest] = Body(default=None)):
+def refresh_account_token(account_id: int, request: Optional[TokenRefreshRequest] = Body(default=None)):
     """刷新单个账号的 Token"""
     proxy = _get_proxy(request.proxy if request else None)
     result = do_refresh(account_id, proxy)
@@ -649,7 +674,7 @@ async def refresh_account_token(account_id: int, request: Optional[TokenRefreshR
 
 
 @router.post("/batch-validate")
-async def batch_validate_tokens(request: BatchValidateRequest):
+def batch_validate_tokens(request: BatchValidateRequest):
     """批量验证账号 Token 有效性"""
     proxy = _get_proxy(request.proxy)
 
@@ -665,31 +690,37 @@ async def batch_validate_tokens(request: BatchValidateRequest):
             request.status_filter, request.email_service_filter, request.search_filter
         )
 
-    for account_id in ids:
+    def worker(account_id: int):
         try:
             is_valid, error = do_validate(account_id, proxy)
-            results["details"].append({
+            return {
                 "id": account_id,
                 "valid": is_valid,
-                "error": error
-            })
-            if is_valid:
-                results["valid_count"] += 1
-            else:
-                results["invalid_count"] += 1
+                "error": error,
+            }
         except Exception as e:
-            results["invalid_count"] += 1
-            results["details"].append({
+            return {
                 "id": account_id,
                 "valid": False,
-                "error": str(e)
-            })
+                "error": str(e),
+            }
+
+    for item in run_batch_concurrently(ids, request.concurrency, worker):
+        results["details"].append({
+            "id": item["id"],
+            "valid": item["valid"],
+            "error": item["error"]
+        })
+        if item["valid"]:
+            results["valid_count"] += 1
+        else:
+            results["invalid_count"] += 1
 
     return results
 
 
 @router.post("/{account_id}/validate")
-async def validate_account_token(account_id: int, request: Optional[TokenValidateRequest] = Body(default=None)):
+def validate_account_token(account_id: int, request: Optional[TokenValidateRequest] = Body(default=None)):
     """验证单个账号的 Token 有效性"""
     proxy = _get_proxy(request.proxy if request else None)
     is_valid, error = do_validate(account_id, proxy)

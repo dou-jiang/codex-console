@@ -776,6 +776,18 @@ body {
     box-shadow: 0 0 0 3px var(--primary-light);
 }
 
+.batch-concurrency-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.batch-concurrency-control .form-select {
+    min-width: 84px;
+}
+
 /* ============================================
    分页
    ============================================ */
@@ -1065,6 +1077,40 @@ body {
     to { transform: translateX(100%); }
 }
 
+.batch-progress-panel {
+    flex: 1 1 100%;
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-md);
+}
+
+.batch-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-sm);
+}
+
+.batch-progress-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.batch-progress-meta,
+.batch-progress-stats {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.batch-progress-percent {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--primary-color);
+}
+
 /* ============================================
    空状态
    ============================================ */
@@ -1258,6 +1304,15 @@ body {
     .toolbar-right {
         flex-direction: column;
         align-items: stretch;
+    }
+
+    .batch-concurrency-control {
+        justify-content: space-between;
+    }
+
+    .batch-progress-header {
+        align-items: stretch;
+        flex-direction: column;
     }
 
     .form-row {

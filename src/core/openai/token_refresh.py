@@ -323,10 +323,24 @@ def validate_account_token(account_id: int, proxy_url: Optional[str] = None) -> 
     with get_db() as db:
         account = crud.get_account_by_id(db, account_id)
         if not account:
+            logger.warning(f"验证账号失败，账号不存在: {account_id}")
             return False, "账号不存在"
 
         if not account.access_token:
+            logger.warning(f"验证账号 {account.email} 失败: 缺少 access_token")
+            crud.update_account(db, account_id, status="failed")
             return False, "账号没有 access_token"
 
+        logger.info(f"开始验证账号 Token: {account.email}")
         manager = TokenRefreshManager(proxy_url=proxy_url)
-        return manager.validate_token(account.access_token)
+        is_valid, error = manager.validate_token(account.access_token)
+        crud.update_account(
+            db,
+            account_id,
+            status="active" if is_valid else "failed",
+        )
+        if is_valid:
+            logger.info(f"账号 Token 验证成功: {account.email}")
+        else:
+            logger.warning(f"账号 Token 验证失败: {account.email}, 原因: {error}")
+        return is_valid, error

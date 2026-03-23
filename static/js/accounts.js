@@ -11,6 +11,13 @@ let selectedAccounts = new Set();
 let isLoading = false;
 let selectAllPages = false;  // 是否选中了全部页
 let currentFilters = { status: '', email_service: '', search: '' };  // 当前筛选条件
+let batchOperationRunning = false;
+let activeBatchButton = null;
+let activeBatchButtonText = '';
+
+const MIN_BATCH_CONCURRENCY = 2;
+const MAX_BATCH_CONCURRENCY = 10;
+const DEFAULT_BATCH_CONCURRENCY = 4;
 
 // DOM 元素
 const elements = {
@@ -28,6 +35,13 @@ const elements = {
     batchUploadBtn: document.getElementById('batch-upload-btn'),
     batchCheckSubBtn: document.getElementById('batch-check-sub-btn'),
     batchDeleteBtn: document.getElementById('batch-delete-btn'),
+    batchConcurrency: document.getElementById('batch-concurrency'),
+    batchProgressPanel: document.getElementById('batch-progress-panel'),
+    batchProgressTitle: document.getElementById('batch-progress-title'),
+    batchProgressMeta: document.getElementById('batch-progress-meta'),
+    batchProgressBar: document.getElementById('batch-progress-bar'),
+    batchProgressPercent: document.getElementById('batch-progress-percent'),
+    batchProgressStats: document.getElementById('batch-progress-stats'),
     exportBtn: document.getElementById('export-btn'),
     exportMenu: document.getElementById('export-menu'),
     selectAll: document.getElementById('select-all'),
@@ -473,10 +487,11 @@ function selectAllPagesAction() {
 function updateBatchButtons() {
     const count = getEffectiveCount();
     elements.batchDeleteBtn.disabled = count === 0;
-    elements.batchRefreshBtn.disabled = count === 0;
-    elements.batchValidateBtn.disabled = count === 0;
+    elements.batchRefreshBtn.disabled = count === 0 || batchOperationRunning;
+    elements.batchValidateBtn.disabled = count === 0 || batchOperationRunning;
     elements.batchUploadBtn.disabled = count === 0;
-    elements.batchCheckSubBtn.disabled = count === 0;
+    elements.batchCheckSubBtn.disabled = count === 0 || batchOperationRunning;
+    elements.batchConcurrency.disabled = batchOperationRunning;
     elements.exportBtn.disabled = count === 0;
 
     elements.batchDeleteBtn.textContent = count > 0 ? `🗑️ 删除 (${count})` : '🗑️ 批量删除';
@@ -484,6 +499,106 @@ function updateBatchButtons() {
     elements.batchValidateBtn.textContent = count > 0 ? `✅ 验证 (${count})` : '✅ 验证Token';
     elements.batchUploadBtn.textContent = count > 0 ? `☁️ 上传 (${count})` : '☁️ 上传';
     elements.batchCheckSubBtn.textContent = count > 0 ? `🔍 检测 (${count})` : '🔍 检测订阅';
+
+    if (batchOperationRunning && activeBatchButton) {
+        activeBatchButton.textContent = activeBatchButtonText;
+    }
+}
+
+function getBatchConcurrency() {
+    const rawValue = parseInt(elements.batchConcurrency?.value || DEFAULT_BATCH_CONCURRENCY, 10);
+    const value = Number.isFinite(rawValue) ? rawValue : DEFAULT_BATCH_CONCURRENCY;
+    return Math.min(MAX_BATCH_CONCURRENCY, Math.max(MIN_BATCH_CONCURRENCY, value));
+}
+
+function setBatchOperationRunning(isRunning, button = null, busyText = '') {
+    batchOperationRunning = isRunning;
+    activeBatchButton = isRunning ? button : null;
+    activeBatchButtonText = isRunning ? busyText : '';
+    updateBatchButtons();
+}
+
+function setBatchProgressIndeterminate(title, meta, statsText) {
+    elements.batchProgressPanel.style.display = 'block';
+    elements.batchProgressTitle.textContent = title;
+    elements.batchProgressMeta.textContent = meta;
+    elements.batchProgressStats.textContent = statsText;
+    elements.batchProgressPercent.textContent = '--';
+    elements.batchProgressBar.classList.add('indeterminate');
+    elements.batchProgressBar.style.width = '100%';
+}
+
+function updateBatchProgress(state) {
+    const labels = state.labels || { success: '成功', failed: '失败' };
+    const percent = state.total > 0 ? Math.round((state.completed / state.total) * 100) : 0;
+
+    elements.batchProgressPanel.style.display = 'block';
+    elements.batchProgressTitle.textContent = state.title;
+    elements.batchProgressMeta.textContent = state.meta;
+    elements.batchProgressPercent.textContent = `${percent}%`;
+    elements.batchProgressStats.textContent =
+        `总计 ${state.total} · 已完成 ${state.completed} · ${labels.success} ${state.success} · ${labels.failed} ${state.failed}`;
+    elements.batchProgressBar.classList.remove('indeterminate');
+    elements.batchProgressBar.style.width = `${percent}%`;
+}
+
+async function executeServerBatchOperation(options) {
+    const count = getEffectiveCount();
+    if (count === 0) return;
+
+    if (batchOperationRunning) {
+        toast.warning('已有批量任务正在执行，请等待当前任务完成');
+        return;
+    }
+
+    if (options.confirmMessage) {
+        const confirmed = await confirm(options.confirmMessage(count));
+        if (!confirmed) return;
+    }
+
+    setBatchOperationRunning(true, options.button, options.busyText);
+    const concurrency = getBatchConcurrency();
+    setBatchProgressIndeterminate(
+        options.progressTitle,
+        `服务端执行中 · 并发 ${concurrency}`,
+        `已提交 ${count} 个账号`
+    );
+
+    try {
+        const result = await api.post(
+            options.endpoint,
+            buildBatchPayload({ concurrency })
+        );
+        const stats = options.extractStats(result, count);
+
+        updateBatchProgress({
+            title: options.progressTitle,
+            meta: `服务端批处理完成 · 并发 ${concurrency}`,
+            total: stats.total,
+            completed: stats.total,
+            success: stats.success,
+            failed: stats.failed,
+            labels: options.labels
+        });
+
+        toast[options.toastType || 'success'](options.summary(stats));
+        if (options.afterComplete) {
+            await options.afterComplete(stats);
+        }
+    } catch (error) {
+        updateBatchProgress({
+            title: options.progressTitle,
+            meta: `执行失败：${error.message}`,
+            total: 0,
+            completed: 0,
+            success: 0,
+            failed: 0,
+            labels: options.labels
+        });
+        toast.error(`${options.errorPrefix}: ${error.message}`);
+    } finally {
+        setBatchOperationRunning(false);
+    }
 }
 
 // 刷新单个账号Token
@@ -505,42 +620,46 @@ async function refreshToken(id) {
 
 // 批量刷新Token
 async function handleBatchRefresh() {
-    const count = getEffectiveCount();
-    if (count === 0) return;
-
-    const confirmed = await confirm(`确定要刷新选中的 ${count} 个账号的Token吗？`);
-    if (!confirmed) return;
-
-    elements.batchRefreshBtn.disabled = true;
-    elements.batchRefreshBtn.textContent = '刷新中...';
-
-    try {
-        const result = await api.post('/accounts/batch-refresh', buildBatchPayload());
-        toast.success(`成功刷新 ${result.success_count} 个，失败 ${result.failed_count} 个`);
-        loadAccounts();
-    } catch (error) {
-        toast.error('批量刷新失败: ' + error.message);
-    } finally {
-        updateBatchButtons();
-    }
+    await executeServerBatchOperation({
+        button: elements.batchRefreshBtn,
+        busyText: '刷新中...',
+        progressTitle: '批量刷新 Token',
+        labels: { success: '成功', failed: '失败' },
+        confirmMessage: (count) => `确定要刷新选中的 ${count} 个账号的Token吗？`,
+        endpoint: '/accounts/batch-refresh',
+        extractStats: (result, count) => ({
+            total: result.success_count + result.failed_count || count,
+            success: result.success_count,
+            failed: result.failed_count
+        }),
+        summary: (stats) => `Token 刷新完成：成功 ${stats.success}，失败 ${stats.failed}`,
+        errorPrefix: '批量刷新失败',
+        afterComplete: async () => {
+            await Promise.allSettled([loadStats(), loadAccounts()]);
+        }
+    });
 }
 
 // 批量验证Token
 async function handleBatchValidate() {
-    if (getEffectiveCount() === 0) return;
-
-    elements.batchValidateBtn.disabled = true;
-    elements.batchValidateBtn.textContent = '验证中...';
-
-    try {
-        const result = await api.post('/accounts/batch-validate', buildBatchPayload());
-        toast.info(`有效: ${result.valid_count}，无效: ${result.invalid_count}`);
-        loadAccounts();
-    } catch (error) {
-        toast.error('批量验证失败: ' + error.message);
-    } finally {
-        updateBatchButtons();
-    }
+    await executeServerBatchOperation({
+        button: elements.batchValidateBtn,
+        busyText: '验证中...',
+        progressTitle: '批量验证 Token',
+        labels: { success: '有效', failed: '无效' },
+        endpoint: '/accounts/batch-validate',
+        extractStats: (result, count) => ({
+            total: result.valid_count + result.invalid_count || count,
+            success: result.valid_count,
+            failed: result.invalid_count
+        }),
+        summary: (stats) => `Token 验证完成：有效 ${stats.success}，无效 ${stats.failed}`,
+        toastType: 'info',
+        errorPrefix: '批量验证失败',
+        afterComplete: async () => {
+            await Promise.allSettled([loadStats(), loadAccounts()]);
+        }
+    });
 }
 
 // 查看账号详情
@@ -932,25 +1051,24 @@ async function markSubscription(id) {
 
 // 批量检测订阅状态
 async function handleBatchCheckSubscription() {
-    const count = getEffectiveCount();
-    if (count === 0) return;
-    const confirmed = await confirm(`确定要检测选中的 ${count} 个账号的订阅状态吗？`);
-    if (!confirmed) return;
-
-    elements.batchCheckSubBtn.disabled = true;
-    elements.batchCheckSubBtn.textContent = '检测中...';
-
-    try {
-        const result = await api.post('/payment/accounts/batch-check-subscription', buildBatchPayload());
-        let message = `成功: ${result.success_count}`;
-        if (result.failed_count > 0) message += `, 失败: ${result.failed_count}`;
-        toast.success(message);
-        loadAccounts();
-    } catch (e) {
-        toast.error('批量检测失败: ' + e.message);
-    } finally {
-        updateBatchButtons();
-    }
+    await executeServerBatchOperation({
+        button: elements.batchCheckSubBtn,
+        busyText: '检测中...',
+        progressTitle: '批量检测订阅',
+        labels: { success: '成功', failed: '失败' },
+        confirmMessage: (count) => `确定要检测选中的 ${count} 个账号的订阅状态吗？`,
+        endpoint: '/payment/accounts/batch-check-subscription',
+        extractStats: (result, count) => ({
+            total: result.success_count + result.failed_count || count,
+            success: result.success_count,
+            failed: result.failed_count
+        }),
+        summary: (stats) => `订阅检测完成：成功 ${stats.success}，失败 ${stats.failed}`,
+        errorPrefix: '批量检测失败',
+        afterComplete: async () => {
+            await loadAccounts();
+        }
+    });
 }
 
 // ============== Sub2API 上传 ==============

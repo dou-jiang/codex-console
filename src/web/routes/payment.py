@@ -13,7 +13,7 @@ from ...database.session import get_db
 from ...database.models import Account
 from ...database import crud
 from ...config.settings import get_settings
-from .accounts import resolve_account_ids
+from .accounts import resolve_account_ids, run_batch_concurrently
 from ...core.openai.payment import (
     generate_plus_link,
     generate_team_link,
@@ -50,11 +50,11 @@ class MarkSubscriptionRequest(BaseModel):
 class BatchCheckSubscriptionRequest(BaseModel):
     ids: List[int] = []
     proxy: Optional[str] = None
+    concurrency: Optional[int] = 4
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
-
 
 # ============== 支付链接生成 ==============
 
@@ -122,6 +122,40 @@ def open_browser_incognito(request: OpenIncognitoRequest):
 
 # ============== 订阅状态 ==============
 
+def _check_subscription_for_account(account: Account, proxy: Optional[str], db) -> dict:
+    logger.info(f"开始检测账号订阅状态: {account.email}")
+    try:
+        status = check_subscription_status(account, proxy)
+        account.subscription_type = None if status == "free" else status
+        account.subscription_at = datetime.utcnow() if status != "free" else account.subscription_at
+        db.commit()
+        logger.info(f"账号订阅检测成功: {account.email}, 结果: {status}")
+        return {
+            "id": account.id,
+            "email": account.email,
+            "success": True,
+            "subscription_type": status,
+        }
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"账号订阅检测失败: {account.email}, 原因: {e}")
+        return {
+            "id": account.id,
+            "email": account.email,
+            "success": False,
+            "error": str(e),
+        }
+
+
+def _check_subscription_for_account_id(account_id: int, proxy: Optional[str]) -> dict:
+    with get_db() as db:
+        account = db.query(Account).filter(Account.id == account_id).first()
+        if not account:
+            return {"id": account_id, "email": None, "success": False, "error": "账号不存在"}
+
+        return _check_subscription_for_account(account, proxy, db)
+
+
 @router.post("/accounts/batch-check-subscription")
 def batch_check_subscription(request: BatchCheckSubscriptionRequest):
     """批量检测账号订阅状态"""
@@ -134,29 +168,16 @@ def batch_check_subscription(request: BatchCheckSubscriptionRequest):
             db, request.ids, request.select_all,
             request.status_filter, request.email_service_filter, request.search_filter
         )
-        for account_id in ids:
-            account = db.query(Account).filter(Account.id == account_id).first()
-            if not account:
-                results["failed_count"] += 1
-                results["details"].append(
-                    {"id": account_id, "email": None, "success": False, "error": "账号不存在"}
-                )
-                continue
 
-            try:
-                status = check_subscription_status(account, proxy)
-                account.subscription_type = None if status == "free" else status
-                account.subscription_at = datetime.utcnow() if status != "free" else account.subscription_at
-                db.commit()
-                results["success_count"] += 1
-                results["details"].append(
-                    {"id": account_id, "email": account.email, "success": True, "subscription_type": status}
-                )
-            except Exception as e:
-                results["failed_count"] += 1
-                results["details"].append(
-                    {"id": account_id, "email": account.email, "success": False, "error": str(e)}
-                )
+    def worker(account_id: int):
+        return _check_subscription_for_account_id(account_id, proxy)
+
+    for detail in run_batch_concurrently(ids, request.concurrency, worker):
+        results["details"].append(detail)
+        if detail["success"]:
+            results["success_count"] += 1
+        else:
+            results["failed_count"] += 1
 
     return results
 
@@ -178,5 +199,3 @@ def mark_subscription(account_id: int, request: MarkSubscriptionRequest):
         db.commit()
 
     return {"success": True, "subscription_type": request.subscription_type}
-
-

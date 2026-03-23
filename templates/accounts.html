@@ -116,6 +116,20 @@
                     </div>
 
                     <div class="toolbar-right">
+                        <label class="batch-concurrency-control" for="batch-concurrency">
+                            <span>并发</span>
+                            <select id="batch-concurrency" class="form-select">
+                                <option value="2">2</option>
+                                <option value="3">3</option>
+                                <option value="4" selected>4</option>
+                                <option value="5">5</option>
+                                <option value="6">6</option>
+                                <option value="7">7</option>
+                                <option value="8">8</option>
+                                <option value="9">9</option>
+                                <option value="10">10</option>
+                            </select>
+                        </label>
                         <button class="btn btn-ghost" id="refresh-btn" title="刷新">
                             🔄 刷新
                         </button>
@@ -152,6 +166,20 @@
                                 <a href="#" class="dropdown-item" data-format="sub2api">导出 Sub2Api 格式</a>
                             </div>
                         </div>
+                    </div>
+
+                    <div class="batch-progress-panel" id="batch-progress-panel" style="display: none;">
+                        <div class="batch-progress-header">
+                            <div>
+                                <div class="batch-progress-title" id="batch-progress-title">批量任务</div>
+                                <div class="batch-progress-meta" id="batch-progress-meta">等待执行</div>
+                            </div>
+                            <div class="batch-progress-percent" id="batch-progress-percent">0%</div>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" id="batch-progress-bar" style="width: 0%;"></div>
+                        </div>
+                        <div class="batch-progress-stats" id="batch-progress-stats">总计 0 · 已完成 0 · 成功 0 · 失败 0</div>
                     </div>
                 </div>
             </div>
