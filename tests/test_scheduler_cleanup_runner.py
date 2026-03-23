@@ -283,6 +283,47 @@ def test_cleanup_runner_marks_run_cancelled_and_logs_user_stop_when_stop_request
     assert "任务已按请求停止" in (persisted_run.logs or "")
 
 
+def test_cleanup_runner_marks_run_cancelled_when_stop_requested_during_final_delete_batch(temp_db, monkeypatch):
+    service, plan, run = _create_cleanup_plan_and_run(temp_db, max_cleanup_count=250)
+
+    invalid_items = []
+    for idx in range(250):
+        email = f"final-delete-{idx}@example.com"
+        account = crud.create_account(temp_db, email=email, email_service="tempmail")
+        crud.update_account(temp_db, account.id, primary_cpa_service_id=service.id, status="active")
+        invalid_items.append({"email": email, "name": f"{email}.json"})
+
+    monkeypatch.setattr(cleanup_runner, "probe_invalid_accounts", lambda **_: invalid_items)
+
+    delete_batch_sizes: list[int] = []
+
+    def _delete_invalid_accounts(**kwargs):
+        names = kwargs["names"]
+        delete_batch_sizes.append(len(names))
+        if len(names) == 50:
+            assert engine_module.request_run_stop(
+                run.id,
+                requested_by="tester",
+                reason="user_requested",
+            ) is True
+        return {"deleted": len(names), "failed": 0}
+
+    monkeypatch.setattr(cleanup_runner, "delete_invalid_accounts", _delete_invalid_accounts)
+
+    summary = run_cleanup_plan(plan_id=plan.id, run_id=run.id)
+
+    temp_db.expire_all()
+    persisted_run = temp_db.get(ScheduledRun, run.id)
+    assert delete_batch_sizes == [100, 100, 50]
+    assert persisted_run is not None
+    assert persisted_run.status == "cancelled"
+    assert persisted_run.error_message == "user requested stop"
+    assert summary["remote_deleted"] == 250
+    assert "cleanup runner complete" not in (persisted_run.logs or "")
+    assert "收到停止请求" in (persisted_run.logs or "")
+    assert "任务已按请求停止" in (persisted_run.logs or "")
+
+
 def test_cleanup_runner_persists_failure_status_when_probe_raises(temp_db, monkeypatch):
     _, plan, run = _create_cleanup_plan_and_run(temp_db)
 

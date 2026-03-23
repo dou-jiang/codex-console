@@ -154,6 +154,8 @@ def run_cleanup_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                         ),
                     )
 
+        raise_if_stop_requested(run_id, stage="cleanup delete")
+
         append_run_log(
             run_id,
             (

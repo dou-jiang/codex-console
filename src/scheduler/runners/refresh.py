@@ -118,6 +118,8 @@ def run_refresh_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                 try:
                     subscription = check_subscription_status(account, proxy)
                 except Exception as exc:
+                    if is_run_stop_requested(run_id):
+                        raise_if_stop_requested(run_id, stage="refresh subscription")
                     crud.mark_account_expired(db, account_id, reason="subscription_check_failed")
                     summary["subscription_failed"] += 1
                     append_run_log(

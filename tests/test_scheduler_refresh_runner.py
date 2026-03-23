@@ -311,3 +311,59 @@ def test_refresh_runner_marks_run_cancelled_and_logs_user_stop_when_stop_request
     assert second_refreshed.cpa_uploaded is False
     assert "收到停止请求" in (persisted_run.logs or "")
     assert "任务已按请求停止" in (persisted_run.logs or "")
+
+
+def test_refresh_runner_cancels_cleanly_when_stop_is_requested_during_subscription_check_failure(
+    temp_db,
+    monkeypatch,
+):
+    service, plan, run = _create_refresh_plan_and_run(temp_db)
+    account = make_account(
+        temp_db,
+        status="active",
+        primary_cpa_service_id=service.id,
+        registered_days_ago=8,
+        last_refresh=None,
+    )
+
+    monkeypatch.setattr(
+        refresh_runner,
+        "refresh_account_token",
+        lambda *a, **k: SimpleNamespace(
+            success=True,
+            access_token="new-ak",
+            refresh_token="new-rk",
+            expires_at=datetime.utcnow() + timedelta(days=10),
+        ),
+    )
+
+    def _check_subscription_status(*args, **kwargs):
+        assert engine_module.request_run_stop(
+            run.id,
+            requested_by="tester",
+            reason="user_requested",
+        ) is True
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(refresh_runner, "check_subscription_status", _check_subscription_status)
+    monkeypatch.setattr(
+        refresh_runner,
+        "upload_account_to_bound_cpa",
+        lambda **_: (_ for _ in ()).throw(AssertionError("upload should not be called")),
+    )
+
+    summary = run_refresh_plan(plan_id=plan.id, run_id=run.id)
+
+    temp_db.expire_all()
+    refreshed = crud.get_account_by_id(temp_db, account.id)
+    persisted_run = temp_db.get(ScheduledRun, run.id)
+    assert persisted_run is not None
+    assert persisted_run.status == "cancelled"
+    assert persisted_run.error_message == "user requested stop"
+    assert summary["subscription_failed"] == 0
+    assert refreshed is not None
+    assert refreshed.status == "active"
+    assert refreshed.invalid_reason is None
+    assert "subscription check failed" not in (persisted_run.logs or "")
+    assert "收到停止请求" in (persisted_run.logs or "")
+    assert "任务已按请求停止" in (persisted_run.logs or "")
