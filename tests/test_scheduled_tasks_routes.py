@@ -480,6 +480,17 @@ def test_stop_scheduled_run_route_marks_running_run(client, route_db, seeded_sch
     assert persisted.stop_reason == "user_requested"
 
 
+def test_stop_scheduled_run_route_rejects_when_stop_already_requested(client, seeded_scheduled_data):
+    run_id = seeded_scheduled_data["latest_run"].id
+
+    first = client.post(f"/api/scheduled-runs/{run_id}/stop")
+    assert first.status_code == 200
+
+    second = client.post(f"/api/scheduled-runs/{run_id}/stop")
+    assert second.status_code == 409
+    assert "已请求停止" in second.json()["detail"]
+
+
 def test_stop_scheduled_run_route_rejects_finished_run(client, seeded_scheduled_data):
     run_id = seeded_scheduled_data["earlier_run"].id
 
@@ -487,6 +498,23 @@ def test_stop_scheduled_run_route_rejects_finished_run(client, seeded_scheduled_
 
     assert response.status_code == 409
     assert "运行已结束" in response.json()["detail"]
+
+
+def test_list_scheduled_runs_route_filters_legacy_null_task_type_rows(client, route_db, seeded_scheduled_data):
+    legacy_run = crud.create_scheduled_run(
+        route_db,
+        plan_id=seeded_scheduled_data["plan"].id,
+        trigger_source="scheduled",
+    )
+    legacy_run.task_type = None
+    route_db.commit()
+
+    response = client.get("/api/scheduled-runs", params={"task_type": "cpa_cleanup"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    ids = [item["id"] for item in payload["items"]]
+    assert legacy_run.id in ids
 
 
 def test_list_accounts_can_filter_by_primary_cpa_and_returns_invalid_fields(client, expired_accounts):

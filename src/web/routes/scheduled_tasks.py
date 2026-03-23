@@ -212,6 +212,8 @@ async def stop_scheduled_run(run_id: int):
         run = crud.get_scheduled_run_by_id(db, run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="运行记录不存在")
+        if run.stop_requested_at is not None:
+            raise HTTPException(status_code=409, detail="运行已请求停止")
         if not _is_run_running(run):
             raise HTTPException(status_code=409, detail="运行已结束，不能停止")
 

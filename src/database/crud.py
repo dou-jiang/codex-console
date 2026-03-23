@@ -899,14 +899,22 @@ def get_scheduled_runs(
     """获取定时执行记录列表。"""
     query = db.query(ScheduledRun)
 
-    if cpa_service_id is not None:
+    needs_plan_join = cpa_service_id is not None or task_type is not None
+    if needs_plan_join:
         query = query.join(ScheduledPlan, ScheduledPlan.id == ScheduledRun.plan_id)
+
+    if cpa_service_id is not None:
         query = query.filter(ScheduledPlan.cpa_service_id == cpa_service_id)
 
     if plan_id is not None:
         query = query.filter(ScheduledRun.plan_id == plan_id)
     if task_type is not None:
-        query = query.filter(ScheduledRun.task_type == task_type)
+        query = query.filter(
+            or_(
+                ScheduledRun.task_type == task_type,
+                and_(ScheduledRun.task_type.is_(None), ScheduledPlan.task_type == task_type),
+            )
+        )
     if status is not None:
         query = query.filter(ScheduledRun.status == status)
     if trigger_source is not None:
@@ -943,14 +951,22 @@ def count_scheduled_runs(
     """统计符合条件的定时执行记录数量。"""
     query = db.query(func.count(ScheduledRun.id))
 
-    if cpa_service_id is not None:
+    needs_plan_join = cpa_service_id is not None or task_type is not None
+    if needs_plan_join:
         query = query.join(ScheduledPlan, ScheduledPlan.id == ScheduledRun.plan_id)
+
+    if cpa_service_id is not None:
         query = query.filter(ScheduledPlan.cpa_service_id == cpa_service_id)
 
     if plan_id is not None:
         query = query.filter(ScheduledRun.plan_id == plan_id)
     if task_type is not None:
-        query = query.filter(ScheduledRun.task_type == task_type)
+        query = query.filter(
+            or_(
+                ScheduledRun.task_type == task_type,
+                and_(ScheduledRun.task_type.is_(None), ScheduledPlan.task_type == task_type),
+            )
+        )
     if status is not None:
         query = query.filter(ScheduledRun.status == status)
     if trigger_source is not None:
