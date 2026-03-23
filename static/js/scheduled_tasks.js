@@ -10,6 +10,11 @@ const scheduledTaskElements = {
     runFilterStartedToInput: document.getElementById('scheduled-run-filter-started-to'),
     runFilterApplyBtn: document.getElementById('scheduled-run-filter-apply-btn'),
     runFilterResetBtn: document.getElementById('scheduled-run-filter-reset-btn'),
+    runPaginationSummary: document.getElementById('scheduled-run-pagination-summary'),
+    runPrevPageBtn: document.getElementById('scheduled-run-prev-page'),
+    runNextPageBtn: document.getElementById('scheduled-run-next-page'),
+    runPageJumpInput: document.getElementById('scheduled-run-page-jump-input'),
+    runPageJumpBtn: document.getElementById('scheduled-run-page-jump-btn'),
     planFormModal: document.getElementById('plan-form-modal'),
     planFormTitle: document.getElementById('plan-form-title'),
     planForm: document.getElementById('plan-form'),
@@ -170,6 +175,11 @@ let scheduledRunFilters = {
     startedFrom: '',
     startedTo: '',
     planId: null,
+    page: 1,
+    pageSize: 20,
+};
+let scheduledRunPaginationMeta = {
+    total: 0,
     page: 1,
     pageSize: 20,
 };
@@ -1155,6 +1165,90 @@ function updateScheduledRunFiltersFromInputs() {
     };
 }
 
+function getScheduledRunTotalPages(total = scheduledRunPaginationMeta.total, pageSize = scheduledRunFilters.pageSize || 20) {
+    const safeTotal = Number.isFinite(Number(total)) ? Math.max(0, Number(total)) : 0;
+    const safePageSize = Number.isFinite(Number(pageSize)) ? Math.max(1, Number(pageSize)) : 20;
+    return Math.max(1, Math.ceil(safeTotal / safePageSize));
+}
+
+function updateScheduledRunPaginationControls() {
+    const total = Number.isFinite(Number(scheduledRunPaginationMeta.total))
+        ? Math.max(0, Number(scheduledRunPaginationMeta.total))
+        : 0;
+    const pageSize = Number.isFinite(Number(scheduledRunFilters.pageSize))
+        ? Math.max(1, Number(scheduledRunFilters.pageSize))
+        : 20;
+    const totalPages = getScheduledRunTotalPages(total, pageSize);
+    const currentPage = Math.min(Math.max(1, Number(scheduledRunFilters.page) || 1), totalPages);
+
+    scheduledRunFilters = {
+        ...scheduledRunFilters,
+        page: currentPage,
+        pageSize,
+    };
+    scheduledRunPaginationMeta = {
+        ...scheduledRunPaginationMeta,
+        total,
+        page: currentPage,
+        pageSize,
+    };
+
+    if (scheduledTaskElements.runPaginationSummary) {
+        scheduledTaskElements.runPaginationSummary.textContent = `第 ${currentPage} / ${totalPages} 页 · 共 ${total} 条`;
+    }
+    if (scheduledTaskElements.runPageJumpInput) {
+        scheduledTaskElements.runPageJumpInput.value = String(currentPage);
+        scheduledTaskElements.runPageJumpInput.max = String(totalPages);
+    }
+    if (scheduledTaskElements.runPrevPageBtn) {
+        scheduledTaskElements.runPrevPageBtn.disabled = currentPage <= 1;
+    }
+    if (scheduledTaskElements.runNextPageBtn) {
+        scheduledTaskElements.runNextPageBtn.disabled = currentPage >= totalPages;
+    }
+}
+
+function resolveScheduledRunTargetPage(rawValue, {
+    currentPage = scheduledRunFilters.page,
+    totalPages = getScheduledRunTotalPages(),
+} = {}) {
+    const normalized = String(rawValue ?? '').trim();
+    if (!/^\d+$/.test(normalized)) {
+        return { valid: false, page: currentPage, clamped: false };
+    }
+    const requested = Number.parseInt(normalized, 10);
+    const clamped = Math.min(Math.max(requested, 1), totalPages);
+    return { valid: true, page: clamped, clamped: clamped !== requested };
+}
+
+async function jumpToScheduledRunPage(rawValue, { showWarnings = true } = {}) {
+    const totalPages = getScheduledRunTotalPages();
+    const result = resolveScheduledRunTargetPage(rawValue, {
+        currentPage: scheduledRunFilters.page,
+        totalPages,
+    });
+    if (!result.valid) {
+        if (showWarnings) {
+            toast.warning('请输入有效页码');
+        }
+        return;
+    }
+
+    if (result.clamped && showWarnings) {
+        toast.warning(`页码已自动调整到 ${result.page}`);
+    }
+    if (result.page === scheduledRunFilters.page) {
+        updateScheduledRunPaginationControls();
+        return;
+    }
+
+    scheduledRunFilters = {
+        ...scheduledRunFilters,
+        page: result.page,
+    };
+    await loadScheduledRuns();
+}
+
 function toSummaryCount(value) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return 0;
@@ -1288,8 +1382,31 @@ async function loadScheduledRuns() {
         const data = await api.get(`/scheduled-runs${buildScheduledRunQuery()}`);
         scheduledRunsCache = Array.isArray(data.items) ? data.items : [];
         currentRunList = scheduledRunsCache;
+        const total = Number.isFinite(Number(data.total)) ? Math.max(0, Number(data.total)) : 0;
+        const pageSize = Number.isFinite(Number(data.page_size))
+            ? Math.max(1, Number(data.page_size))
+            : Math.max(1, Number(scheduledRunFilters.pageSize) || 20);
+        const totalPages = getScheduledRunTotalPages(total, pageSize);
+        const pageFromResponse = Number.isFinite(Number(data.page)) ? Number(data.page) : Number(scheduledRunFilters.page) || 1;
+        const nextPage = Math.min(Math.max(1, pageFromResponse), totalPages);
+        scheduledRunFilters = {
+            ...scheduledRunFilters,
+            page: nextPage,
+            pageSize,
+        };
+        scheduledRunPaginationMeta = {
+            total,
+            page: nextPage,
+            pageSize,
+        };
         renderScheduledRuns(scheduledRunsCache);
+        updateScheduledRunPaginationControls();
     } catch (error) {
+        scheduledRunPaginationMeta = {
+            ...scheduledRunPaginationMeta,
+            total: 0,
+        };
+        updateScheduledRunPaginationControls();
         tbody.innerHTML = `
             <tr>
                 <td colspan="9">
@@ -1693,8 +1810,44 @@ document.addEventListener('DOMContentLoaded', () => {
                 page: 1,
                 pageSize: 20,
             };
+            scheduledRunPaginationMeta = {
+                total: 0,
+                page: 1,
+                pageSize: 20,
+            };
             syncScheduledRunFiltersToInputs();
             void withButtonBusy(event.currentTarget, () => loadScheduledRuns());
+        });
+    }
+
+    if (scheduledTaskElements.runPrevPageBtn) {
+        scheduledTaskElements.runPrevPageBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            void withButtonBusy(event.currentTarget, () => jumpToScheduledRunPage(String((scheduledRunFilters.page || 1) - 1)));
+        });
+    }
+
+    if (scheduledTaskElements.runNextPageBtn) {
+        scheduledTaskElements.runNextPageBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            void withButtonBusy(event.currentTarget, () => jumpToScheduledRunPage(String((scheduledRunFilters.page || 1) + 1)));
+        });
+    }
+
+    if (scheduledTaskElements.runPageJumpBtn) {
+        scheduledTaskElements.runPageJumpBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            const targetPage = scheduledTaskElements.runPageJumpInput?.value || '';
+            void withButtonBusy(event.currentTarget, () => jumpToScheduledRunPage(targetPage));
+        });
+    }
+
+    if (scheduledTaskElements.runPageJumpInput) {
+        scheduledTaskElements.runPageJumpInput.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            const targetPage = scheduledTaskElements.runPageJumpInput?.value || '';
+            void jumpToScheduledRunPage(targetPage);
         });
     }
 

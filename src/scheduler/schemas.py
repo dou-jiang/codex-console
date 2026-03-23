@@ -118,6 +118,8 @@ class ScheduledRunListItemResponse(BaseModel):
 class ScheduledRunListCenterResponse(BaseModel):
     items: list[ScheduledRunListItemResponse]
     total: int
+    page: int
+    page_size: int
 
 
 class ScheduledRunDetailResponse(BaseModel):

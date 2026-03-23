@@ -430,6 +430,36 @@ def test_list_scheduled_runs_route_supports_filters(client, route_db, seeded_sch
     assert payload["items"][0]["can_stop"] is True
 
 
+def test_list_scheduled_runs_route_returns_pagination_metadata(client, route_db, seeded_scheduled_data):
+    secondary_plan = crud.create_scheduled_plan(
+        route_db,
+        name="pagination refill plan",
+        task_type="cpa_refill",
+        cpa_service_id=seeded_scheduled_data["secondary_service"].id,
+        trigger_type="interval",
+        interval_value=1,
+        interval_unit="hours",
+        config={
+            "target_valid_count": 20,
+            "max_refill_count": 5,
+            "max_consecutive_failures": 2,
+            "registration_profile": {},
+        },
+        enabled=True,
+    )
+    crud.create_scheduled_run(route_db, plan_id=secondary_plan.id, trigger_source="scheduled")
+    route_db.commit()
+
+    response = client.get("/api/scheduled-runs", params={"page": 2, "page_size": 1})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] >= 3
+    assert payload["page"] == 2
+    assert payload["page_size"] == 1
+    assert len(payload["items"]) == 1
+
+
 def test_get_scheduled_run_detail_route_returns_plan_summary_and_can_stop(client, seeded_scheduled_data):
     run_id = seeded_scheduled_data["latest_run"].id
     response = client.get(f"/api/scheduled-runs/{run_id}")

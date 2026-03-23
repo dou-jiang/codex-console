@@ -65,6 +65,15 @@ def test_scheduled_tasks_template_contains_run_center_hooks():
     assert 'id="run-log-stop-btn"' in template
 
 
+def test_scheduled_tasks_template_contains_run_center_pagination_hooks():
+    template = Path("templates/scheduled_tasks.html").read_text(encoding="utf-8")
+    assert 'id="scheduled-run-prev-page"' in template
+    assert 'id="scheduled-run-next-page"' in template
+    assert 'id="scheduled-run-page-jump-input"' in template
+    assert 'id="scheduled-run-page-jump-btn"' in template
+    assert 'id="scheduled-run-pagination-summary"' in template
+
+
 def test_shared_list_templates_opt_into_table_shell_styling():
     scheduled_template = Path("templates/scheduled_tasks.html").read_text(encoding="utf-8")
     accounts_template = Path("templates/accounts.html").read_text(encoding="utf-8")
@@ -172,6 +181,17 @@ def test_scheduled_tasks_script_contains_run_center_live_log_and_stop_hooks():
     assert 'data-action="stop-run"' in script
     assert "async function stopScheduledRun(" in script
     assert '"stopping"' in script or "'stopping'" in script
+
+
+def test_scheduled_tasks_script_contains_run_center_pagination_jump_hooks():
+    script = Path("static/js/scheduled_tasks.js").read_text(encoding="utf-8")
+    assert "scheduled-run-page-jump-input" in script
+    assert "scheduled-run-page-jump-btn" in script
+    assert "scheduled-run-prev-page" in script
+    assert "scheduled-run-next-page" in script
+    assert "keydown" in script and "Enter" in script
+    assert "params.set('page_size'" in script
+    assert "toast.warning(" in script
 
 
 def test_scheduled_tasks_render_summaries_as_concise_business_metrics():

@@ -139,6 +139,8 @@ async def list_all_scheduled_runs(
         return ScheduledRunListCenterResponse(
             items=[_build_scheduled_run_list_item(run) for run in runs],
             total=total,
+            page=page,
+            page_size=page_size,
         )
 
 
