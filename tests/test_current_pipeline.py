@@ -3,7 +3,7 @@ import pytest
 from src.core.pipeline.context import PipelineContext
 from src.core.pipeline.registry import PIPELINE_REGISTRY, get_pipeline
 from src.core.pipeline.runner import PipelineRunner
-from src.core.pipeline.steps.current import register_current_pipeline
+from src.core.pipeline.steps import common as common_steps
 from src.database import crud
 from src.database.models import Base
 from src.database.session import DatabaseSessionManager
@@ -106,7 +106,6 @@ def clean_pipeline_registry():
 
 
 def test_current_pipeline_runs_signup_then_relogin_steps(fake_db):
-    register_current_pipeline()
     pipeline = get_pipeline("current_pipeline")
     assert pipeline is not None
 
@@ -149,3 +148,21 @@ def test_current_pipeline_runs_signup_then_relogin_steps(fake_db):
         "run_resolve_consent_and_workspace_step",
         "run_exchange_oauth_token_step",
     ]
+
+
+def test_current_pipeline_uses_common_step_bindings():
+    pipeline = get_pipeline("current_pipeline")
+    assert pipeline is not None
+    steps = {item.step_key: item for item in pipeline.steps}
+
+    assert steps["create_email"].impl_key == "common.create_email"
+    assert steps["create_email"].handler is common_steps.create_email_step
+
+    assert steps["wait_signup_otp"].impl_key == "common.wait_signup_otp"
+    assert steps["wait_signup_otp"].handler is common_steps.wait_signup_otp_step
+
+    assert steps["wait_login_otp"].impl_key == "common.wait_login_otp"
+    assert steps["wait_login_otp"].handler is common_steps.wait_login_otp_step
+
+    assert steps["exchange_oauth_token"].impl_key == "common.exchange_oauth_token"
+    assert steps["exchange_oauth_token"].handler is common_steps.exchange_oauth_token_step

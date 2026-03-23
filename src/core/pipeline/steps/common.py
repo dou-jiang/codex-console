@@ -34,6 +34,23 @@ def get_proxy_ip_step(ctx: PipelineContext) -> dict[str, Any]:
     }
 
 
+def create_email_step(ctx: PipelineContext) -> dict[str, Any]:
+    return get_registration_engine(ctx).run_create_email_step()
+
+
+def wait_signup_otp_step(ctx: PipelineContext) -> dict[str, Any]:
+    return get_registration_engine(ctx).run_wait_signup_otp_step()
+
+
+def wait_login_otp_step(ctx: PipelineContext) -> dict[str, Any]:
+    return get_registration_engine(ctx).run_wait_login_otp_step()
+
+
+def exchange_oauth_token_step(ctx: PipelineContext) -> dict[str, Any]:
+    callback_url = (ctx.metadata or {}).get("oauth_callback_url")
+    return get_registration_engine(ctx).run_exchange_oauth_token_step(callback_url=callback_url)
+
+
 def persist_account_step(ctx: PipelineContext) -> dict[str, Any]:
     # Task 4: pipeline adapters first. Persistence/survival wiring can be
     # completed in later tasks. Keep deterministic metadata for now.

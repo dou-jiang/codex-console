@@ -13,4 +13,13 @@ def register_pipeline(definition: PipelineDefinition) -> None:
 
 
 def get_pipeline(pipeline_key: str) -> PipelineDefinition | None:
-    return PIPELINE_REGISTRY.get(pipeline_key)
+    pipeline = PIPELINE_REGISTRY.get(pipeline_key)
+    if pipeline is not None:
+        return pipeline
+
+    if pipeline_key == "current_pipeline":
+        from .steps.current import register_current_pipeline
+
+        return register_current_pipeline()
+
+    return None
