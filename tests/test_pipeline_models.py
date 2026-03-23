@@ -19,11 +19,27 @@ def temp_db(tmp_path):
 
 
 def test_registration_task_supports_pipeline_metadata(temp_db):
-    task = RegistrationTask(task_uuid="task-1", pipeline_key="current_pipeline", pair_key="pair-1")
+    task = RegistrationTask(
+        task_uuid="task-1",
+        pipeline_key="current_pipeline",
+        pair_key="pair-1",
+        current_step_key="create_email",
+        assigned_proxy_id=9,
+        assigned_proxy_url="http://127.0.0.1:8080",
+        proxy_check_run_id=5,
+        total_duration_ms=4567,
+        pipeline_status="running",
+    )
     temp_db.add(task)
     temp_db.commit()
     assert task.pipeline_key == "current_pipeline"
     assert task.pair_key == "pair-1"
+    assert task.current_step_key == "create_email"
+    assert task.assigned_proxy_id == 9
+    assert task.assigned_proxy_url == "http://127.0.0.1:8080"
+    assert task.proxy_check_run_id == 5
+    assert task.total_duration_ms == 4567
+    assert task.pipeline_status == "running"
 
 
 def test_create_pipeline_step_run_persists_row(temp_db):

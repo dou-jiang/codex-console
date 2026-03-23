@@ -118,6 +118,12 @@ class RegistrationTask(Base):
     pipeline_key = Column(String(64), index=True)  # 流水线标识
     pair_key = Column(String(64), index=True)  # 实验分组键
     experiment_batch_id = Column(Integer, index=True)  # 实验批次 ID
+    current_step_key = Column(String(64), index=True)  # 当前执行步骤
+    assigned_proxy_id = Column(Integer, ForeignKey('proxies.id'), index=True)  # 任务分配代理
+    assigned_proxy_url = Column(String(255))  # 任务分配代理 URL
+    proxy_check_run_id = Column(Integer, ForeignKey('proxy_check_runs.id'), index=True)  # 预检运行 ID
+    total_duration_ms = Column(Integer)  # 总耗时
+    pipeline_status = Column(String(20), index=True)  # 流水线状态
     logs = Column(Text)  # 注册过程日志
     result = Column(JSONEncodedDict)  # 注册结果
     error_message = Column(Text)

@@ -137,6 +137,30 @@ def test_postgresql_migrate_tables_adds_registration_task_pipeline_columns(monke
         'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "experiment_batch_id" INTEGER' in stmt
         for stmt in connection.statements
     )
+    assert any(
+        'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "current_step_key" VARCHAR(64)' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "assigned_proxy_id" INTEGER' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "assigned_proxy_url" VARCHAR(255)' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "proxy_check_run_id" INTEGER' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "total_duration_ms" INTEGER' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "pipeline_status" VARCHAR(20)' in stmt
+        for stmt in connection.statements
+    )
 
 
 def test_postgresql_migrate_tables_adds_scheduler_account_columns(monkeypatch):
@@ -319,6 +343,12 @@ def test_sqlite_migrate_tables_adds_registration_task_pipeline_columns(tmp_path)
     assert "pipeline_key" in columns
     assert "pair_key" in columns
     assert "experiment_batch_id" in columns
+    assert "current_step_key" in columns
+    assert "assigned_proxy_id" in columns
+    assert "assigned_proxy_url" in columns
+    assert "proxy_check_run_id" in columns
+    assert "total_duration_ms" in columns
+    assert "pipeline_status" in columns
 
 
 def test_sqlite_migrate_tables_adds_scheduler_account_columns(tmp_path):
