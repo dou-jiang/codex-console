@@ -10,6 +10,7 @@ from src.database import session as session_module
 from src.database.models import Base, ScheduledRun
 from src.database.session import DatabaseSessionManager
 from src.scheduler import engine as engine_module
+from src.scheduler import run_logger
 from src.scheduler.engine import SchedulerDispatchError, SchedulerEngine, SchedulerPlanConflictError
 from src.web.app import create_app
 
@@ -178,6 +179,16 @@ def test_scheduler_engine_request_run_stop_marks_running_run(temp_db):
     assert run.stop_requested_at is not None
 
 
+def test_scheduler_module_stop_helpers_work_without_engine_instance(temp_db):
+    plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
+    with session_module.get_db() as db:
+        run = crud.create_scheduled_run(db, plan_id=plan.id, trigger_source="manual", status="running")
+
+    assert engine_module.is_run_stop_requested(run.id) is False
+    assert engine_module.request_run_stop(run.id, requested_by="tester", reason="stop now") is True
+    assert engine_module.is_run_stop_requested(run.id) is True
+
+
 def test_scheduler_engine_request_run_stop_rejects_finished_or_missing_runs(temp_db):
     plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
     with session_module.get_db() as db:
@@ -210,16 +221,8 @@ def test_scheduler_engine_request_run_stop_rejects_non_running_states(temp_db):
     assert engine.is_run_stop_requested(cancelled_id) is False
 
 
-def test_scheduler_engine_dispatch_persists_task_type_on_created_run(temp_db, monkeypatch):
+def test_scheduler_engine_dispatch_persists_task_type_on_created_run(temp_db):
     plan = _create_plan(temp_db, task_type="account_refresh", due=False)
-    captured_task_types = []
-    original_create_run = crud.create_scheduled_run
-
-    def _wrapped_create_run(*args, **kwargs):
-        captured_task_types.append(kwargs.get("task_type"))
-        return original_create_run(*args, **kwargs)
-
-    monkeypatch.setattr(engine_module.crud, "create_scheduled_run", _wrapped_create_run)
 
     engine = SchedulerEngine(
         runner_map={"account_refresh": lambda **kwargs: None},
@@ -231,7 +234,6 @@ def test_scheduler_engine_dispatch_persists_task_type_on_created_run(temp_db, mo
     temp_db.expire_all()
     run = temp_db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
     assert run is not None
-    assert captured_task_types == ["account_refresh"]
     assert run.task_type == "account_refresh"
 
 
@@ -290,26 +292,37 @@ def test_scheduler_engine_dispatch_failure_does_not_create_extra_skipped_run(tem
 
 def test_scheduler_engine_runner_cancellation_marks_run_cancelled_and_updates_plan(temp_db):
     plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
-    cancellation_error = getattr(engine_module, "ScheduledRunCancelledError", RuntimeError)
+    allow_raise = Event()
 
     def _cleanup_runner(*, plan_id: int, run_id: int):
-        raise cancellation_error("stop requested")
+        allow_raise.wait(timeout=1.0)
+        raise engine_module.ScheduledRunCancelledError("stop requested")
 
-    engine = SchedulerEngine(
-        runner_map={"cpa_cleanup": _cleanup_runner},
-        worker_spawner=lambda fn, _name: fn(),
-    )
+    engine = SchedulerEngine(runner_map={"cpa_cleanup": _cleanup_runner})
 
     run_id = engine.trigger_plan_now(plan.id)
+    assert engine.request_run_stop(run_id) is True
+    allow_raise.set()
 
-    temp_db.expire_all()
-    run = temp_db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+    deadline = datetime.utcnow() + timedelta(seconds=2)
+    run = None
+    persisted_plan = None
+    while datetime.utcnow() < deadline:
+        temp_db.expire_all()
+        run = temp_db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+        persisted_plan = crud.get_scheduled_plan_by_id(temp_db, plan.id)
+        if (
+            run is not None
+            and run.status == "cancelled"
+            and persisted_plan is not None
+            and persisted_plan.last_run_status == "cancelled"
+        ):
+            break
     assert run is not None
     assert run.status == "cancelled"
     assert run.error_message == "user requested stop"
     assert run.finished_at is not None
 
-    persisted_plan = crud.get_scheduled_plan_by_id(temp_db, plan.id)
     assert persisted_plan is not None
     assert persisted_plan.last_run_status == "cancelled"
     assert persisted_plan.last_run_finished_at is not None
@@ -319,6 +332,7 @@ def test_scheduler_engine_runner_cancellation_overrides_failed_status_from_runne
     plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
 
     def _cleanup_runner(*, plan_id: int, run_id: int):
+        engine_module.request_run_stop(run_id, requested_by="runner", reason="stop requested")
         with session_module.get_db() as db:
             crud.finish_scheduled_run(db, run_id=run_id, status="failed", error_message="runner generic fail")
         raise engine_module.ScheduledRunCancelledError("stop requested")
@@ -339,6 +353,46 @@ def test_scheduler_engine_runner_cancellation_overrides_failed_status_from_runne
     persisted_plan = crud.get_scheduled_plan_by_id(temp_db, plan.id)
     assert persisted_plan is not None
     assert persisted_plan.last_run_status == "cancelled"
+
+
+def test_scheduler_engine_runner_cancellation_without_stop_request_is_not_user_cancelled(temp_db):
+    plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
+
+    def _cleanup_runner(*, plan_id: int, run_id: int):
+        raise engine_module.ScheduledRunCancelledError("stop requested")
+
+    engine = SchedulerEngine(
+        runner_map={"cpa_cleanup": _cleanup_runner},
+        worker_spawner=lambda fn, _name: fn(),
+    )
+
+    run_id = engine.trigger_plan_now(plan.id)
+
+    temp_db.expire_all()
+    run = temp_db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+    assert run is not None
+    assert run.status == "failed"
+    assert run.error_message == "stop requested"
+
+    persisted_plan = crud.get_scheduled_plan_by_id(temp_db, plan.id)
+    assert persisted_plan is not None
+    assert persisted_plan.last_run_status == "failed"
+
+
+def test_run_logger_append_log_uses_logged_at_for_last_log_timestamp(temp_db):
+    plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
+    with session_module.get_db() as db:
+        run = crud.create_scheduled_run(db, plan_id=plan.id, trigger_source="manual", status="running")
+        run_id = run.id
+
+    logged_at = datetime(2025, 1, 2, 3, 4, 5)
+    assert run_logger.append_run_log(run_id, "hello", logged_at=logged_at) is True
+
+    temp_db.expire_all()
+    persisted = temp_db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+    assert persisted is not None
+    assert persisted.logs == "hello"
+    assert persisted.last_log_at == logged_at
 
 
 def test_scheduler_engine_skipped_run_updates_plan_summary_fields(temp_db):

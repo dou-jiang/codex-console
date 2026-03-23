@@ -116,6 +116,30 @@ def _default_runner_map() -> dict[str, Callable[..., Any]]:
     }
 
 
+def request_run_stop(
+    run_id: int,
+    *,
+    requested_by: str | None = None,
+    reason: str | None = None,
+) -> bool:
+    with get_db() as db:
+        run = crud.mark_scheduled_run_stop_requested(
+            db,
+            run_id=run_id,
+            requested_by=requested_by,
+            reason=reason,
+        )
+        return run is not None
+
+
+def is_run_stop_requested(run_id: int) -> bool:
+    with get_db() as db:
+        run = crud.get_scheduled_run_by_id(db, run_id)
+        if run is None:
+            return False
+        return run.stop_requested_at is not None
+
+
 class SchedulerEngine:
     def __init__(
         self,
@@ -210,21 +234,10 @@ class SchedulerEngine:
         requested_by: str | None = None,
         reason: str | None = None,
     ) -> bool:
-        with get_db() as db:
-            run = crud.mark_scheduled_run_stop_requested(
-                db,
-                run_id=run_id,
-                requested_by=requested_by,
-                reason=reason,
-            )
-            return run is not None
+        return request_run_stop(run_id, requested_by=requested_by, reason=reason)
 
     def is_run_stop_requested(self, run_id: int) -> bool:
-        with get_db() as db:
-            run = crud.get_scheduled_run_by_id(db, run_id)
-            if run is None:
-                return False
-            return run.stop_requested_at is not None
+        return is_run_stop_requested(run_id)
 
     def _poll_forever(self) -> None:
         while True:
@@ -283,8 +296,11 @@ class SchedulerEngine:
             def _worker() -> None:
                 try:
                     runner(plan_id=plan_id, run_id=run_id)
-                except ScheduledRunCancelledError:
-                    self._ensure_run_cancelled(run_id, "user requested stop")
+                except ScheduledRunCancelledError as exc:
+                    if is_run_stop_requested(run_id):
+                        self._ensure_run_cancelled(run_id, "user requested stop")
+                    else:
+                        self._ensure_run_failed(run_id, str(exc))
                 except Exception as exc:
                     logger.exception("scheduled runner failed (plan_id=%s, run_id=%s)", plan_id, run_id)
                     self._ensure_run_failed(run_id, str(exc))
