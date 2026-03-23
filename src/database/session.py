@@ -30,6 +30,12 @@ SQLITE_MIGRATIONS = [
     ("proxies", "city", "VARCHAR(100)"),
     ("registration_tasks", "email_address", "VARCHAR(255)"),
     ("scheduled_plans", "config_meta", "TEXT"),
+    ("scheduled_runs", "task_type", "VARCHAR(32)"),
+    ("scheduled_runs", "stop_requested_at", "DATETIME"),
+    ("scheduled_runs", "stop_requested_by", "VARCHAR(64)"),
+    ("scheduled_runs", "stop_reason", "TEXT"),
+    ("scheduled_runs", "last_log_at", "DATETIME"),
+    ("scheduled_runs", "log_version", "INTEGER DEFAULT 0"),
 ]
 
 POSTGRESQL_MIGRATIONS = [
@@ -40,6 +46,12 @@ POSTGRESQL_MIGRATIONS = [
     ("proxies", "city", "VARCHAR(100)"),
     ("registration_tasks", "email_address", "VARCHAR(255)"),
     ("scheduled_plans", "config_meta", "TEXT"),
+    ("scheduled_runs", "task_type", "VARCHAR(32)"),
+    ("scheduled_runs", "stop_requested_at", "TIMESTAMP"),
+    ("scheduled_runs", "stop_requested_by", "VARCHAR(64)"),
+    ("scheduled_runs", "stop_reason", "TEXT"),
+    ("scheduled_runs", "last_log_at", "TIMESTAMP"),
+    ("scheduled_runs", "log_version", "INTEGER DEFAULT 0"),
 ]
 
 

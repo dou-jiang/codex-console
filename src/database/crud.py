@@ -857,6 +857,7 @@ def create_scheduled_run(
     plan_id: int,
     trigger_source: str,
     status: str = 'running',
+    task_type: Optional[str] = None,
 ) -> ScheduledRun:
     """创建定时执行记录"""
     plan = db.query(ScheduledPlan).filter(ScheduledPlan.id == plan_id).first()
@@ -865,9 +866,11 @@ def create_scheduled_run(
 
     run = ScheduledRun(
         plan_id=plan_id,
+        task_type=task_type or plan.task_type,
         trigger_source=trigger_source,
         status=status,
         started_at=datetime.utcnow(),
+        log_version=0,
     )
     db.add(run)
     db.commit()
@@ -875,9 +878,108 @@ def create_scheduled_run(
     return run
 
 
+def get_scheduled_run_by_id(db: Session, run_id: int) -> Optional[ScheduledRun]:
+    """按 ID 获取定时执行记录。"""
+    return db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+
+
+def get_scheduled_runs(
+    db: Session,
+    plan_id: Optional[int] = None,
+    task_type: Optional[str] = None,
+    status: Optional[str] = None,
+    trigger_source: Optional[str] = None,
+    cpa_service_id: Optional[int] = None,
+    stop_requested: Optional[bool] = None,
+    started_after: Optional[datetime] = None,
+    started_before: Optional[datetime] = None,
+    skip: int = 0,
+    limit: int = 100,
+) -> List[ScheduledRun]:
+    """获取定时执行记录列表。"""
+    query = db.query(ScheduledRun)
+
+    if cpa_service_id is not None:
+        query = query.join(ScheduledPlan, ScheduledPlan.id == ScheduledRun.plan_id)
+        query = query.filter(ScheduledPlan.cpa_service_id == cpa_service_id)
+
+    if plan_id is not None:
+        query = query.filter(ScheduledRun.plan_id == plan_id)
+    if task_type:
+        query = query.filter(ScheduledRun.task_type == task_type)
+    if status:
+        query = query.filter(ScheduledRun.status == status)
+    if trigger_source:
+        query = query.filter(ScheduledRun.trigger_source == trigger_source)
+    if stop_requested is True:
+        query = query.filter(ScheduledRun.stop_requested_at.is_not(None))
+    elif stop_requested is False:
+        query = query.filter(ScheduledRun.stop_requested_at.is_(None))
+    if started_after is not None:
+        query = query.filter(ScheduledRun.started_at >= started_after)
+    if started_before is not None:
+        query = query.filter(ScheduledRun.started_at <= started_before)
+
+    return (
+        query
+        .order_by(desc(ScheduledRun.started_at), desc(ScheduledRun.id))
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
+def mark_scheduled_run_stop_requested(
+    db: Session,
+    run_id: int,
+    *,
+    requested_by: Optional[str] = None,
+    reason: Optional[str] = None,
+    requested_at: Optional[datetime] = None,
+) -> Optional[ScheduledRun]:
+    """标记定时执行记录已请求停止。"""
+    run = get_scheduled_run_by_id(db, run_id)
+    if not run:
+        return None
+
+    run.stop_requested_at = requested_at or datetime.utcnow()
+    run.stop_requested_by = requested_by
+    run.stop_reason = reason
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def get_scheduled_run_log_chunk(
+    db: Session,
+    run_id: int,
+    *,
+    offset: int = 0,
+    limit: int = 4096,
+) -> Optional[Dict[str, Any]]:
+    """分页读取定时执行日志。"""
+    run = get_scheduled_run_by_id(db, run_id)
+    if not run:
+        return None
+
+    safe_offset = max(0, int(offset))
+    safe_limit = max(1, int(limit))
+    logs = run.logs or ""
+    chunk = logs[safe_offset: safe_offset + safe_limit]
+    next_offset = safe_offset + len(chunk)
+    return {
+        "content": chunk,
+        "offset": safe_offset,
+        "next_offset": next_offset,
+        "has_more": next_offset < len(logs),
+        "log_version": int(run.log_version or 0),
+        "last_log_at": run.last_log_at,
+    }
+
+
 def append_scheduled_run_log(db: Session, run_id: int, log_message: str) -> bool:
     """追加运行日志"""
-    run = db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+    run = get_scheduled_run_by_id(db, run_id)
     if not run:
         return False
 
@@ -886,6 +988,8 @@ def append_scheduled_run_log(db: Session, run_id: int, log_message: str) -> bool
     else:
         run.logs = log_message
 
+    run.log_version = int(run.log_version or 0) + 1
+    run.last_log_at = datetime.utcnow()
     db.commit()
     return True
 
@@ -899,7 +1003,7 @@ def finish_scheduled_run(
     finished_at: Optional[datetime] = None,
 ) -> Optional[ScheduledRun]:
     """结束定时执行记录"""
-    run = db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+    run = get_scheduled_run_by_id(db, run_id)
     if not run:
         return None
 

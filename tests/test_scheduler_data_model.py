@@ -35,6 +35,13 @@ def test_scheduler_tables_and_account_columns_exist_after_init(tmp_path):
     assert {"primary_cpa_service_id", "invalidated_at", "invalid_reason"} <= account_columns
     scheduled_plan_columns = {col["name"] for col in inspector.get_columns("scheduled_plans")}
     assert "config_meta" in scheduled_plan_columns
+    scheduled_run_columns = {col["name"] for col in inspector.get_columns("scheduled_runs")}
+    assert "task_type" in scheduled_run_columns
+    assert "stop_requested_at" in scheduled_run_columns
+    assert "stop_requested_by" in scheduled_run_columns
+    assert "stop_reason" in scheduled_run_columns
+    assert "last_log_at" in scheduled_run_columns
+    assert "log_version" in scheduled_run_columns
 
 
 def test_create_plan_and_run_round_trip(temp_db):
@@ -62,13 +69,24 @@ def test_create_plan_and_run_round_trip(temp_db):
             }
         },
     )
-    run = crud.create_scheduled_run(temp_db, plan_id=plan.id, trigger_source="manual")
+    run = crud.create_scheduled_run(
+        temp_db,
+        plan_id=plan.id,
+        trigger_source="manual",
+        task_type=plan.task_type,
+    )
 
     listed_plans = crud.get_scheduled_plans(temp_db)
 
     assert plan.config["max_cleanup_count"] == 20
     assert plan.config_meta["max_cleanup_count"]["value_type"] == "number"
     assert run.status == "running"
+    assert run.task_type == "cpa_cleanup"
+    assert run.log_version == 0
+    assert run.stop_requested_at is None
+    assert run.stop_requested_by is None
+    assert run.stop_reason is None
+    assert run.last_log_at is None
     assert [row.id for row in listed_plans] == [plan.id]
 
 

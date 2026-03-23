@@ -170,6 +170,55 @@ def test_postgresql_migrate_tables_adds_scheduled_plan_config_meta_column(monkey
     )
 
 
+def test_postgresql_migrate_tables_adds_scheduled_run_center_columns(monkeypatch):
+    connection = _FakeConnection()
+    manager = _build_manager(connection)
+
+    class _FakeInspector:
+        def get_columns(self, table_name: str):
+            if table_name == "scheduled_runs":
+                return [{"name": "id"}, {"name": "plan_id"}, {"name": "status"}]
+            if table_name == "scheduled_plans":
+                return [{"name": "id"}, {"name": "config_meta"}]
+            if table_name == "accounts":
+                return [{"name": "id"}, {"name": "primary_cpa_service_id"}, {"name": "invalidated_at"}, {"name": "invalid_reason"}]
+            if table_name == "proxies":
+                return [{"name": "id"}, {"name": "country"}, {"name": "city"}]
+            if table_name == "registration_tasks":
+                return [{"name": "id"}, {"name": "email_address"}]
+            return [{"name": "id"}]
+
+    monkeypatch.setattr(session_module.Base.metadata, "create_all", lambda bind: None)
+    monkeypatch.setattr(session_module, "inspect", lambda conn: _FakeInspector())
+
+    manager.migrate_tables()
+
+    assert any(
+        'ALTER TABLE "scheduled_runs" ADD COLUMN IF NOT EXISTS "task_type" VARCHAR(32)' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "scheduled_runs" ADD COLUMN IF NOT EXISTS "stop_requested_at" TIMESTAMP' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "scheduled_runs" ADD COLUMN IF NOT EXISTS "stop_requested_by" VARCHAR(64)' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "scheduled_runs" ADD COLUMN IF NOT EXISTS "stop_reason" TEXT' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "scheduled_runs" ADD COLUMN IF NOT EXISTS "last_log_at" TIMESTAMP' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "scheduled_runs" ADD COLUMN IF NOT EXISTS "log_version" INTEGER DEFAULT 0' in stmt
+        for stmt in connection.statements
+    )
+
+
 def test_sqlite_migrate_tables_adds_registration_task_email_column(tmp_path):
     db_path = tmp_path / "legacy-registration-tasks.db"
 
@@ -272,3 +321,42 @@ def test_sqlite_migrate_tables_adds_scheduled_plan_config_meta_column(tmp_path):
         }
 
     assert "config_meta" in columns
+
+
+def test_sqlite_migrate_tables_adds_scheduled_run_center_columns(tmp_path):
+    db_path = tmp_path / "legacy-scheduled-runs.db"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE scheduled_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id INTEGER NOT NULL,
+                trigger_source VARCHAR(16) NOT NULL,
+                status VARCHAR(20) NOT NULL,
+                started_at DATETIME,
+                finished_at DATETIME,
+                summary TEXT,
+                error_message TEXT,
+                logs TEXT,
+                created_at DATETIME
+            )
+            """
+        )
+        conn.commit()
+
+    manager = DatabaseSessionManager(f"sqlite:///{db_path}")
+    manager.migrate_tables()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info('scheduled_runs')").fetchall()
+        }
+
+    assert "task_type" in columns
+    assert "stop_requested_at" in columns
+    assert "stop_requested_by" in columns
+    assert "stop_reason" in columns
+    assert "last_log_at" in columns
+    assert "log_version" in columns

@@ -185,10 +185,16 @@ class ScheduledRun(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     plan_id = Column(Integer, ForeignKey('scheduled_plans.id'), nullable=False, index=True)
+    task_type = Column(String(32), index=True)
     trigger_source = Column(String(16), nullable=False)  # scheduled / manual
     status = Column(String(20), nullable=False, default='running')  # running / success / failed / skipped
     started_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime)
+    stop_requested_at = Column(DateTime)
+    stop_requested_by = Column(String(64))
+    stop_reason = Column(Text)
+    last_log_at = Column(DateTime)
+    log_version = Column(Integer, nullable=False, default=0)
     summary = Column(JSONEncodedDict)
     error_message = Column(Text)
     logs = Column(Text)
