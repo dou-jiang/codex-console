@@ -7,7 +7,6 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from src.database import crud
 from src.database.models import AccountSurvivalCheck, ExperimentBatch, PipelineStepRun, RegistrationTask
 
 PIPELINE_KEYS: tuple[str, str] = ("current_pipeline", "codexgen_pipeline")
@@ -33,46 +32,50 @@ def create_experiment_tasks(
     concurrency: int,
     mode: str,
 ) -> tuple[ExperimentBatch, list[RegistrationTask]]:
-    batch = crud.create_experiment_batch(
-        db,
-        name=f"experiment-{uuid.uuid4().hex[:8]}",
-        mode=mode,
-        pipelines=",".join(PIPELINE_KEYS),
-        email_service_type=email_service_type,
-        email_service_config_snapshot=dict(email_service_config or {}),
-        proxy_strategy_snapshot=dict(proxy_strategy or {}),
-        target_count=int(count),
-        notes=f"email_service_id={email_service_id}, concurrency={int(concurrency)}",
-        status="pending",
-    )
-
-    tasks: list[RegistrationTask] = []
-    for pair_key, pipeline_key in build_pairs(count):
-        task = crud.create_registration_task(
-            db,
-            task_uuid=str(uuid.uuid4()),
-            email_service_id=email_service_id,
-            pipeline_key=pipeline_key,
+    try:
+        batch = ExperimentBatch(
+            name=f"experiment-{uuid.uuid4().hex[:8]}",
+            mode=mode,
+            pipelines=",".join(PIPELINE_KEYS),
+            email_service_type=email_service_type,
+            email_service_config_snapshot=dict(email_service_config or {}),
+            proxy_strategy_snapshot=dict(proxy_strategy or {}),
+            target_count=int(count),
+            notes=f"email_service_id={email_service_id}, concurrency={int(concurrency)}",
+            status="pending",
         )
-        task = crud.update_registration_task(
-            db,
-            task.task_uuid,
-            pair_key=pair_key,
-            experiment_batch_id=batch.id,
-        ) or task
-        tasks.append(task)
+        db.add(batch)
+        db.flush()
 
-    return batch, tasks
+        tasks: list[RegistrationTask] = []
+        for pair_key, pipeline_key in build_pairs(count):
+            task = _build_registration_task(
+                task_uuid=str(uuid.uuid4()),
+                email_service_id=email_service_id,
+                pipeline_key=pipeline_key,
+                pair_key=pair_key,
+                experiment_batch_id=batch.id,
+            )
+            db.add(task)
+            tasks.append(task)
+
+        db.commit()
+        db.refresh(batch)
+        for task in tasks:
+            db.refresh(task)
+        return batch, tasks
+    except Exception:
+        db.rollback()
+        raise
 
 
 def build_experiment_overview(
     db: Session,
     *,
     batch: ExperimentBatch,
-    status_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tasks = _get_experiment_tasks(db, batch.id)
-    status = str((status_override or {}).get("status") or batch.status or "pending")
+    status = str(batch.status or "pending")
 
     per_pipeline: dict[str, dict[str, Any]] = {}
     all_durations: list[int] = []
@@ -235,3 +238,21 @@ def _subtract_nullable(left: float | None, right: float | None) -> float | None:
     if left is None or right is None:
         return None
     return float(left - right)
+
+
+def _build_registration_task(
+    *,
+    task_uuid: str,
+    email_service_id: int | None,
+    pipeline_key: str,
+    pair_key: str,
+    experiment_batch_id: int,
+) -> RegistrationTask:
+    return RegistrationTask(
+        task_uuid=task_uuid,
+        status="pending",
+        email_service_id=email_service_id,
+        pipeline_key=pipeline_key,
+        pair_key=pair_key,
+        experiment_batch_id=experiment_batch_id,
+    )

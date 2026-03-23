@@ -129,6 +129,23 @@ def test_experiment_overview_returns_total_and_per_pipeline_summary(client, rout
     assert body["pipelines"]["codexgen_pipeline"]["avg_duration_ms"] == pytest.approx(300.0)
 
 
+def test_experiment_overview_uses_db_status_even_when_task_manager_state_is_stale(client, route_db):
+    created = _create_experiment(client, count=1)
+    experiment_id = created["id"]
+
+    batch = route_db.query(experiment_routes.ExperimentBatch).filter_by(id=experiment_id).one()
+    batch.status = "completed"
+    route_db.commit()
+
+    task_manager_module.task_manager.update_experiment_status(experiment_id, status="running")
+
+    response = client.get(f"/api/registration/experiments/{experiment_id}")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["status"] == "completed"
+
+
 def test_experiment_pairs_groups_tasks_by_pair(client, route_db):
     created = _create_experiment(client, count=2)
     experiment_id = created["id"]
@@ -203,3 +220,36 @@ def test_experiment_steps_returns_aggregated_summary(client, route_db):
     assert step["pipelines"]["current_pipeline"]["p90_duration_ms"] == 190
     assert step["pipelines"]["codexgen_pipeline"]["avg_duration_ms"] == pytest.approx(400.0)
     assert step["pipeline_diff"]["avg_duration_ms"] == pytest.approx(250.0)
+
+
+def test_create_experiment_is_atomic_when_task_creation_fails(route_db, monkeypatch):
+    original_build = experiment_routes.create_experiment_tasks
+    call_count = {"value": 0}
+
+    def failing_create_task(*args, **kwargs):
+        from src.database.models import RegistrationTask
+
+        call_count["value"] += 1
+        if call_count["value"] == 2:
+            raise RuntimeError("task creation failed")
+        return RegistrationTask(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "src.core.pipeline.experiments._build_registration_task",
+        failing_create_task,
+    )
+
+    with pytest.raises(RuntimeError, match="task creation failed"):
+        original_build(
+            route_db,
+            count=2,
+            email_service_type="tempmail",
+            email_service_id=None,
+            email_service_config={"base_url": "https://mail.example.test"},
+            proxy_strategy={"mode": "shared_pool"},
+            concurrency=2,
+            mode="parallel",
+        )
+
+    assert route_db.query(experiment_routes.ExperimentBatch).count() == 0
+    assert route_db.query(RegistrationTask).count() == 0

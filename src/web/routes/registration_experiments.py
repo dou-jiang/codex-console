@@ -75,8 +75,7 @@ async def create_registration_experiment(request: ExperimentCreateRequest):
 async def get_registration_experiment(experiment_id: int):
     with get_db() as db:
         batch = _get_batch_or_404(db, experiment_id)
-        status_override = task_manager.get_experiment_status(experiment_id)
-        return build_experiment_overview(db, batch=batch, status_override=status_override)
+        return build_experiment_overview(db, batch=batch)
 
 
 @router.get("/{experiment_id}/pairs")
