@@ -367,6 +367,7 @@ def create_registration_task(
     email_service_id: Optional[int] = None,
     proxy: Optional[str] = None,
     email_address: Optional[str] = None,
+    pipeline_key: Optional[str] = None,
 ) -> RegistrationTask:
     """创建注册任务"""
     db_task = RegistrationTask(
@@ -374,7 +375,8 @@ def create_registration_task(
         email_service_id=email_service_id,
         proxy=proxy,
         email_address=email_address,
-        status='pending'
+        status='pending',
+        pipeline_key=pipeline_key,
     )
     db.add(db_task)
     db.commit()
@@ -459,6 +461,16 @@ def create_pipeline_step_run(db: Session, **kwargs) -> PipelineStepRun:
     db.commit()
     db.refresh(row)
     return row
+
+
+def get_pipeline_step_runs_by_task_uuid(db: Session, task_uuid: str) -> List[PipelineStepRun]:
+    """按 step_order 获取任务的 Step 运行记录列表。"""
+    return (
+        db.query(PipelineStepRun)
+        .filter(PipelineStepRun.task_uuid == task_uuid)
+        .order_by(asc(PipelineStepRun.step_order), asc(PipelineStepRun.id))
+        .all()
+    )
 
 
 def create_experiment_batch(

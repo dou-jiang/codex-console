@@ -32,6 +32,7 @@ _ws_sent_index: Dict[str, Dict] = defaultdict(dict)
 
 # 任务状态
 _task_status: Dict[str, dict] = {}
+_task_steps: Dict[str, List[dict]] = {}
 
 # 任务取消标志
 _task_cancelled: Dict[str, bool] = {}
@@ -202,12 +203,25 @@ class TaskManager:
         """获取任务状态"""
         return _task_status.get(task_uuid)
 
+    def set_task_steps(self, task_uuid: str, steps: List[dict]):
+        """设置任务步骤快照（轻量内存态，供 API 快速读取）。"""
+        _task_steps[task_uuid] = list(steps or [])
+
+    def get_task_steps(self, task_uuid: str) -> List[dict]:
+        """获取任务步骤快照。"""
+        return list(_task_steps.get(task_uuid, []))
+
+    def clear_task_steps(self, task_uuid: str):
+        """清理任务步骤快照。"""
+        _task_steps.pop(task_uuid, None)
+
     def cleanup_task(self, task_uuid: str):
         """清理任务数据"""
         # 保留日志队列一段时间，以便后续查询
         # 只清理取消标志
         if task_uuid in _task_cancelled:
             del _task_cancelled[task_uuid]
+        self.clear_task_steps(task_uuid)
 
     # ============== 批量任务管理 ==============
 

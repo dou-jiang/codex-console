@@ -7,7 +7,7 @@ import logging
 import uuid
 import random
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple
+from typing import Any, List, Optional, Dict, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -68,6 +68,7 @@ def update_proxy_usage(db, proxy_id: Optional[int]):
 class RegistrationTaskCreate(BaseModel):
     """创建注册任务请求"""
     email_service_type: str = "tempmail"
+    pipeline_key: str = "current_pipeline"
     proxy: Optional[str] = None
     email_service_config: Optional[dict] = None
     email_service_id: Optional[int] = None
@@ -83,6 +84,7 @@ class BatchRegistrationRequest(BaseModel):
     """批量注册请求"""
     count: int = 1
     email_service_type: str = "tempmail"
+    pipeline_key: str = "current_pipeline"
     proxy: Optional[str] = None
     email_service_config: Optional[dict] = None
     email_service_id: Optional[int] = None
@@ -104,10 +106,15 @@ class RegistrationTaskResponse(BaseModel):
     task_uuid: str
     status: str
     email_service_id: Optional[int] = None
+    pipeline_key: Optional[str] = None
+    current_step_key: Optional[str] = None
+    pipeline_status: Optional[str] = None
+    total_duration_ms: Optional[int] = None
     proxy: Optional[str] = None
     logs: Optional[str] = None
     result: Optional[dict] = None
     error_message: Optional[str] = None
+    steps: List[dict] = Field(default_factory=list)
     created_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -178,24 +185,53 @@ class OutlookBatchRegistrationResponse(BaseModel):
 
 # ============== Helper Functions ==============
 
-def task_to_response(task: RegistrationTask) -> RegistrationTaskResponse:
+def _step_run_to_dict(step_run) -> dict:
+    return {
+        "id": step_run.id,
+        "step_key": step_run.step_key,
+        "step_order": step_run.step_order,
+        "step_impl": step_run.step_impl,
+        "status": step_run.status,
+        "duration_ms": step_run.duration_ms,
+        "error_message": step_run.error_message,
+        "started_at": step_run.started_at.isoformat() if step_run.started_at else None,
+        "completed_at": step_run.completed_at.isoformat() if step_run.completed_at else None,
+    }
+
+
+def _collect_task_steps(db, task_uuid: str) -> List[dict]:
+    step_rows = crud.get_pipeline_step_runs_by_task_uuid(db, task_uuid)
+    if step_rows:
+        return [_step_run_to_dict(row) for row in step_rows]
+
+    if hasattr(task_manager, "get_task_steps"):
+        return task_manager.get_task_steps(task_uuid)
+    return []
+
+
+def task_to_response(task: RegistrationTask, *, steps: Optional[List[dict]] = None) -> RegistrationTaskResponse:
     """转换任务模型为响应"""
     return RegistrationTaskResponse(
         id=task.id,
         task_uuid=task.task_uuid,
         status=task.status,
         email_service_id=task.email_service_id,
+        pipeline_key=task.pipeline_key,
+        current_step_key=task.current_step_key,
+        pipeline_status=task.pipeline_status,
+        total_duration_ms=task.total_duration_ms,
         proxy=task.proxy,
         logs=task.logs,
         result=task.result,
         error_message=task.error_message,
+        steps=list(steps or []),
         created_at=task.created_at.isoformat() if task.created_at else None,
         started_at=task.started_at.isoformat() if task.started_at else None,
         completed_at=task.completed_at.isoformat() if task.completed_at else None,
     )
 
 
-def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
+def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, pipeline_key: Optional[str] = None):
     """
     在线程池中执行的同步注册任务
 
@@ -212,6 +248,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
             task = crud.update_registration_task(
                 db, task_uuid,
                 status="running",
+                pipeline_status="running",
                 started_at=datetime.utcnow()
             )
 
@@ -235,6 +272,9 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
             # 更新任务的代理记录
             crud.update_registration_task(db, task_uuid, proxy=actual_proxy_url)
+            effective_pipeline_key = pipeline_key or task.pipeline_key or "current_pipeline"
+            if task.pipeline_key != effective_pipeline_key:
+                task = crud.update_registration_task(db, task_uuid, pipeline_key=effective_pipeline_key) or task
 
             # 创建注册引擎 - 使用 TaskManager 的日志回调
             log_callback = task_manager.create_log_callback(task_uuid, prefix=log_prefix, batch_id=batch_id)
@@ -244,6 +284,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 email_service_id=email_service_id,
                 proxy=actual_proxy_url,
                 email_service_config=email_service_config,
+                pipeline_key=effective_pipeline_key,
                 callback_logger=log_callback,
                 task_uuid=task_uuid,
             )
@@ -346,6 +387,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 crud.update_registration_task(
                     db, task_uuid,
                     status="completed",
+                    pipeline_status="completed",
                     completed_at=datetime.utcnow(),
                     result=job_result.result_payload or {
                         "success": True,
@@ -356,6 +398,8 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                 # 更新 TaskManager 状态
                 task_manager.update_status(task_uuid, "completed", email=job_result.email)
+                if hasattr(task_manager, "set_task_steps"):
+                    task_manager.set_task_steps(task_uuid, _collect_task_steps(db, task_uuid))
 
                 logger.info(f"注册任务完成: {task_uuid}, 邮箱: {job_result.email}")
             else:
@@ -363,12 +407,15 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 crud.update_registration_task(
                     db, task_uuid,
                     status="failed",
+                    pipeline_status="failed",
                     completed_at=datetime.utcnow(),
                     error_message=job_result.error_message
                 )
 
                 # 更新 TaskManager 状态
                 task_manager.update_status(task_uuid, "failed", error=job_result.error_message)
+                if hasattr(task_manager, "set_task_steps"):
+                    task_manager.set_task_steps(task_uuid, _collect_task_steps(db, task_uuid))
 
                 logger.warning(f"注册任务失败: {task_uuid}, 原因: {job_result.error_message}")
 
@@ -380,17 +427,20 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     crud.update_registration_task(
                         db, task_uuid,
                         status="failed",
+                        pipeline_status="failed",
                         completed_at=datetime.utcnow(),
                         error_message=str(e)
                     )
 
                 # 更新 TaskManager 状态
                 task_manager.update_status(task_uuid, "failed", error=str(e))
+                if hasattr(task_manager, "clear_task_steps"):
+                    task_manager.clear_task_steps(task_uuid)
             except:
                 pass
 
 
-async def run_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
+async def run_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, pipeline_key: Optional[str] = None):
     """
     异步执行注册任务
 
@@ -423,6 +473,7 @@ async def run_registration_task(task_uuid: str, email_service_type: str, proxy: 
             sub2api_service_ids or [],
             auto_upload_tm,
             tm_service_ids or [],
+            pipeline_key,
         )
     except Exception as e:
         logger.error(f"线程池执行异常: {task_uuid}, 错误: {e}")
@@ -514,6 +565,7 @@ async def run_unlimited_batch_registration(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    pipeline_key: Optional[str] = None,
 ):
     """无限注册模式：持续创建任务直到取消或连续失败超过阈值。"""
     if batch_id not in batch_tasks:
@@ -533,7 +585,7 @@ async def run_unlimited_batch_registration(
         batch_tasks[batch_id]["task_uuids"].append(task_uuid)
 
         with get_db() as db:
-            crud.create_registration_task(db, task_uuid=task_uuid, proxy=proxy)
+            crud.create_registration_task(db, task_uuid=task_uuid, proxy=proxy, pipeline_key=pipeline_key)
 
         async with semaphore:
             await run_registration_task(
@@ -550,6 +602,7 @@ async def run_unlimited_batch_registration(
                 sub2api_service_ids=sub2api_service_ids or [],
                 auto_upload_tm=auto_upload_tm,
                 tm_service_ids=tm_service_ids or [],
+                pipeline_key=pipeline_key,
             )
 
         with get_db() as db:
@@ -630,6 +683,7 @@ async def run_batch_parallel(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    pipeline_key: Optional[str] = None,
 ):
     """
     并行模式：所有任务同时提交，Semaphore 控制最大并发数
@@ -649,6 +703,7 @@ async def run_batch_parallel(
                 auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids or [],
                 auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids or [],
                 auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids or [],
+                pipeline_key=pipeline_key,
             )
         with get_db() as db:
             t = crud.get_registration_task(db, uuid)
@@ -699,6 +754,7 @@ async def run_batch_pipeline(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    pipeline_key: Optional[str] = None,
 ):
     """
     流水线模式：每隔 interval 秒启动一个新任务，Semaphore 限制最大并发数
@@ -718,6 +774,7 @@ async def run_batch_pipeline(
                 auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids or [],
                 auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids or [],
                 auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids or [],
+                pipeline_key=pipeline_key,
             )
             with get_db() as db:
                 t = crud.get_registration_task(db, uuid)
@@ -795,6 +852,7 @@ async def run_batch_registration(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    pipeline_key: Optional[str] = None,
 ):
     """根据 mode 分发到并行或流水线执行"""
     if mode == "parallel":
@@ -804,6 +862,7 @@ async def run_batch_registration(
             auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids,
             auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids,
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
+            pipeline_key=pipeline_key,
         )
     else:
         await run_batch_pipeline(
@@ -813,6 +872,7 @@ async def run_batch_registration(
             auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids,
             auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids,
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
+            pipeline_key=pipeline_key,
         )
 
 
@@ -846,7 +906,8 @@ async def start_registration(
         task = crud.create_registration_task(
             db,
             task_uuid=task_uuid,
-            proxy=request.proxy
+            proxy=request.proxy,
+            pipeline_key=request.pipeline_key,
         )
 
     # 在后台运行注册任务
@@ -865,6 +926,7 @@ async def start_registration(
         request.sub2api_service_ids,
         request.auto_upload_tm,
         request.tm_service_ids,
+        request.pipeline_key,
     )
 
     return task_to_response(task)
@@ -929,6 +991,7 @@ async def start_batch_registration(
             request.sub2api_service_ids,
             request.auto_upload_tm,
             request.tm_service_ids,
+            request.pipeline_key,
         )
         return BatchRegistrationResponse(
             batch_id=batch_id,
@@ -945,7 +1008,8 @@ async def start_batch_registration(
             task = crud.create_registration_task(
                 db,
                 task_uuid=task_uuid,
-                proxy=request.proxy
+                proxy=request.proxy,
+                pipeline_key=request.pipeline_key,
             )
             task_uuids.append(task_uuid)
 
@@ -972,6 +1036,7 @@ async def start_batch_registration(
         request.sub2api_service_ids,
         request.auto_upload_tm,
         request.tm_service_ids,
+        request.pipeline_key,
     )
 
     return BatchRegistrationResponse(
@@ -1039,9 +1104,13 @@ async def list_tasks(
         offset = (page - 1) * page_size
         tasks = query.order_by(RegistrationTask.created_at.desc()).offset(offset).limit(page_size).all()
 
+        response_tasks: List[RegistrationTaskResponse] = []
+        for task in tasks:
+            response_tasks.append(task_to_response(task, steps=_collect_task_steps(db, task.task_uuid)))
+
         return TaskListResponse(
             total=total,
-            tasks=[task_to_response(t) for t in tasks]
+            tasks=response_tasks
         )
 
 
@@ -1052,7 +1121,7 @@ async def get_task(task_uuid: str):
         task = crud.get_registration_task(db, task_uuid)
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
-        return task_to_response(task)
+        return task_to_response(task, steps=_collect_task_steps(db, task_uuid))
 
 
 @router.get("/tasks/{task_uuid}/logs")
