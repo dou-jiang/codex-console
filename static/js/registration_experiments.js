@@ -120,3 +120,10 @@ function formatDuration(value) {
     }
     return `${Math.round(value)}ms`;
 }
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}

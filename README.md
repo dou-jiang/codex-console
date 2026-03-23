@@ -42,6 +42,9 @@
 
 - Web UI 管理注册任务和账号数据
 - 支持批量注册、日志实时查看、基础任务管理
+- 支持 `current_pipeline` / `codexgen_pipeline` 双流水线切换与成对实验
+- 支持实验批次级别的步骤耗时对比与存活汇总看板
+- 支持账号存活自动巡检与手动复查（`healthy` / `warning` / `dead`）
 - 支持多种邮箱服务接码
 - 支持 SQLite 和远程 PostgreSQL
 - 支持打包为 Windows/Linux/macOS 可执行文件
