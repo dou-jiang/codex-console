@@ -8,6 +8,19 @@ from src.config.settings import get_settings
 from src.web.app import create_app
 
 
+def _get_tag_by_id(template: str, tag: str, element_id: str) -> str:
+    match = re.search(rf"<{tag}\b[^>]*\bid=\"{re.escape(element_id)}\"[^>]*>", template)
+    assert match is not None, f"missing <{tag}> with id={element_id}"
+    return match.group(0)
+
+
+def _assert_tag_class_contains(tag_html: str, expected_class: str) -> None:
+    class_match = re.search(r'class\s*=\s*"([^"]*)"', tag_html)
+    assert class_match is not None, f"missing class attribute: {tag_html}"
+    classes = set(class_match.group(1).split())
+    assert expected_class in classes, f"class {expected_class!r} missing in {classes!r}"
+
+
 def test_scheduled_tasks_page_requires_auth_and_renders_script():
     app = create_app()
     with TestClient(app) as client:
@@ -73,11 +86,16 @@ def test_scheduled_tasks_run_center_filter_panel_uses_shared_shell_classes():
     assert "filter-panel-actions" in template
     assert "pagination-panel" in template
     assert "pagination-jump" in template
-    assert 'id="scheduled-run-filter-task-type" class="form-select"' in template
-    assert 'id="scheduled-run-filter-status" class="form-select"' in template
-    assert 'id="scheduled-run-filter-started-from" class="form-input"' in template
-    assert 'id="scheduled-run-filter-started-to" class="form-input"' in template
-    assert 'id="scheduled-run-page-jump-input"' in template and 'class="form-input"' in template
+    _assert_tag_class_contains(_get_tag_by_id(template, "select", "scheduled-run-filter-task-type"), "form-select")
+    _assert_tag_class_contains(_get_tag_by_id(template, "select", "scheduled-run-filter-status"), "form-select")
+    _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-filter-started-from"), "form-input")
+    _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-filter-started-to"), "form-input")
+    _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-page-jump-input"), "form-input")
+    assert re.search(
+        r'<div class="card-header filter-panel">\s*<h3>运行中心</h3>\s*<div class="filter-panel-grid">.*?</div>\s*<div class="filter-panel-actions">',
+        template,
+        re.DOTALL,
+    )
 
 
 def test_scheduled_tasks_template_contains_run_center_pagination_hooks():
