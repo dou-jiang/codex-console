@@ -191,6 +191,25 @@ def test_scheduler_engine_request_run_stop_rejects_finished_or_missing_runs(temp
     assert engine.is_run_stop_requested(run.id + 9999) is False
 
 
+def test_scheduler_engine_request_run_stop_rejects_non_running_states(temp_db):
+    plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
+    with session_module.get_db() as db:
+        skipped = crud.create_scheduled_run(db, plan_id=plan.id, trigger_source="manual", status="skipped")
+        failed = crud.create_scheduled_run(db, plan_id=plan.id, trigger_source="manual", status="failed")
+        cancelled = crud.create_scheduled_run(db, plan_id=plan.id, trigger_source="manual", status="cancelled")
+        skipped_id = skipped.id
+        failed_id = failed.id
+        cancelled_id = cancelled.id
+
+    engine = SchedulerEngine()
+    assert engine.request_run_stop(skipped_id) is False
+    assert engine.request_run_stop(failed_id) is False
+    assert engine.request_run_stop(cancelled_id) is False
+    assert engine.is_run_stop_requested(skipped_id) is False
+    assert engine.is_run_stop_requested(failed_id) is False
+    assert engine.is_run_stop_requested(cancelled_id) is False
+
+
 def test_scheduler_engine_dispatch_persists_task_type_on_created_run(temp_db, monkeypatch):
     plan = _create_plan(temp_db, task_type="account_refresh", due=False)
     captured_task_types = []
@@ -294,6 +313,32 @@ def test_scheduler_engine_runner_cancellation_marks_run_cancelled_and_updates_pl
     assert persisted_plan is not None
     assert persisted_plan.last_run_status == "cancelled"
     assert persisted_plan.last_run_finished_at is not None
+
+
+def test_scheduler_engine_runner_cancellation_overrides_failed_status_from_runner(temp_db):
+    plan = _create_plan(temp_db, task_type="cpa_cleanup", due=False)
+
+    def _cleanup_runner(*, plan_id: int, run_id: int):
+        with session_module.get_db() as db:
+            crud.finish_scheduled_run(db, run_id=run_id, status="failed", error_message="runner generic fail")
+        raise engine_module.ScheduledRunCancelledError("stop requested")
+
+    engine = SchedulerEngine(
+        runner_map={"cpa_cleanup": _cleanup_runner},
+        worker_spawner=lambda fn, _name: fn(),
+    )
+
+    run_id = engine.trigger_plan_now(plan.id)
+
+    temp_db.expire_all()
+    run = temp_db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+    assert run is not None
+    assert run.status == "cancelled"
+    assert run.error_message == "user requested stop"
+
+    persisted_plan = crud.get_scheduled_plan_by_id(temp_db, plan.id)
+    assert persisted_plan is not None
+    assert persisted_plan.last_run_status == "cancelled"
 
 
 def test_scheduler_engine_skipped_run_updates_plan_summary_fields(temp_db):

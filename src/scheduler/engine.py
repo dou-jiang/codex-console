@@ -341,7 +341,21 @@ class SchedulerEngine:
         self._finish_running_run(run_id, status="failed", error_message=error_message)
 
     def _ensure_run_cancelled(self, run_id: int, error_message: str) -> None:
-        self._finish_running_run(run_id, status="cancelled", error_message=error_message)
+        with get_db() as db:
+            run = db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
+            if run is None:
+                return
+            if run.status not in {"running", "failed", "cancelled"}:
+                return
+            if run.status == "cancelled" and run.error_message == error_message:
+                return
+
+            run.status = "cancelled"
+            run.error_message = error_message
+            if run.finished_at is None:
+                run.finished_at = datetime.utcnow()
+            db.commit()
+            db.refresh(run)
 
     def _finish_running_run(self, run_id: int, *, status: str, error_message: str) -> None:
         with get_db() as db:
