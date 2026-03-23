@@ -905,11 +905,11 @@ def get_scheduled_runs(
 
     if plan_id is not None:
         query = query.filter(ScheduledRun.plan_id == plan_id)
-    if task_type:
+    if task_type is not None:
         query = query.filter(ScheduledRun.task_type == task_type)
-    if status:
+    if status is not None:
         query = query.filter(ScheduledRun.status == status)
-    if trigger_source:
+    if trigger_source is not None:
         query = query.filter(ScheduledRun.trigger_source == trigger_source)
     if stop_requested is True:
         query = query.filter(ScheduledRun.stop_requested_at.is_not(None))
@@ -942,6 +942,11 @@ def mark_scheduled_run_stop_requested(
     if not run:
         return None
 
+    if run.status != "running" or run.finished_at is not None:
+        return None
+    if run.stop_requested_at is not None:
+        return run
+
     run.stop_requested_at = requested_at or datetime.utcnow()
     run.stop_requested_by = requested_by
     run.stop_reason = reason
@@ -958,22 +963,33 @@ def get_scheduled_run_log_chunk(
     limit: int = 4096,
 ) -> Optional[Dict[str, Any]]:
     """分页读取定时执行日志。"""
-    run = get_scheduled_run_by_id(db, run_id)
-    if not run:
-        return None
-
     safe_offset = max(0, int(offset))
     safe_limit = max(1, int(limit))
-    logs = run.logs or ""
-    chunk = logs[safe_offset: safe_offset + safe_limit]
+    logs_expr = func.coalesce(ScheduledRun.logs, "")
+    row = (
+        db.query(
+            ScheduledRun.id,
+            ScheduledRun.log_version,
+            ScheduledRun.last_log_at,
+            func.length(logs_expr).label("logs_length"),
+            func.substr(logs_expr, safe_offset + 1, safe_limit).label("chunk"),
+        )
+        .filter(ScheduledRun.id == run_id)
+        .first()
+    )
+    if row is None:
+        return None
+
+    chunk = row.chunk or ""
+    total_length = int(row.logs_length or 0)
     next_offset = safe_offset + len(chunk)
     return {
         "content": chunk,
         "offset": safe_offset,
         "next_offset": next_offset,
-        "has_more": next_offset < len(logs),
-        "log_version": int(run.log_version or 0),
-        "last_log_at": run.last_log_at,
+        "has_more": next_offset < total_length,
+        "log_version": int(row.log_version or 0),
+        "last_log_at": row.last_log_at,
     }
 
 
