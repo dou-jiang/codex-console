@@ -166,6 +166,7 @@ class FakeTaskManager:
         self._task_status = {}
         self._batch_logs = {}
         self._task_steps = {}
+        self.set_task_steps_calls = 0
 
     def is_cancelled(self, task_uuid):
         return self._task_status.get(task_uuid, {}).get("cancelled", False)
@@ -210,6 +211,7 @@ class FakeTaskManager:
         return self._status.get(batch_id, {}).get("cancelled", False)
 
     def set_task_steps(self, task_uuid, steps):
+        self.set_task_steps_calls += 1
         self._task_steps[task_uuid] = list(steps or [])
 
     def get_task_steps(self, task_uuid):
@@ -334,6 +336,50 @@ def test_task_manager_step_state_roundtrip():
     assert manager.get_task_steps(task_uuid) == [{"step_key": "create_email"}]
     manager.clear_task_steps(task_uuid)
     assert manager.get_task_steps(task_uuid) == []
+
+
+def test_get_task_prefers_task_manager_steps_when_db_steps_missing(route_db, fake_task_manager):
+    task = crud.create_registration_task(route_db, task_uuid="task-step-fallback")
+    fake_task_manager.set_task_steps(task.task_uuid, [{"step_key": "memory-step"}])
+
+    response = asyncio.run(registration_routes.get_task(task.task_uuid))
+
+    assert [item["step_key"] for item in response.steps] == ["memory-step"]
+
+
+def test_get_task_prefers_db_steps_over_task_manager_snapshot(route_db, fake_task_manager):
+    task = crud.create_registration_task(route_db, task_uuid="task-step-db-priority")
+    fake_task_manager.set_task_steps(task.task_uuid, [{"step_key": "memory-step"}])
+    crud.create_pipeline_step_run(
+        route_db,
+        task_uuid=task.task_uuid,
+        pipeline_key="current_pipeline",
+        step_key="db-step",
+        step_order=1,
+        status="completed",
+    )
+
+    response = asyncio.run(registration_routes.get_task(task.task_uuid))
+
+    assert [item["step_key"] for item in response.steps] == ["db-step"]
+
+
+def test_run_sync_registration_task_does_not_cache_terminal_task_steps(route_db, fake_task_manager, monkeypatch):
+    crud.create_registration_task(route_db, task_uuid="task-no-terminal-cache")
+    monkeypatch.setattr(
+        registration_routes,
+        "run_registration_job",
+        lambda **_: RegistrationJobResult(
+            success=True,
+            account_id=101,
+            email="ok@gmail.com",
+            result_payload={"success": True, "email": "ok@gmail.com"},
+        ),
+    )
+
+    registration_routes._run_sync_registration_task("task-no-terminal-cache", "tempmail", None, None)
+
+    assert fake_task_manager.set_task_steps_calls == 0
 
 
 def test_run_sync_registration_task_persists_full_result_payload_on_success(route_db, fake_task_manager, monkeypatch):

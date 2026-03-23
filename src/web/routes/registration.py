@@ -398,8 +398,8 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                 # 更新 TaskManager 状态
                 task_manager.update_status(task_uuid, "completed", email=job_result.email)
-                if hasattr(task_manager, "set_task_steps"):
-                    task_manager.set_task_steps(task_uuid, _collect_task_steps(db, task_uuid))
+                if hasattr(task_manager, "clear_task_steps"):
+                    task_manager.clear_task_steps(task_uuid)
 
                 logger.info(f"注册任务完成: {task_uuid}, 邮箱: {job_result.email}")
             else:
@@ -414,8 +414,8 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                 # 更新 TaskManager 状态
                 task_manager.update_status(task_uuid, "failed", error=job_result.error_message)
-                if hasattr(task_manager, "set_task_steps"):
-                    task_manager.set_task_steps(task_uuid, _collect_task_steps(db, task_uuid))
+                if hasattr(task_manager, "clear_task_steps"):
+                    task_manager.clear_task_steps(task_uuid)
 
                 logger.warning(f"注册任务失败: {task_uuid}, 原因: {job_result.error_message}")
 
