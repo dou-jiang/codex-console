@@ -200,6 +200,16 @@ class TaskManager:
         _task_status[task_uuid]["status"] = status
         _task_status[task_uuid].update(kwargs)
 
+        # 异步广播状态更新
+        if self._loop and self._loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self.broadcast_status(task_uuid, status, **kwargs),
+                    self._loop
+                )
+            except Exception as e:
+                logger.warning(f"广播任务状态失败: {e}")
+
     def get_status(self, task_uuid: str) -> Optional[dict]:
         """获取任务状态"""
         return _task_status.get(task_uuid)
