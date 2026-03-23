@@ -211,6 +211,7 @@ const context = {{
   theme: {{ applyTheme() {{}}, toggle() {{}} }},
   toast: {{ success() {{}}, error() {{}}, warning() {{}}, info() {{}} }},
   format: {{ date(value) {{ return value ? String(value) : '-'; }} }},
+  escapeHtml(value) {{ return String(value ?? ''); }},
   fetch: async () => ({{ ok: true, json: async () => ({{}}), blob: async () => ({{}}), headers: {{ get() {{ return null; }} }} }}),
   confirm: async () => true,
   api: {{
@@ -248,7 +249,7 @@ context.globalThis = context;
 
 vm.createContext(context);
 vm.runInContext(
-  appSource + `\n;globalThis.__appTestExports = {{\n  handleModeChange,\n  handleBatchRegistration,\n  showBatchStatus,\n  updateBatchProgress,\n  restoreActiveTask,\n  elements,\n}};`,
+  appSource + `\n;globalThis.__appTestExports = {{\n  handleModeChange,\n  handleBatchRegistration,\n  renderTaskSteps,\n  showBatchStatus,\n  updateBatchProgress,\n  restoreActiveTask,\n  elements,\n}};`,
   context,
 );
 
@@ -261,6 +262,7 @@ function setupBaseElements() {{
   getElement('interval-max').value = '30';
   getElement('concurrency-count').value = '3';
   getElement('concurrency-mode').value = 'pipeline';
+  getElement('pipeline-key').value = 'current_pipeline';
   getElement('batch-count-group').style.display = 'none';
   getElement('batch-options').style.display = 'none';
   getElement('batch-domain-stats').innerHTML = '';
@@ -283,6 +285,23 @@ async function runScenario() {{
         batch_count_display: getElement('batch-count-group').style.display || '',
         request_payload: logs.lastPostPayload,
         saved_active_task: JSON.parse(context.sessionStorage.getItem('activeTask') || 'null'),
+      }};
+    }}
+    case 'pipeline_batch_request': {{
+      getElement('pipeline-key').value = 'codexgen_pipeline';
+      const requestPayload = {{ email_service_type: 'tempmail' }};
+      await exported.handleBatchRegistration(requestPayload);
+      return {{
+        request_payload: logs.lastPostPayload,
+      }};
+    }}
+    case 'render_task_steps': {{
+      exported.renderTaskSteps([
+        {{ step_key: 'create_email', status: 'completed', duration_ms: 123 }},
+        {{ step_key: 'submit_login_email', status: 'failed', duration_ms: 456, error_message: 'timeout' }},
+      ]);
+      return {{
+        waterfall_html: getElement('task-step-waterfall').innerHTML,
       }};
     }}
     case 'unlimited_progress_running': {{

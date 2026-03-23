@@ -40,6 +40,7 @@ let activeBatchId = null;    // 当前活跃的批量任务 ID（用于页面重
 const elements = {
     form: document.getElementById('registration-form'),
     emailService: document.getElementById('email-service'),
+    pipelineKey: document.getElementById('pipeline-key'),
     regMode: document.getElementById('reg-mode'),
     regModeGroup: document.getElementById('reg-mode-group'),
     batchCountGroup: document.getElementById('batch-count-group'),
@@ -50,6 +51,7 @@ const elements = {
     startBtn: document.getElementById('start-btn'),
     cancelBtn: document.getElementById('cancel-btn'),
     taskStatusRow: document.getElementById('task-status-row'),
+    taskStepWaterfall: document.getElementById('task-step-waterfall'),
     batchProgressSection: document.getElementById('batch-progress-section'),
     consoleLog: document.getElementById('console-log'),
     clearLogBtn: document.getElementById('clear-log-btn'),
@@ -480,6 +482,7 @@ async function handleStartRegistration(e) {
     // 构建请求数据（代理从设置中自动获取）
     const requestData = {
         email_service_type: emailServiceType,
+        pipeline_key: elements.pipelineKey ? (elements.pipelineKey.value || 'current_pipeline') : 'current_pipeline',
         auto_upload_cpa: elements.autoUploadCpa ? elements.autoUploadCpa.checked : false,
         cpa_service_ids: elements.autoUploadCpa && elements.autoUploadCpa.checked ? getSelectedServiceIds(elements.cpaServiceSelect) : [],
         auto_upload_sub2api: elements.autoUploadSub2api ? elements.autoUploadSub2api.checked : false,
@@ -674,6 +677,7 @@ async function handleBatchRegistration(requestData) {
     const concurrency = parseInt(elements.concurrencyCount.value, 10) || 3;
     const mode = elements.concurrencyMode.value || 'pipeline';
 
+    requestData.pipeline_key = requestData.pipeline_key || (elements.pipelineKey ? (elements.pipelineKey.value || 'current_pipeline') : 'current_pipeline');
     requestData.count = count;
     requestData.interval_min = intervalMin;
     requestData.interval_max = intervalMax;
@@ -878,8 +882,9 @@ function showTaskStatus(task) {
     elements.batchProgressSection.style.display = 'none';
     elements.taskStatusBadge.style.display = 'inline-flex';
     elements.taskId.textContent = task.task_uuid.substring(0, 8) + '...';
-    elements.taskEmail.textContent = '-';
-    elements.taskService.textContent = '-';
+    elements.taskEmail.textContent = task.email || task.email_address || '-';
+    elements.taskService.textContent = task.email_service ? getServiceTypeText(task.email_service) : '-';
+    renderTaskSteps(task.steps || []);
 }
 
 // 更新任务状态
@@ -898,6 +903,40 @@ function updateTaskStatus(status) {
     elements.taskStatus.textContent = info.text;
 }
 
+function renderTaskSteps(steps) {
+    if (!elements.taskStepWaterfall) return;
+
+    const rows = Array.isArray(steps) ? steps : [];
+    if (rows.length === 0) {
+        elements.taskStepWaterfall.innerHTML = '';
+        elements.taskStepWaterfall.style.display = 'none';
+        return;
+    }
+
+    elements.taskStepWaterfall.innerHTML = rows.map((step, index) => {
+        const stepKey = escapeHtml(step.step_key || `step_${index + 1}`);
+        const status = escapeHtml(step.status || 'pending');
+        const duration = step.duration_ms != null ? `${step.duration_ms}ms` : '-';
+        const errorHtml = step.error_message
+            ? `<div class="task-step-error">${escapeHtml(step.error_message)}</div>`
+            : '';
+        return `
+            <div class="task-step-card ${status}">
+                <div class="task-step-header">
+                    <span class="task-step-order">${index + 1}</span>
+                    <span class="task-step-key">${stepKey}</span>
+                </div>
+                <div class="task-step-meta">
+                    <span class="task-step-status">${status}</span>
+                    <span class="task-step-duration">${duration}</span>
+                </div>
+                ${errorHtml}
+            </div>
+        `;
+    }).join('');
+    elements.taskStepWaterfall.style.display = 'grid';
+}
+
 // 显示批量状态
 function showBatchStatus(batch) {
     const isUnlimited = !!(batch && (batch.is_unlimited || batch.count === 0));
@@ -905,6 +944,7 @@ function showBatchStatus(batch) {
     elements.batchProgressSection.style.display = 'block';
     elements.taskStatusRow.style.display = 'none';
     elements.taskStatusBadge.style.display = 'none';
+    renderTaskSteps([]);
     elements.batchProgressText.textContent = isUnlimited ? '0/∞' : `0/${batch.count}`;
     elements.batchProgressPercent.textContent = isUnlimited ? '运行中' : '0%';
     elements.progressBar.style.width = isUnlimited ? '100%' : '0%';

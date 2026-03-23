@@ -11,6 +11,14 @@ def test_registration_template_contains_unlimited_mode_and_domain_stats_containe
     assert 'id="batch-domain-stats"' in template
 
 
+def test_registration_template_contains_pipeline_selector_and_task_step_waterfall():
+    template = Path("templates/index.html").read_text(encoding="utf-8")
+    assert 'id="pipeline-key"' in template
+    assert 'value="current_pipeline"' in template
+    assert 'value="codexgen_pipeline"' in template
+    assert 'id="task-step-waterfall"' in template
+
+
 def test_registration_template_nav_contains_scheduled_tasks_link():
     template = Path("templates/index.html").read_text(encoding="utf-8")
     assert 'href="/scheduled-tasks"' in template
@@ -26,6 +34,20 @@ def test_app_js_posts_count_zero_for_unlimited_mode():
     assert result["batch_count_display"] == "none"
     assert result["request_payload"]["count"] == 0
     assert result["saved_active_task"]["mode"] == "unlimited"
+
+
+def test_app_js_posts_selected_pipeline_key_for_batch_request():
+    result = run_app_js_scenario("pipeline_batch_request")
+    assert result["request_payload"]["pipeline_key"] == "codexgen_pipeline"
+
+
+def test_app_js_renders_task_step_waterfall_html():
+    result = run_app_js_scenario("render_task_steps")
+    assert "create_email" in result["waterfall_html"]
+    assert "123ms" in result["waterfall_html"]
+    assert "completed" in result["waterfall_html"]
+    assert "submit_login_email" in result["waterfall_html"]
+    assert "timeout" in result["waterfall_html"]
 
 
 def test_app_js_renders_unlimited_progress_without_domain_stats_until_finished():
@@ -98,6 +120,13 @@ def test_shared_stylesheet_defines_filter_and_pagination_panel_selectors():
     assert ".filter-input-cpa-service-id" in stylesheet
     assert ".filter-input-search" in stylesheet
     assert ".pagination-jump-input" in stylesheet
+
+
+def test_shared_stylesheet_defines_task_step_waterfall_selectors():
+    stylesheet = Path("static/css/style.css").read_text(encoding="utf-8")
+    assert ".task-step-waterfall" in stylesheet
+    assert ".task-step-card" in stylesheet
+    assert ".task-step-meta" in stylesheet
 
 
 def _get_div_by_class_tokens(template: str, class_tokens: set[str]) -> str | None:

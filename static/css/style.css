@@ -243,6 +243,61 @@ body {
     font-size: 0.9375rem;
 }
 
+.task-step-waterfall {
+    display: grid;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-md);
+    border-bottom: 1px solid var(--border-light);
+    background: var(--surface);
+}
+
+.task-step-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-hover);
+    padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.task-step-card.completed {
+    border-color: var(--success-color);
+}
+
+.task-step-card.failed {
+    border-color: var(--danger-color);
+}
+
+.task-step-card.running {
+    border-color: var(--info-color);
+}
+
+.task-step-header {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.task-step-order {
+    min-width: 1.5rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.task-step-meta {
+    display: flex;
+    gap: var(--spacing-md);
+    margin-top: var(--spacing-xs);
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.task-step-error {
+    margin-top: var(--spacing-xs);
+    color: var(--danger-color);
+    font-size: 0.8125rem;
+}
+
 /* ============================================
    卡片
    ============================================ */
