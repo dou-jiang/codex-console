@@ -50,6 +50,14 @@ def test_app_js_renders_task_step_waterfall_html():
     assert "timeout" in result["waterfall_html"]
 
 
+def test_app_js_single_task_flow_fetches_task_detail_and_renders_steps():
+    result = run_app_js_scenario("single_task_step_refresh")
+    assert "/registration/tasks/task-single-01" in result["api_get_paths"]
+    assert "create_email" in result["waterfall_html"]
+    assert "88ms" in result["waterfall_html"]
+    assert "running" in result["waterfall_html"]
+
+
 def test_app_js_renders_unlimited_progress_without_domain_stats_until_finished():
     result = run_app_js_scenario("unlimited_progress_running")
     assert result["progress_text"] == "5/∞"

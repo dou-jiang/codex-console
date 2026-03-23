@@ -212,12 +212,16 @@ const context = {{
   toast: {{ success() {{}}, error() {{}}, warning() {{}}, info() {{}} }},
   format: {{ date(value) {{ return value ? String(value) : '-'; }} }},
   escapeHtml(value) {{ return String(value ?? ''); }},
+  getServiceTypeText(value) {{ return String(value ?? '-'); }},
   fetch: async () => ({{ ok: true, json: async () => ({{}}), blob: async () => ({{}}), headers: {{ get() {{ return null; }} }} }}),
   confirm: async () => true,
   api: {{
     async post(path, payload) {{
       logs.lastPostPath = path;
       logs.lastPostPayload = JSON.parse(JSON.stringify(payload));
+      if (path === '/registration/start') {{
+        return {{ task_uuid: 'task-single-01', status: 'pending' }};
+      }}
       return {{ batch_id: 'batch-001', count: payload.count }};
     }},
     async get(path) {{
@@ -236,6 +240,17 @@ const context = {{
           domain_stats: [],
         }};
       }}
+      if (path === '/registration/tasks/task-single-01') {{
+        return {{
+          task_uuid: 'task-single-01',
+          status: 'running',
+          email: 'tester@example.com',
+          email_service: 'tempmail',
+          steps: [
+            {{ step_key: 'create_email', status: 'running', duration_ms: 88 }},
+          ],
+        }};
+      }}
 
       return {{ accounts: [], finished: false }};
     }},
@@ -249,7 +264,7 @@ context.globalThis = context;
 
 vm.createContext(context);
 vm.runInContext(
-  appSource + `\n;globalThis.__appTestExports = {{\n  handleModeChange,\n  handleBatchRegistration,\n  renderTaskSteps,\n  showBatchStatus,\n  updateBatchProgress,\n  restoreActiveTask,\n  elements,\n}};`,
+  appSource + `\n;globalThis.__appTestExports = {{\n  handleModeChange,\n  handleBatchRegistration,\n  handleSingleRegistration,\n  renderTaskSteps,\n  showBatchStatus,\n  updateBatchProgress,\n  restoreActiveTask,\n  elements,\n}};`,
   context,
 );
 
@@ -301,6 +316,13 @@ async function runScenario() {{
         {{ step_key: 'submit_login_email', status: 'failed', duration_ms: 456, error_message: 'timeout' }},
       ]);
       return {{
+        waterfall_html: getElement('task-step-waterfall').innerHTML,
+      }};
+    }}
+    case 'single_task_step_refresh': {{
+      await exported.handleSingleRegistration({{ email_service_type: 'tempmail', pipeline_key: 'codexgen_pipeline' }});
+      return {{
+        api_get_paths: logs.apiGetPaths.slice(),
         waterfall_html: getElement('task-step-waterfall').innerHTML,
       }};
     }}

@@ -523,6 +523,7 @@ async function handleSingleRegistration(requestData) {
         addLog('info', `[系统] 任务已创建: ${data.task_uuid}`);
         showTaskStatus(data);
         updateTaskStatus('running');
+        await refreshTaskDetail(data.task_uuid);
 
         // 优先使用 WebSocket
         connectWebSocket(data.task_uuid);
@@ -562,6 +563,7 @@ function connectWebSocket(taskUuid) {
                 addLog(logType, data.message);
             } else if (data.type === 'status') {
                 updateTaskStatus(data.status);
+                refreshTaskDetail(taskUuid);
 
                 // 检查是否完成
                 if (['completed', 'failed', 'cancelled', 'cancelling'].includes(data.status)) {
@@ -781,6 +783,7 @@ function startLogPolling(taskUuid) {
     logPollingInterval = setInterval(async () => {
         try {
             const data = await api.get(`/registration/tasks/${taskUuid}/logs`);
+            await refreshTaskDetail(taskUuid);
 
             // 更新任务状态
             updateTaskStatus(data.status);
@@ -901,6 +904,23 @@ function updateTaskStatus(status) {
     elements.taskStatusBadge.textContent = info.text;
     elements.taskStatusBadge.className = `status-badge ${info.class}`;
     elements.taskStatus.textContent = info.text;
+}
+
+async function refreshTaskDetail(taskUuid) {
+    if (!taskUuid) return null;
+    try {
+        const detail = await api.get(`/registration/tasks/${taskUuid}`);
+        if (!detail) return null;
+        currentTask = { ...(currentTask || {}), ...detail };
+        showTaskStatus(currentTask);
+        if (detail.status) {
+            updateTaskStatus(detail.status);
+        }
+        return currentTask;
+    } catch (error) {
+        console.error('加载任务详情失败:', error);
+        return null;
+    }
 }
 
 function renderTaskSteps(steps) {
