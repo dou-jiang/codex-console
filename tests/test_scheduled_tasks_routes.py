@@ -58,6 +58,7 @@ def client(route_db):
         worker_spawner=lambda fn, _name: fn(),
     )
     app.include_router(api_router, prefix="/api")
+    app.include_router(scheduled_routes.runs_router, prefix="/api")
 
     with TestClient(app) as test_client:
         yield test_client
@@ -385,6 +386,108 @@ def test_get_scheduled_run_logs_route_returns_saved_logs(client, route_db, seede
         "run_id": run.id,
         "logs": "manual run started\nmanual run finished",
     }
+
+
+def test_list_scheduled_runs_route_supports_filters(client, route_db, seeded_scheduled_data):
+    secondary_plan = crud.create_scheduled_plan(
+        route_db,
+        name="secondary refill plan",
+        task_type="cpa_refill",
+        cpa_service_id=seeded_scheduled_data["secondary_service"].id,
+        trigger_type="interval",
+        interval_value=1,
+        interval_unit="hours",
+        config={
+            "target_valid_count": 20,
+            "max_refill_count": 5,
+            "max_consecutive_failures": 2,
+            "registration_profile": {},
+        },
+        enabled=True,
+    )
+    refill_run = crud.create_scheduled_run(route_db, plan_id=secondary_plan.id, trigger_source="scheduled")
+    crud.finish_scheduled_run(route_db, run_id=refill_run.id, status="failed", error_message="upstream timeout")
+    refill_run.started_at = datetime(2026, 3, 23, 10, 0, 0)
+    refill_run.finished_at = datetime(2026, 3, 23, 10, 5, 0)
+    route_db.commit()
+
+    response = client.get(
+        "/api/scheduled-runs",
+        params={
+            "task_type": "cpa_cleanup",
+            "status": "running",
+            "started_from": "2026-03-22T08:30:00",
+            "started_to": "2026-03-22T09:30:00",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["id"] == seeded_scheduled_data["latest_run"].id
+    assert payload["items"][0]["task_type"] == "cpa_cleanup"
+    assert payload["items"][0]["status"] == "running"
+    assert payload["items"][0]["can_stop"] is True
+
+
+def test_get_scheduled_run_detail_route_returns_plan_summary_and_can_stop(client, seeded_scheduled_data):
+    run_id = seeded_scheduled_data["latest_run"].id
+    response = client.get(f"/api/scheduled-runs/{run_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == run_id
+    assert payload["plan_id"] == seeded_scheduled_data["plan"].id
+    assert payload["plan_name"] == seeded_scheduled_data["plan"].name
+    assert payload["plan_enabled"] is True
+    assert payload["task_type"] == "cpa_cleanup"
+    assert payload["can_stop"] is True
+
+
+def test_get_scheduled_run_logs_incremental_route_returns_chunk_and_next_offset(
+    client, route_db, seeded_scheduled_data
+):
+    run = seeded_scheduled_data["latest_run"]
+    assert crud.append_scheduled_run_log(route_db, run.id, "abc")
+    assert crud.append_scheduled_run_log(route_db, run.id, "def")
+
+    response = client.get(f"/api/scheduled-runs/{run.id}/logs", params={"offset": 4})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_id"] == run.id
+    assert payload["chunk"] == "def"
+    assert payload["next_offset"] == 7
+    assert payload["is_running"] is True
+
+
+def test_stop_scheduled_run_route_marks_running_run(client, route_db, seeded_scheduled_data):
+    run_id = seeded_scheduled_data["latest_run"].id
+
+    response = client.post(f"/api/scheduled-runs/{run_id}/stop")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["run_id"] == run_id
+    assert payload["status"] == "stopping"
+
+    route_db.expire_all()
+    persisted = crud.get_scheduled_run_by_id(route_db, run_id)
+    assert persisted is not None
+    assert persisted.stop_requested_at is not None
+    assert persisted.stop_requested_by == "manual"
+    assert persisted.stop_reason == "user_requested"
+
+
+def test_stop_scheduled_run_route_rejects_finished_run(client, seeded_scheduled_data):
+    run_id = seeded_scheduled_data["earlier_run"].id
+
+    response = client.post(f"/api/scheduled-runs/{run_id}/stop")
+
+    assert response.status_code == 409
+    assert "运行已结束" in response.json()["detail"]
 
 
 def test_list_accounts_can_filter_by_primary_cpa_and_returns_invalid_fields(client, expired_accounts):

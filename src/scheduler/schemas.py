@@ -11,7 +11,7 @@ from .service import validate_trigger_payload
 TaskType = Literal["cpa_cleanup", "cpa_refill", "account_refresh"]
 TriggerType = Literal["cron", "interval"]
 IntervalUnit = Literal["minutes", "hours"]
-RunStatus = Literal["running", "success", "failed", "skipped"]
+RunStatus = Literal["running", "success", "failed", "skipped", "cancelled"]
 RunTriggerSource = Literal["scheduled", "manual"]
 
 
@@ -96,3 +96,66 @@ class ScheduledRunResponse(BaseModel):
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ScheduledRunListItemResponse(BaseModel):
+    id: int
+    plan_id: int
+    plan_name: str | None = None
+    task_type: TaskType
+    trigger_source: RunTriggerSource
+    status: RunStatus
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_seconds: float | None = None
+    stop_requested_at: datetime | None = None
+    last_log_at: datetime | None = None
+    summary: dict[str, Any] | None = None
+    error_message: str | None = None
+    can_stop: bool
+
+
+class ScheduledRunListCenterResponse(BaseModel):
+    items: list[ScheduledRunListItemResponse]
+    total: int
+
+
+class ScheduledRunDetailResponse(BaseModel):
+    id: int
+    plan_id: int
+    plan_name: str | None = None
+    plan_enabled: bool | None = None
+    task_type: TaskType
+    trigger_source: RunTriggerSource
+    status: RunStatus
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_seconds: float | None = None
+    summary: dict[str, Any] | None = None
+    error_message: str | None = None
+    stop_requested_at: datetime | None = None
+    stop_requested_by: str | None = None
+    stop_reason: str | None = None
+    log_version: int = 0
+    last_log_at: datetime | None = None
+    is_running: bool
+    can_stop: bool
+
+
+class ScheduledRunLogChunkResponse(BaseModel):
+    run_id: int
+    status: RunStatus
+    offset: int
+    next_offset: int
+    chunk: str
+    has_more: bool
+    is_running: bool
+    stop_requested_at: datetime | None = None
+    log_version: int
+    last_log_at: datetime | None = None
+
+
+class ScheduledRunStopResponse(BaseModel):
+    success: bool
+    run_id: int
+    status: Literal["stopping"]

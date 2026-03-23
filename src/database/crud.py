@@ -929,6 +929,44 @@ def get_scheduled_runs(
     )
 
 
+def count_scheduled_runs(
+    db: Session,
+    plan_id: Optional[int] = None,
+    task_type: Optional[str] = None,
+    status: Optional[str] = None,
+    trigger_source: Optional[str] = None,
+    cpa_service_id: Optional[int] = None,
+    stop_requested: Optional[bool] = None,
+    started_after: Optional[datetime] = None,
+    started_before: Optional[datetime] = None,
+) -> int:
+    """统计符合条件的定时执行记录数量。"""
+    query = db.query(func.count(ScheduledRun.id))
+
+    if cpa_service_id is not None:
+        query = query.join(ScheduledPlan, ScheduledPlan.id == ScheduledRun.plan_id)
+        query = query.filter(ScheduledPlan.cpa_service_id == cpa_service_id)
+
+    if plan_id is not None:
+        query = query.filter(ScheduledRun.plan_id == plan_id)
+    if task_type is not None:
+        query = query.filter(ScheduledRun.task_type == task_type)
+    if status is not None:
+        query = query.filter(ScheduledRun.status == status)
+    if trigger_source is not None:
+        query = query.filter(ScheduledRun.trigger_source == trigger_source)
+    if stop_requested is True:
+        query = query.filter(ScheduledRun.stop_requested_at.is_not(None))
+    elif stop_requested is False:
+        query = query.filter(ScheduledRun.stop_requested_at.is_(None))
+    if started_after is not None:
+        query = query.filter(ScheduledRun.started_at >= started_after)
+    if started_before is not None:
+        query = query.filter(ScheduledRun.started_at <= started_before)
+
+    return int(query.scalar() or 0)
+
+
 def mark_scheduled_run_stop_requested(
     db: Session,
     run_id: int,

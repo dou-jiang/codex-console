@@ -15,13 +15,19 @@ from ...scheduler.schemas import (
     ScheduledPlanListResponse,
     ScheduledPlanResponse,
     ScheduledPlanUpdate,
+    ScheduledRunDetailResponse,
+    ScheduledRunListCenterResponse,
+    ScheduledRunListItemResponse,
+    ScheduledRunLogChunkResponse,
     ScheduledRunResponse,
+    ScheduledRunStopResponse,
 )
 from ...scheduler.service import validate_plan_payload
 from ...scheduler.time_utils import SCHEDULER_TZ, compute_next_run_at
 
 
 router = APIRouter()
+runs_router = APIRouter()
 
 
 class ScheduledRunListResponse(BaseModel):
@@ -31,6 +37,42 @@ class ScheduledRunListResponse(BaseModel):
 class ScheduledRunLogsResponse(BaseModel):
     run_id: int
     logs: str
+
+
+def _is_run_running(run: ScheduledRun) -> bool:
+    return run.status == "running" and run.finished_at is None
+
+
+def _can_stop_run(run: ScheduledRun) -> bool:
+    return _is_run_running(run) and run.stop_requested_at is None
+
+
+def _compute_duration_seconds(run: ScheduledRun) -> float | None:
+    if run.started_at is None:
+        return None
+    end_time = run.finished_at or datetime.utcnow()
+    return float((end_time - run.started_at).total_seconds())
+
+
+def _build_scheduled_run_list_item(run: ScheduledRun) -> ScheduledRunListItemResponse:
+    plan_name = run.plan.name if run.plan is not None else None
+    task_type = run.task_type or (run.plan.task_type if run.plan is not None else "cpa_cleanup")
+    return ScheduledRunListItemResponse(
+        id=run.id,
+        plan_id=run.plan_id,
+        plan_name=plan_name,
+        task_type=task_type,
+        trigger_source=run.trigger_source,
+        status=run.status,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        duration_seconds=_compute_duration_seconds(run),
+        stop_requested_at=run.stop_requested_at,
+        last_log_at=run.last_log_at,
+        summary=run.summary,
+        error_message=run.error_message,
+        can_stop=_can_stop_run(run),
+    )
 
 
 def _to_scheduler_naive_time(value: datetime | None) -> datetime | None:
@@ -62,6 +104,127 @@ class _PlanLike:
         self.cron_expression = payload["cron_expression"]
         self.interval_value = payload["interval_value"]
         self.interval_unit = payload["interval_unit"]
+
+
+@runs_router.get("/scheduled-runs", response_model=ScheduledRunListCenterResponse)
+async def list_all_scheduled_runs(
+    task_type: str | None = Query(None),
+    status: str | None = Query(None),
+    plan_id: int | None = Query(None, ge=1),
+    started_from: datetime | None = Query(None),
+    started_to: datetime | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+):
+    with get_db() as db:
+        skip = (page - 1) * page_size
+        runs = crud.get_scheduled_runs(
+            db,
+            plan_id=plan_id,
+            task_type=task_type,
+            status=status,
+            started_after=started_from,
+            started_before=started_to,
+            skip=skip,
+            limit=page_size,
+        )
+        total = crud.count_scheduled_runs(
+            db,
+            plan_id=plan_id,
+            task_type=task_type,
+            status=status,
+            started_after=started_from,
+            started_before=started_to,
+        )
+        return ScheduledRunListCenterResponse(
+            items=[_build_scheduled_run_list_item(run) for run in runs],
+            total=total,
+        )
+
+
+@runs_router.get("/scheduled-runs/{run_id}", response_model=ScheduledRunDetailResponse)
+async def get_scheduled_run_detail(run_id: int):
+    with get_db() as db:
+        run = crud.get_scheduled_run_by_id(db, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="运行记录不存在")
+
+        plan = crud.get_scheduled_plan_by_id(db, run.plan_id)
+        plan_name = plan.name if plan is not None else None
+        plan_enabled = plan.enabled if plan is not None else None
+        task_type = run.task_type or (plan.task_type if plan is not None else "cpa_cleanup")
+
+        return ScheduledRunDetailResponse(
+            id=run.id,
+            plan_id=run.plan_id,
+            plan_name=plan_name,
+            plan_enabled=plan_enabled,
+            task_type=task_type,
+            trigger_source=run.trigger_source,
+            status=run.status,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            duration_seconds=_compute_duration_seconds(run),
+            summary=run.summary,
+            error_message=run.error_message,
+            stop_requested_at=run.stop_requested_at,
+            stop_requested_by=run.stop_requested_by,
+            stop_reason=run.stop_reason,
+            log_version=int(run.log_version or 0),
+            last_log_at=run.last_log_at,
+            is_running=_is_run_running(run),
+            can_stop=_can_stop_run(run),
+        )
+
+
+@runs_router.get("/scheduled-runs/{run_id}/logs", response_model=ScheduledRunLogChunkResponse)
+async def get_scheduled_run_logs_chunk(
+    run_id: int,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(4096, ge=1, le=65536),
+):
+    with get_db() as db:
+        run = crud.get_scheduled_run_by_id(db, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="运行记录不存在")
+
+        chunk = crud.get_scheduled_run_log_chunk(db, run_id, offset=offset, limit=limit)
+        if chunk is None:
+            raise HTTPException(status_code=404, detail="运行记录不存在")
+
+        return ScheduledRunLogChunkResponse(
+            run_id=run.id,
+            status=run.status,
+            offset=int(chunk["offset"]),
+            next_offset=int(chunk["next_offset"]),
+            chunk=str(chunk["content"]),
+            has_more=bool(chunk["has_more"]),
+            is_running=_is_run_running(run),
+            stop_requested_at=run.stop_requested_at,
+            log_version=int(chunk["log_version"]),
+            last_log_at=chunk["last_log_at"],
+        )
+
+
+@runs_router.post("/scheduled-runs/{run_id}/stop", response_model=ScheduledRunStopResponse)
+async def stop_scheduled_run(run_id: int):
+    with get_db() as db:
+        run = crud.get_scheduled_run_by_id(db, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="运行记录不存在")
+        if not _is_run_running(run):
+            raise HTTPException(status_code=409, detail="运行已结束，不能停止")
+
+        updated = crud.mark_scheduled_run_stop_requested(
+            db,
+            run_id,
+            requested_by="manual",
+            reason="user_requested",
+        )
+        if updated is None:
+            raise HTTPException(status_code=409, detail="运行已结束，不能停止")
+
+        return ScheduledRunStopResponse(success=True, run_id=run.id, status="stopping")
 
 
 @router.post("", response_model=ScheduledPlanResponse)
