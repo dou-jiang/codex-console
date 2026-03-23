@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -221,7 +222,17 @@ def run_registration_job(
                 task_uuid=task_uuid,
                 resolved_service_id=resolved_service_id,
             )
+            known_email = (result_payload or {}).get("email") or known_email
+            known_result_payload = result_payload
             if not account:
+                _update_registration_task_failure(
+                    db,
+                    task_uuid=task_uuid,
+                    error_message=(result_payload or {}).get("error_message") or "注册失败",
+                    email=(result_payload or {}).get("email"),
+                    result_payload=result_payload,
+                    email_service_id=resolved_service_id,
+                )
                 return RegistrationJobResult(
                     success=False,
                     email=(result_payload or {}).get("email"),
@@ -229,6 +240,13 @@ def run_registration_job(
                     email_service_id=resolved_service_id,
                     result_payload=result_payload,
                 )
+            _update_registration_task_success(
+                db,
+                task_uuid=task_uuid,
+                email=account.email,
+                result_payload=result_payload,
+                email_service_id=resolved_service_id,
+            )
         else:
             engine = RegistrationEngine(
                 email_service=email_service,
@@ -282,6 +300,14 @@ def run_registration_job(
         )
     except Exception as exc:
         logger.error("run_registration_job failed: %s", exc)
+        _update_registration_task_failure(
+            db,
+            task_uuid=task_uuid,
+            error_message=str(exc) or "注册异常",
+            email=known_email,
+            result_payload=known_result_payload,
+            email_service_id=known_service_id,
+        )
         return RegistrationJobResult(
             success=False,
             email=known_email,
@@ -369,6 +395,58 @@ def _to_jsonable(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _to_jsonable(v) for k, v in value.items()}
     return str(value)
+
+
+def _update_registration_task_success(
+    db,
+    *,
+    task_uuid: str | None,
+    email: str | None,
+    result_payload: dict[str, Any] | None,
+    email_service_id: int | None,
+) -> None:
+    if not task_uuid:
+        return
+
+    update_fields: dict[str, Any] = {
+        "status": "completed",
+        "completed_at": datetime.utcnow(),
+        "result": result_payload,
+        "error_message": None,
+    }
+    if email:
+        update_fields["email_address"] = email
+    if email_service_id is not None:
+        update_fields["email_service_id"] = email_service_id
+
+    crud.update_registration_task(db, task_uuid, **update_fields)
+
+
+def _update_registration_task_failure(
+    db,
+    *,
+    task_uuid: str | None,
+    error_message: str,
+    email: str | None,
+    result_payload: dict[str, Any] | None,
+    email_service_id: int | None,
+) -> None:
+    if not task_uuid:
+        return
+
+    update_fields: dict[str, Any] = {
+        "status": "failed",
+        "completed_at": datetime.utcnow(),
+        "error_message": error_message,
+    }
+    if result_payload is not None:
+        update_fields["result"] = result_payload
+    if email:
+        update_fields["email_address"] = email
+    if email_service_id is not None:
+        update_fields["email_service_id"] = email_service_id
+
+    crud.update_registration_task(db, task_uuid, **update_fields)
 
 
 def _persist_pipeline_account(

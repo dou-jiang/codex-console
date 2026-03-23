@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable
 
 from src.config.constants import OPENAI_API_ENDPOINTS, OPENAI_PAGE_TYPES, generate_random_user_info
@@ -159,6 +160,7 @@ class CodexgenPipelineRuntime:
         session = self._engine.session
         if session is None:
             raise RuntimeError("session missing for send otp step")
+        self._engine._otp_sent_at = time.time()  # noqa: SLF001
         response = session.get(
             OPENAI_API_ENDPOINTS["send_otp"],
             headers={

@@ -4,6 +4,7 @@ from src.config.constants import EmailServiceType
 from src.core.pipeline import PipelineContext, PipelineRunner
 from src.core.pipeline.registry import PIPELINE_REGISTRY, get_pipeline
 from src.core.pipeline.steps import common as common_steps
+from src.core.pipeline.steps.codexgen import CodexgenPipelineRuntime
 from src.core.registration_job import run_registration_job
 from src.database import crud
 from src.database.models import Base
@@ -225,3 +226,89 @@ def test_run_registration_job_dispatches_to_codexgen_pipeline(temp_db, monkeypat
     assert result.account_id is not None
     assert created["service"].create_calls == 1
     assert len(created["service"].otp_calls) == 2
+
+    task = crud.get_registration_task_by_uuid(temp_db, task_uuid)
+    assert task is not None
+    assert task.status == "completed"
+    assert task.email_address == "tester@example.com"
+    assert task.result is not None
+    assert task.result.get("success") is True
+    assert task.completed_at is not None
+    assert task.error_message in (None, "")
+
+
+def test_run_registration_job_marks_task_failed_on_codexgen_pipeline_error(temp_db, monkeypatch):
+    task_uuid = "task-codexgen-failed-dispatch"
+    crud.create_registration_task(temp_db, task_uuid=task_uuid)
+
+    def fake_resolve_email_service(**kwargs):
+        return EmailServiceType.TEMPMAIL, {}, None
+
+    class BrokenRuntime:
+        def run_check_ip_location_step(self):
+            raise RuntimeError("boom-codexgen")
+
+    monkeypatch.setattr("src.core.registration_job._resolve_email_service", fake_resolve_email_service)
+    monkeypatch.setattr(
+        "src.core.registration_job.EmailServiceFactory.create",
+        lambda *_: FakeSharedEmailService(),
+    )
+    monkeypatch.setattr(
+        "src.core.registration_job.build_codexgen_runtime",
+        lambda **_: BrokenRuntime(),
+    )
+
+    result = run_registration_job(
+        db=temp_db,
+        email_service_type="tempmail",
+        email_service_id=None,
+        proxy="http://proxy-a",
+        email_service_config={},
+        pipeline_key="codexgen_pipeline",
+        task_uuid=task_uuid,
+    )
+
+    assert result.success is False
+    assert "boom-codexgen" in (result.error_message or "")
+
+    task = crud.get_registration_task_by_uuid(temp_db, task_uuid)
+    assert task is not None
+    assert task.status == "failed"
+    assert task.completed_at is not None
+    assert "boom-codexgen" in (task.error_message or "")
+
+
+def test_codexgen_runtime_signup_otp_passes_otp_sent_at_to_shared_email_service(monkeypatch):
+    class DummyResponse:
+        def __init__(self, status_code=200):
+            self.status_code = status_code
+
+    class DummySession:
+        def get(self, *_args, **_kwargs):
+            return DummyResponse(200)
+
+    email_service = FakeSharedEmailService()
+    runtime = CodexgenPipelineRuntime(email_service=email_service, proxy_url=None, callback_logger=None, task_uuid=None)
+
+    runtime._engine.session = DummySession()  # noqa: SLF001
+    runtime._engine._is_existing_account = False  # noqa: SLF001
+    runtime._engine.email = "tester@example.com"  # noqa: SLF001
+    runtime._engine.email_info = {"service_id": "mailbox-1"}  # noqa: SLF001
+    runtime._engine._otp_sent_at = None  # noqa: SLF001
+
+    runtime.run_send_signup_otp_step()
+    runtime.run_wait_signup_otp_step()
+
+    assert runtime._engine._otp_sent_at is not None  # noqa: SLF001
+    assert email_service.otp_calls
+    assert email_service.otp_calls[-1]["otp_sent_at"] == runtime._engine._otp_sent_at  # noqa: SLF001
+
+
+def test_get_proxy_ip_step_allows_no_proxy_preflight_noop():
+    ctx = PipelineContext(
+        task_uuid="task-no-proxy",
+        pipeline_key="codexgen_pipeline",
+        metadata={"registration_engine": object()},
+    )
+    payload = common_steps.get_proxy_ip_step(ctx)
+    assert payload == {}
