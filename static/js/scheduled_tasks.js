@@ -177,6 +177,12 @@ let activeScheduledRunId = null;
 let activeScheduledRunDetail = null;
 let currentScheduledRunLogOffset = 0;
 let scheduledRunLogPollingTimer = null;
+let scheduledRunLogPollingInFlight = false;
+let scheduledRunLogLoadToken = 0;
+
+function isScheduledRunLogRequestActive(runId, token) {
+    return token === scheduledRunLogLoadToken && activeScheduledRunId === Number(runId);
+}
 
 function escapeHtml(text) {
     if (text === null || text === undefined) return '';
@@ -1260,6 +1266,8 @@ async function openRunLogs(planId) {
 }
 
 function resetScheduledRunModalState() {
+    scheduledRunLogLoadToken += 1;
+    scheduledRunLogPollingInFlight = false;
     activeScheduledRunId = null;
     activeScheduledRunDetail = null;
     currentScheduledRunLogOffset = 0;
@@ -1356,78 +1364,138 @@ function setScheduledRunStopButtonState(detail) {
 
 function stopScheduledRunLogPolling() {
     if (scheduledRunLogPollingTimer) {
-        clearInterval(scheduledRunLogPollingTimer);
+        clearTimeout(scheduledRunLogPollingTimer);
         scheduledRunLogPollingTimer = null;
     }
 }
 
-function startScheduledRunLogPolling(runId) {
-    stopScheduledRunLogPolling();
-    scheduledRunLogPollingTimer = setInterval(() => {
-        if (activeScheduledRunId !== Number(runId)) {
+function scheduleScheduledRunLogPolling(runId, token) {
+    scheduledRunLogPollingTimer = setTimeout(async () => {
+        if (!isScheduledRunLogRequestActive(runId, token)) {
             stopScheduledRunLogPolling();
             return;
         }
-        void loadScheduledRunLogChunk(runId).catch(() => {
+        if (scheduledRunLogPollingInFlight) {
+            return;
+        }
+        scheduledRunLogPollingInFlight = true;
+        try {
+            const data = await loadScheduledRunLogChunk(runId, { token });
+            if (!data || !isScheduledRunLogRequestActive(runId, token)) {
+                return;
+            }
+            if (data.is_running) {
+                scheduleScheduledRunLogPolling(runId, token);
+            } else {
+                stopScheduledRunLogPolling();
+            }
+        } catch (error) {
             stopScheduledRunLogPolling();
-        });
+        } finally {
+            scheduledRunLogPollingInFlight = false;
+        }
     }, 2000);
 }
 
-async function loadScheduledRunLogChunk(runId, { reset = false } = {}) {
-    const offset = reset ? 0 : currentScheduledRunLogOffset;
-    const data = await api.get(`/scheduled-runs/${runId}/logs?offset=${offset}`);
-    currentScheduledRunLogOffset = Number(data.next_offset || 0);
+function startScheduledRunLogPolling(runId, token = scheduledRunLogLoadToken) {
+    stopScheduledRunLogPolling();
+    scheduleScheduledRunLogPolling(runId, token);
+}
 
-    if (activeScheduledRunDetail && Number(activeScheduledRunDetail.id) === Number(runId)) {
-        activeScheduledRunDetail = {
-            ...activeScheduledRunDetail,
+async function loadScheduledRunLogChunk(runId, { reset = false, token = scheduledRunLogLoadToken } = {}) {
+    const targetId = Number(runId);
+    if (!Number.isInteger(targetId) || targetId <= 0) return null;
+
+    let offset = reset ? 0 : currentScheduledRunLogOffset;
+    let finalData = null;
+    let shouldReset = reset;
+    const seenOffsets = new Set();
+
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+        if (!isScheduledRunLogRequestActive(targetId, token)) {
+            return null;
+        }
+
+        const data = await api.get(`/scheduled-runs/${targetId}/logs?offset=${offset}`);
+        if (!isScheduledRunLogRequestActive(targetId, token)) {
+            return null;
+        }
+
+        finalData = data;
+        const nextOffset = Number(data.next_offset || 0);
+        currentScheduledRunLogOffset = nextOffset;
+
+        if (activeScheduledRunDetail && Number(activeScheduledRunDetail.id) === targetId) {
+            activeScheduledRunDetail = {
+                ...activeScheduledRunDetail,
+                status: data.status,
+                stop_requested_at: data.stop_requested_at,
+                log_version: data.log_version,
+                last_log_at: data.last_log_at,
+                is_running: data.is_running,
+                can_stop: Boolean(data.is_running) && !data.stop_requested_at,
+            };
+            renderScheduledRunStatusBar(activeScheduledRunDetail);
+            setScheduledRunStopButtonState(activeScheduledRunDetail);
+        }
+
+        updateScheduledRunCacheItem(targetId, (run) => ({
+            ...run,
             status: data.status,
             stop_requested_at: data.stop_requested_at,
-            log_version: data.log_version,
             last_log_at: data.last_log_at,
-            is_running: data.is_running,
             can_stop: Boolean(data.is_running) && !data.stop_requested_at,
-        };
-        renderScheduledRunStatusBar(activeScheduledRunDetail);
-        setScheduledRunStopButtonState(activeScheduledRunDetail);
+        }));
+        renderScheduledRuns(scheduledRunsCache);
+        appendScheduledRunLogChunk(data.chunk, { reset: shouldReset });
+        shouldReset = false;
+
+        if (!data.has_more) {
+            break;
+        }
+
+        if (seenOffsets.has(nextOffset) || nextOffset === offset) {
+            break;
+        }
+        seenOffsets.add(nextOffset);
+        offset = nextOffset;
     }
 
-    updateScheduledRunCacheItem(runId, (run) => ({
-        ...run,
-        status: data.status,
-        stop_requested_at: data.stop_requested_at,
-        last_log_at: data.last_log_at,
-        can_stop: Boolean(data.is_running) && !data.stop_requested_at,
-    }));
-    renderScheduledRuns(scheduledRunsCache);
-    appendScheduledRunLogChunk(data.chunk, { reset });
-
-    if (!data.is_running) {
+    if (finalData && !finalData.is_running) {
         stopScheduledRunLogPolling();
     }
 
-    return data;
+    return finalData;
 }
 
 async function openScheduledRunDetail(runId) {
     resetScheduledRunModalState();
     activeScheduledRunId = Number(runId);
+    const token = scheduledRunLogLoadToken;
     if (scheduledTaskElements.runLogModal) {
         scheduledTaskElements.runLogModal.classList.add('active');
     }
 
     try {
         const detail = await api.get(`/scheduled-runs/${runId}`);
+        if (!isScheduledRunLogRequestActive(runId, token)) {
+            return;
+        }
         activeScheduledRunDetail = detail;
         renderScheduledRunStatusBar(detail);
         renderScheduledRunDetailBody(detail, '');
         setScheduledRunStopButtonState(detail);
-        const logChunk = await loadScheduledRunLogChunk(runId, { reset: true });
-        if (logChunk.is_running) {
-            startScheduledRunLogPolling(runId);
+        const logChunk = await loadScheduledRunLogChunk(runId, { reset: true, token });
+        if (!isScheduledRunLogRequestActive(runId, token)) {
+            return;
+        }
+        if (logChunk?.is_running) {
+            startScheduledRunLogPolling(runId, token);
         }
     } catch (error) {
+        if (!isScheduledRunLogRequestActive(runId, token)) {
+            return;
+        }
         renderScheduledRunStatusBar(null);
         scheduledTaskElements.runLogModalBody.innerHTML = `<div style="color: var(--danger-color, #d9534f);">加载运行详情失败：${escapeHtml(error.message || '请求失败')}</div>`;
         toast.error(`加载运行详情失败: ${error.message}`);
@@ -1466,7 +1534,6 @@ async function stopScheduledRun(runId) {
         await loadScheduledRuns();
     } catch (error) {
         toast.error(`停止失败: ${error.message}`);
-        throw error;
     }
 }
 

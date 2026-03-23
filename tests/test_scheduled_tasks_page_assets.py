@@ -146,7 +146,7 @@ def test_scheduled_tasks_script_contains_run_center_live_log_and_stop_hooks():
     assert "function startScheduledRunLogPolling(" in script
     assert "function stopScheduledRunLogPolling(" in script
     assert "function appendScheduledRunLogChunk(" in script
-    assert "setInterval(" in script and "scheduled-runs" in script
+    assert ("setInterval(" in script or "setTimeout(" in script) and "scheduled-runs" in script
     assert 'data-action="filter-plan-runs"' in script
     assert 'data-action="view-run-detail"' in script
     assert 'data-action="view-run-log"' in script
@@ -241,3 +241,527 @@ console.log(JSON.stringify(result.map((entry) => ({
     assert {"key": "custom_keep", "builtin": False, "valueDescription": "保留我"} in keys
     assert all(item["key"] not in {"max_probe_count", "max_cleanup_count"} for item in keys)
     assert any(item["key"] == "target_valid_count" and item["builtin"] is True for item in keys)
+
+
+def test_scheduled_tasks_run_log_loading_drains_chunks_even_when_run_is_finished():
+    node_script = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+function makeElement() {
+  let html = '';
+  let text = '';
+  const classes = new Set();
+  return {
+    dataset: {},
+    style: {},
+    disabled: false,
+    setAttribute: () => {},
+    removeAttribute: () => {},
+    scrollIntoView: () => {},
+    get innerHTML() { return html; },
+    set innerHTML(next) { html = String(next ?? ''); },
+    get textContent() { return text; },
+    set textContent(next) { text = String(next ?? ''); },
+    classList: {
+      add: (name) => classes.add(name),
+      remove: (name) => classes.delete(name),
+      contains: (name) => classes.has(name),
+    },
+  };
+}
+
+const elements = new Map([
+  ['run-log-modal', makeElement()],
+  ['run-log-status-bar', makeElement()],
+  ['run-log-modal-body', makeElement()],
+  ['run-log-stop-btn', makeElement()],
+]);
+
+global.window = {};
+global.document = {
+  getElementById: (id) => {
+    if (id === 'scheduled-run-log-output') {
+      if (!elements.has(id)) elements.set(id, makeElement());
+      return elements.get(id);
+    }
+    return elements.get(id) ?? null;
+  },
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+  createElement: () => {
+    let value = '';
+    return {
+      set textContent(next) { value = String(next ?? ''); },
+      get textContent() { return value; },
+      get innerHTML() { return value; },
+      set innerHTML(next) { value = String(next ?? ''); },
+    };
+  },
+};
+
+let logCalls = 0;
+global.api = {
+  get: async (url) => {
+    if (url === '/scheduled-runs/123') {
+      return {
+        id: 123,
+        plan_id: 1,
+        plan_name: 'plan',
+        task_type: 'cpa_cleanup',
+        trigger_source: 'manual',
+        started_at: null,
+        finished_at: null,
+        error_message: null,
+        summary: {},
+        status: 'finished',
+        last_log_at: null,
+        is_running: false,
+        stop_requested_at: null,
+        can_stop: false,
+      };
+    }
+    if (url.startsWith('/scheduled-runs/123/logs?offset=')) {
+      logCalls += 1;
+      if (url.endsWith('offset=0')) {
+        return {
+          chunk: 'a',
+          next_offset: 1,
+          has_more: true,
+          is_running: false,
+          status: 'finished',
+          stop_requested_at: null,
+          log_version: 1,
+          last_log_at: null,
+        };
+      }
+      if (url.endsWith('offset=1')) {
+        return {
+          chunk: 'b',
+          next_offset: 2,
+          has_more: false,
+          is_running: false,
+          status: 'finished',
+          stop_requested_at: null,
+          log_version: 1,
+          last_log_at: null,
+        };
+      }
+      throw new Error('unexpected offset url: ' + url);
+    }
+    throw new Error('unexpected url: ' + url);
+  },
+  post: async () => ({}),
+  put: async () => ({}),
+};
+global.toast = { error: () => {}, warning: () => {}, success: () => {} };
+global.format = { date: (value) => String(value ?? '-') };
+global.theme = { toggle: () => {} };
+
+vm.runInThisContext(fs.readFileSync('static/js/scheduled_tasks.js', 'utf8'), {
+  filename: 'static/js/scheduled_tasks.js',
+});
+
+async function main() {
+  await window.openScheduledRunDetail(123);
+  const output = document.getElementById('scheduled-run-log-output');
+  if (logCalls !== 2) throw new Error('expected 2 log calls, got ' + logCalls);
+  if (output.textContent !== 'ab') {
+    throw new Error('expected log output \"ab\", got: ' + JSON.stringify(output.textContent));
+  }
+}
+
+main().catch((err) => {
+  console.error(err && err.stack ? err.stack : String(err));
+  process.exit(1);
+});
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_scheduled_tasks_run_log_polling_is_single_flight():
+    node_script = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+function makeElement() {
+  let html = '';
+  const classes = new Set();
+  return {
+    dataset: {},
+    style: {},
+    disabled: false,
+    setAttribute: () => {},
+    removeAttribute: () => {},
+    scrollIntoView: () => {},
+    get innerHTML() { return html; },
+    set innerHTML(next) { html = String(next ?? ''); },
+    classList: {
+      add: (name) => classes.add(name),
+      remove: (name) => classes.delete(name),
+      contains: (name) => classes.has(name),
+    },
+  };
+}
+
+const elements = new Map([
+  ['run-log-modal', makeElement()],
+  ['run-log-status-bar', makeElement()],
+  ['run-log-modal-body', makeElement()],
+  ['run-log-stop-btn', makeElement()],
+]);
+
+global.window = {};
+global.document = {
+  getElementById: (id) => elements.get(id) ?? null,
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+  createElement: () => {
+    let value = '';
+    return {
+      set textContent(next) { value = String(next ?? ''); },
+      get textContent() { return value; },
+      get innerHTML() { return value; },
+      set innerHTML(next) { value = String(next ?? ''); },
+    };
+  },
+};
+
+let intervalCb = null;
+global.setInterval = () => {
+  throw new Error('expected self-scheduling polling, not setInterval');
+};
+global.clearInterval = () => {};
+global.setTimeout = (cb) => {
+  intervalCb = cb;
+  return 1;
+};
+global.clearTimeout = () => {
+  intervalCb = null;
+};
+
+let deferredResolve = null;
+const deferred = new Promise((resolve) => { deferredResolve = resolve; });
+
+let logCalls = 0;
+global.api = {
+  get: async (url) => {
+    if (url === '/scheduled-runs/123') {
+      return {
+        id: 123,
+        plan_id: 1,
+        plan_name: 'plan',
+        task_type: 'cpa_cleanup',
+        trigger_source: 'manual',
+        started_at: null,
+        finished_at: null,
+        error_message: null,
+        summary: {},
+        status: 'running',
+        last_log_at: null,
+        is_running: true,
+        stop_requested_at: null,
+        can_stop: true,
+      };
+    }
+    if (url.startsWith('/scheduled-runs/123/logs?offset=')) {
+      logCalls += 1;
+      if (logCalls === 1) {
+        return {
+          chunk: '',
+          next_offset: 0,
+          has_more: false,
+          is_running: true,
+          status: 'running',
+          stop_requested_at: null,
+          log_version: 1,
+          last_log_at: null,
+        };
+      }
+      if (logCalls === 2) return deferred;
+      return {
+        chunk: '',
+        next_offset: 0,
+        has_more: false,
+        is_running: true,
+        status: 'running',
+        stop_requested_at: null,
+        log_version: 1,
+        last_log_at: null,
+      };
+    }
+    throw new Error('unexpected url: ' + url);
+  },
+  post: async () => ({}),
+  put: async () => ({}),
+};
+global.toast = { error: () => {}, warning: () => {}, success: () => {} };
+global.format = { date: (value) => String(value ?? '-') };
+global.theme = { toggle: () => {} };
+
+vm.runInThisContext(fs.readFileSync('static/js/scheduled_tasks.js', 'utf8'), {
+  filename: 'static/js/scheduled_tasks.js',
+});
+
+async function flush() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function main() {
+  await window.openScheduledRunDetail(123);
+  if (typeof intervalCb !== 'function') throw new Error('expected polling timer callback to be registered');
+
+  intervalCb();
+  intervalCb();
+  if (logCalls !== 2) {
+    throw new Error('expected single-flight polling (2 total log calls incl. initial), got ' + logCalls);
+  }
+
+  deferredResolve({
+    chunk: '',
+    next_offset: 0,
+    has_more: false,
+    is_running: true,
+    status: 'running',
+    stop_requested_at: null,
+    log_version: 1,
+    last_log_at: null,
+  });
+  await flush();
+
+  if (typeof intervalCb !== 'function') throw new Error('expected polling timer callback to remain registered');
+  intervalCb();
+  if (logCalls !== 3) throw new Error('expected next polling fetch after completion, got logCalls=' + logCalls);
+}
+
+main().catch((err) => {
+  console.error(err && err.stack ? err.stack : String(err));
+  process.exit(1);
+});
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_scheduled_tasks_stop_run_failure_does_not_reject_promise():
+    node_script = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+global.window = {};
+global.document = {
+  getElementById: () => null,
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+  createElement: () => {
+    let value = '';
+    return {
+      set textContent(next) { value = String(next ?? ''); },
+      get textContent() { return value; },
+      get innerHTML() { return value; },
+      set innerHTML(next) { value = String(next ?? ''); },
+    };
+  },
+};
+
+global.api = {
+  get: async () => ({}),
+  post: async () => { throw new Error('stop failed'); },
+  put: async () => ({}),
+};
+global.toast = { error: () => {}, warning: () => {}, success: () => {} };
+global.format = { date: (value) => String(value ?? '-') };
+global.theme = { toggle: () => {} };
+
+vm.runInThisContext(fs.readFileSync('static/js/scheduled_tasks.js', 'utf8'), {
+  filename: 'static/js/scheduled_tasks.js',
+});
+
+async function main() {
+  await window.stopScheduledRun(99);
+}
+
+main().catch((err) => {
+  console.error(err && err.stack ? err.stack : String(err));
+  process.exit(1);
+});
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_scheduled_tasks_closing_log_modal_cancels_stale_async_work_and_polling():
+    node_script = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+function makeElement() {
+  let html = '';
+  const classes = new Set();
+  return {
+    dataset: {},
+    style: {},
+    disabled: false,
+    setAttribute: () => {},
+    removeAttribute: () => {},
+    scrollIntoView: () => {},
+    get innerHTML() { return html; },
+    set innerHTML(next) { html = String(next ?? ''); },
+    classList: {
+      add: (name) => classes.add(name),
+      remove: (name) => classes.delete(name),
+      contains: (name) => classes.has(name),
+    },
+  };
+}
+
+const runLogModal = makeElement();
+const runLogStatusBar = makeElement();
+const runLogModalBody = makeElement();
+const runLogStopBtn = makeElement();
+
+const elements = new Map([
+  ['run-log-modal', runLogModal],
+  ['run-log-status-bar', runLogStatusBar],
+  ['run-log-modal-body', runLogModalBody],
+  ['run-log-stop-btn', runLogStopBtn],
+]);
+
+global.window = {};
+global.document = {
+  getElementById: (id) => elements.get(id) ?? null,
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+  createElement: () => {
+    let value = '';
+    return {
+      set textContent(next) { value = String(next ?? ''); },
+      get textContent() { return value; },
+      get innerHTML() { return value; },
+      set innerHTML(next) { value = String(next ?? ''); },
+    };
+  },
+};
+
+let intervalCreated = 0;
+global.setInterval = () => {
+  throw new Error('expected self-scheduling polling, not setInterval');
+};
+global.clearInterval = () => {};
+global.setTimeout = () => {
+  intervalCreated += 1;
+  return 1;
+};
+global.clearTimeout = () => {};
+
+let resolveDetail = null;
+const detailPromise = new Promise((resolve) => { resolveDetail = resolve; });
+
+let resolveLogs = null;
+const logsPromise = new Promise((resolve) => { resolveLogs = resolve; });
+
+global.api = {
+  get: async (url) => {
+    if (url === '/scheduled-runs/123') return detailPromise;
+    if (url.startsWith('/scheduled-runs/123/logs?offset=')) return logsPromise;
+    throw new Error('unexpected url: ' + url);
+  },
+  post: async () => ({}),
+  put: async () => ({}),
+};
+global.toast = { error: () => {}, warning: () => {}, success: () => {} };
+global.format = { date: (value) => String(value ?? '-') };
+global.theme = { toggle: () => {} };
+
+vm.runInThisContext(fs.readFileSync('static/js/scheduled_tasks.js', 'utf8'), {
+  filename: 'static/js/scheduled_tasks.js',
+});
+
+async function main() {
+  const openPromise = window.openScheduledRunDetail(123);
+
+  const closeButton = {
+    dataset: { action: 'back-to-runs' },
+    disabled: false,
+    setAttribute: () => {},
+    removeAttribute: () => {},
+  };
+  await window.handleRunLogAction(closeButton);
+
+  resolveDetail({
+    id: 123,
+    plan_id: 1,
+    plan_name: 'plan',
+    task_type: 'cpa_cleanup',
+    trigger_source: 'manual',
+    started_at: null,
+    finished_at: null,
+    error_message: null,
+    summary: {},
+    status: 'running',
+    last_log_at: null,
+    is_running: true,
+    stop_requested_at: null,
+    can_stop: true,
+  });
+  resolveLogs({
+    chunk: 'stale',
+    next_offset: 4,
+    has_more: false,
+    is_running: true,
+    status: 'running',
+    stop_requested_at: null,
+    log_version: 1,
+    last_log_at: null,
+  });
+
+  await openPromise;
+
+  if (runLogModal.classList.contains('active')) throw new Error('modal should remain closed');
+  if (intervalCreated !== 0) {
+    throw new Error('polling timer should not start after close; got intervalCreated=' + intervalCreated);
+  }
+  if (runLogStatusBar.innerHTML !== '<span>未选择运行记录</span>') {
+    throw new Error('expected status bar to stay reset, got: ' + JSON.stringify(runLogStatusBar.innerHTML));
+  }
+  if (!String(runLogModalBody.innerHTML).includes('暂无记录')) {
+    throw new Error('expected modal body to stay reset, got: ' + JSON.stringify(runLogModalBody.innerHTML));
+  }
+}
+
+main().catch((err) => {
+  console.error(err && err.stack ? err.stack : String(err));
+  process.exit(1);
+});
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
