@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 from pathlib import Path
+import json
+import subprocess
 
 from src.config.settings import get_settings
 from src.web.app import create_app
@@ -115,3 +117,91 @@ def test_scheduled_tasks_script_routes_actions_through_busy_guard_handlers():
     assert "return withButtonBusy(button, async () => {" in script
     assert "onclick=\"handleRunLogAction(this)\"" in script
     assert "withButtonBusy(event.currentTarget, () => loadPlans())" in script
+
+
+def test_scheduled_tasks_script_drops_stale_builtin_keys_when_task_type_switches():
+    node_script = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+global.window = {};
+global.document = {
+  getElementById: () => null,
+  querySelectorAll: () => [],
+  addEventListener: () => {},
+  createElement: () => {
+    let value = '';
+    return {
+      set textContent(next) { value = String(next ?? ''); },
+      get textContent() { return value; },
+      get innerHTML() { return value; },
+      set innerHTML(next) { value = String(next ?? ''); },
+    };
+  },
+};
+global.api = { get: async () => ({}), post: async () => ({}), put: async () => ({}) };
+global.toast = { error: () => {}, warning: () => {}, success: () => {} };
+global.format = { date: (value) => String(value ?? '-') };
+global.theme = { toggle: () => {} };
+
+vm.runInThisContext(fs.readFileSync('static/js/scheduled_tasks.js', 'utf8'), {
+  filename: 'static/js/scheduled_tasks.js',
+});
+
+if (typeof window.prepareConfigEntriesForTaskTypeSwitch !== 'function') {
+  throw new Error('prepareConfigEntriesForTaskTypeSwitch is not exposed');
+}
+
+const result = window.prepareConfigEntriesForTaskTypeSwitch(
+  'cpa_refill',
+  'cpa_cleanup',
+  [
+    {
+      key: 'max_probe_count',
+      keyDescription: '旧内置键',
+      rawValue: '100',
+      valueDescription: '旧说明',
+      valueType: 'number',
+      builtin: true,
+      readonlyKey: true,
+    },
+    {
+      key: 'max_cleanup_count',
+      keyDescription: '旧内置键2',
+      rawValue: '10',
+      valueDescription: '旧说明2',
+      valueType: 'number',
+      builtin: true,
+      readonlyKey: true,
+    },
+    {
+      key: 'custom_keep',
+      keyDescription: '自定义键',
+      rawValue: 'custom-value',
+      valueDescription: '保留我',
+      valueType: 'string',
+      builtin: false,
+      readonlyKey: false,
+    },
+  ],
+);
+
+console.log(JSON.stringify(result.map((entry) => ({
+  key: entry.key,
+  builtin: entry.builtin,
+  valueDescription: entry.valueDescription,
+}))));
+"""
+    completed = subprocess.run(
+        ["node", "-e", node_script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    keys = json.loads(completed.stdout)
+    assert {"key": "custom_keep", "builtin": False, "valueDescription": "保留我"} in keys
+    assert all(item["key"] not in {"max_probe_count", "max_cleanup_count"} for item in keys)
+    assert any(item["key"] == "target_valid_count" and item["builtin"] is True for item in keys)

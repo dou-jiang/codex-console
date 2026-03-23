@@ -149,6 +149,7 @@ let cpaServicesCache = [];
 let submittingPlanForm = false;
 let currentConfigEntries = [];
 let currentConfigEditorMode = CONFIG_EDITOR_MODE_TABLE;
+let currentConfigTaskType = 'cpa_cleanup';
 
 function escapeHtml(text) {
     if (text === null || text === undefined) return '';
@@ -429,6 +430,24 @@ function buildConfigPayloadFromEntries(entries) {
     return { config, config_meta: configMeta };
 }
 
+function extractCustomConfigPayload(taskType, config = {}, configMeta = {}) {
+    const schemaKeys = new Set(getTaskConfigSchema(taskType).map((item) => item.key));
+    const customConfig = {};
+    const customConfigMeta = {};
+
+    Object.entries(isPlainObject(config) ? config : {}).forEach(([key, value]) => {
+        if (schemaKeys.has(key)) return;
+        customConfig[key] = cloneValue(value);
+    });
+
+    Object.entries(isPlainObject(configMeta) ? configMeta : {}).forEach(([key, value]) => {
+        if (schemaKeys.has(key)) return;
+        customConfigMeta[key] = cloneValue(value);
+    });
+
+    return { config: customConfig, config_meta: customConfigMeta };
+}
+
 function getDefaultConfigEntries(taskType) {
     return buildConfigEntriesFromConfig(taskType, {}, {});
 }
@@ -595,6 +614,22 @@ function syncConfigEntriesFromRawJson() {
     return parsedConfig;
 }
 
+function prepareConfigEntriesForTaskTypeSwitch(nextTaskType, previousTaskType, entries, rawJsonText = null) {
+    let sourceConfig;
+    if (typeof rawJsonText === 'string') {
+        sourceConfig = JSON.parse(rawJsonText.trim() || '{}');
+        if (!isPlainObject(sourceConfig)) {
+            throw new Error('配置 JSON 必须是对象');
+        }
+    } else {
+        sourceConfig = buildConfigPayloadFromEntries(entries).config;
+    }
+
+    const sourceConfigMeta = buildConfigMetaFromEntries(entries);
+    const customPayload = extractCustomConfigPayload(previousTaskType, sourceConfig, sourceConfigMeta);
+    return buildConfigEntriesFromConfig(nextTaskType, customPayload.config, customPayload.config_meta);
+}
+
 function switchConfigEditorMode(mode) {
     if (mode === currentConfigEditorMode) {
         updateConfigEditorModeUi();
@@ -614,6 +649,7 @@ function switchConfigEditorMode(mode) {
 }
 
 function setConfigEditorState(taskType, config = {}, configMeta = {}) {
+    currentConfigTaskType = taskType;
     currentConfigEntries = buildConfigEntriesFromConfig(taskType, config, configMeta);
     currentConfigEditorMode = CONFIG_EDITOR_MODE_TABLE;
     renderConfigEntries();
@@ -674,11 +710,19 @@ function maybeSetDefaultConfigForTaskType() {
     if (!taskType) return;
 
     try {
-        const config = currentConfigEditorMode === CONFIG_EDITOR_MODE_JSON
-            ? JSON.parse((scheduledTaskElements.planConfigJsonInput?.value || '').trim() || '{}')
-            : buildConfigPayloadFromEntries(currentConfigEntries).config;
-        const configMeta = buildConfigMetaFromEntries(currentConfigEntries);
-        setConfigEditorState(taskType, config, configMeta);
+        const nextEntries = prepareConfigEntriesForTaskTypeSwitch(
+            taskType,
+            currentConfigTaskType || taskType,
+            currentConfigEntries,
+            currentConfigEditorMode === CONFIG_EDITOR_MODE_JSON
+                ? (scheduledTaskElements.planConfigJsonInput?.value || '').trim() || '{}'
+                : null,
+        );
+        currentConfigTaskType = taskType;
+        currentConfigEntries = nextEntries;
+        renderConfigEntries();
+        syncRawJsonFromConfigEntries();
+        updateConfigEditorModeUi();
     } catch (error) {
         setConfigEditorState(taskType, {}, {});
     }
@@ -1238,6 +1282,7 @@ window.handleConfigEntryInput = handleConfigEntryInput;
 window.handleConfigEntryAction = handleConfigEntryAction;
 window.renderConfigEntries = renderConfigEntries;
 window.buildConfigPayloadFromEntries = buildConfigPayloadFromEntries;
+window.prepareConfigEntriesForTaskTypeSwitch = prepareConfigEntriesForTaskTypeSwitch;
 window.syncRawJsonFromConfigEntries = syncRawJsonFromConfigEntries;
 window.syncConfigEntriesFromRawJson = syncConfigEntriesFromRawJson;
 window.switchConfigEditorMode = switchConfigEditorMode;
