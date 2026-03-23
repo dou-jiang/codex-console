@@ -541,6 +541,32 @@ def create_proxy_check_result(
     return row
 
 
+def finalize_proxy_check_run(
+    db: Session,
+    proxy_check_run_id: int,
+    *,
+    status: str,
+    total_count: Optional[int] = None,
+    available_count: Optional[int] = None,
+    completed_at: Optional[datetime] = None,
+) -> Optional[ProxyCheckRun]:
+    """更新代理预检运行状态和统计结果"""
+    row = db.query(ProxyCheckRun).filter(ProxyCheckRun.id == proxy_check_run_id).first()
+    if not row:
+        return None
+
+    row.status = status
+    if total_count is not None:
+        row.total_count = total_count
+    if available_count is not None:
+        row.available_count = available_count
+    row.completed_at = completed_at or datetime.utcnow()
+
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def create_account_survival_check(
     db: Session,
     account_id: int,
