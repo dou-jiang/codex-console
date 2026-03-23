@@ -61,16 +61,245 @@ def test_accounts_template_contains_pagination_jump_controls():
     assert 'id="page-jump-btn"' in template
 
 
-def test_accounts_script_supports_jump_button_and_enter_key():
-    script = Path("static/js/accounts.js").read_text(encoding="utf-8")
-    assert 'page-jump-input' in script
-    assert 'page-jump-btn' in script
-    assert 'keydown' in script and 'Enter' in script
-    assert "addEventListener('click'" in script
+def run_accounts_js_scenario(name: str) -> dict:
+    import json
+    import subprocess
+
+    accounts_source = Path("static/js/accounts.js").read_text(encoding="utf-8")
+    node_script = rf"""
+const vm = require('vm');
+
+const scenarioName = {json.dumps(name)};
+const accountsSource = {json.dumps(accounts_source)};
+
+function createMockElement(id = '') {{
+  return {{
+    id,
+    style: {{}},
+    dataset: {{}},
+    className: '',
+    classList: {{ add() {{}}, remove() {{}}, contains() {{ return false; }}, toggle() {{ return false; }} }},
+    disabled: false,
+    checked: false,
+    value: '',
+    textContent: '',
+    innerHTML: '',
+    _listeners: {{}},
+    addEventListener(type, handler) {{ this._listeners[type] = handler; }},
+    dispatchEvent(type, event = {{}}) {{
+      if (this._listeners[type]) {{
+        return this._listeners[type](event);
+      }}
+      return undefined;
+    }},
+    querySelectorAll() {{ return []; }},
+    querySelector() {{ return null; }},
+    insertAdjacentElement() {{}},
+    blur() {{}},
+  }};
+}}
+
+const elementsById = new Map();
+function getElement(id) {{
+  if (!elementsById.has(id)) {{
+    elementsById.set(id, createMockElement(id));
+  }}
+  return elementsById.get(id);
+}}
+
+const domListeners = {{}};
+const document = {{
+  activeElement: null,
+  getElementById(id) {{ return getElement(id); }},
+  querySelectorAll() {{ return []; }},
+  querySelector() {{ return null; }},
+  addEventListener(type, handler) {{ domListeners[type] = handler; }},
+  createElement() {{ return createMockElement(); }},
+}};
+
+const context = {{
+  console,
+  URLSearchParams,
+  document,
+  window: {{ location: {{ protocol: 'http:', host: 'localhost' }} }},
+  navigator: {{ clipboard: {{ writeText: async () => {{}} }} }},
+  localStorage: {{ getItem() {{ return null; }}, setItem() {{}}, removeItem() {{}} }},
+  setTimeout,
+  clearTimeout,
+  theme: {{ toggle() {{}} }},
+  debounce: (fn) => fn,
+  delegate() {{}},
+  escapeHtml(value) {{ return String(value); }},
+  copyToClipboard() {{}},
+  format: {{
+    number(value) {{ return String(value ?? 0); }},
+    date(value) {{ return value ? String(value) : '-'; }},
+  }},
+  api: {{
+    async get(path) {{
+      if (path.includes('/accounts?')) return {{ total: 0, accounts: [] }};
+      if (path === '/accounts/stats/summary') return {{ total: 0, by_status: {{ active: 0, expired: 0, failed: 0 }} }};
+      return {{}};
+    }},
+    async post() {{ return {{ success: true }}; }},
+    async patch() {{ return {{ success: true }}; }},
+    async delete() {{ return {{ success: true }}; }},
+  }},
+  __toasts: [],
+  toast: {{
+    info(message) {{ context.__toasts.push(String(message)); }},
+    success() {{}},
+    warning() {{}},
+    error() {{}},
+  }},
+  confirm: async () => true,
+  fetch: async () => ({{ ok: true, json: async () => ({{}}), blob: async () => ({{}}), headers: {{ get() {{ return null; }} }} }}),
+}};
+context.global = context;
+context.globalThis = context;
+
+vm.createContext(context);
+vm.runInContext(
+  accountsSource + `
+;globalThis.__accountsTestExports = {{
+    initEventListeners,
+    updatePagination,
+    elements,
+    setState(state) {{
+      if ('currentPage' in state) currentPage = state.currentPage;
+      if ('pageSize' in state) pageSize = state.pageSize;
+      if ('totalAccounts' in state) totalAccounts = state.totalAccounts;
+      if ('isLoading' in state) isLoading = state.isLoading;
+    }},
+    getState() {{ return {{ currentPage, pageSize, totalAccounts, isLoading }}; }},
+    replaceLoadAccounts(fn) {{ loadAccounts = fn; }},
+    getToasts() {{ return [...globalThis.__toasts]; }},
+  }};`,
+  context,
+);
+
+const exported = context.__accountsTestExports;
+
+function trigger(type, element, event = {{}}) {{
+  if (element._listeners[type]) {{
+    element._listeners[type](event);
+  }}
+}}
+
+function runScenario() {{
+  const input = exported.elements.pageJumpInput;
+  const button = exported.elements.pageJumpBtn;
+
+  switch (scenarioName) {{
+    case 'jump_wiring_click_and_enter': {{
+      let loadCalls = 0;
+      let enterPrevented = false;
+      exported.replaceLoadAccounts(() => {{ loadCalls += 1; }});
+      exported.setState({{ currentPage: 1, pageSize: 20, totalAccounts: 100, isLoading: false }});
+      exported.initEventListeners();
+
+      input.value = '3';
+      trigger('click', button);
+
+      input.value = '4';
+      trigger('keydown', input, {{ key: 'Enter', preventDefault() {{ enterPrevented = true; }} }});
+
+      return {{
+        hasClickListener: Boolean(button._listeners.click),
+        hasKeydownListener: Boolean(input._listeners.keydown),
+        loadCalls,
+        enterPrevented,
+        currentPage: exported.getState().currentPage,
+      }};
+    }}
+    case 'jump_clamps_and_avoids_duplicate_reload': {{
+      let loadCalls = 0;
+      exported.replaceLoadAccounts(() => {{ loadCalls += 1; }});
+      exported.setState({{ currentPage: 2, pageSize: 20, totalAccounts: 95, isLoading: false }});
+      exported.initEventListeners();
+
+      input.value = '999';
+      trigger('click', button);
+
+      input.value = '5';
+      trigger('click', button);
+
+      return {{
+        currentPage: exported.getState().currentPage,
+        loadCalls,
+        toasts: exported.getToasts(),
+      }};
+    }}
+    case 'jump_rejects_decimal': {{
+      let loadCalls = 0;
+      exported.replaceLoadAccounts(() => {{ loadCalls += 1; }});
+      exported.setState({{ currentPage: 3, pageSize: 20, totalAccounts: 95, isLoading: false }});
+      exported.initEventListeners();
+
+      input.value = '1.9';
+      trigger('click', button);
+
+      return {{
+        currentPage: exported.getState().currentPage,
+        loadCalls,
+        toasts: exported.getToasts(),
+      }};
+    }}
+    case 'update_pagination_focus_and_max': {{
+      exported.setState({{ currentPage: 4, pageSize: 20, totalAccounts: 95, isLoading: false }});
+      input.value = '42';
+      document.activeElement = input;
+      exported.updatePagination();
+      const focusedValue = input.value;
+      const maxAfterFocused = input.max;
+
+      document.activeElement = createMockElement('other');
+      exported.updatePagination();
+      const blurredValue = input.value;
+
+      return {{
+        focusedValue,
+        blurredValue,
+        maxAfterFocused,
+      }};
+    }}
+    default:
+      throw new Error(`Unknown scenario: ${{scenarioName}}`);
+  }}
+}}
+
+const result = runScenario();
+process.stdout.write(JSON.stringify(result));
+"""
+    completed = subprocess.run(["node", "-e", node_script], check=True, capture_output=True, text=True)
+    return json.loads(completed.stdout)
 
 
-def test_accounts_script_clamps_jump_range_and_shows_notice_path():
-    script = Path("static/js/accounts.js").read_text(encoding="utf-8")
-    assert 'Math.max(1' in script
-    assert 'Math.min(' in script
-    assert "toast.info" in script
+def test_accounts_script_wires_jump_input_to_button_click_and_enter_behavior():
+    result = run_accounts_js_scenario("jump_wiring_click_and_enter")
+    assert result["hasClickListener"] is True
+    assert result["hasKeydownListener"] is True
+    assert result["enterPrevented"] is True
+    assert result["loadCalls"] == 2
+    assert result["currentPage"] == 4
+
+
+def test_accounts_script_clamps_jump_range_and_avoids_duplicate_reload():
+    result = run_accounts_js_scenario("jump_clamps_and_avoids_duplicate_reload")
+    assert result["currentPage"] == 5
+    assert result["loadCalls"] == 1
+    assert any("页码超出范围" in message for message in result["toasts"])
+
+
+def test_accounts_script_rejects_decimal_jump_input_without_coercion():
+    result = run_accounts_js_scenario("jump_rejects_decimal")
+    assert result["currentPage"] == 3
+    assert result["loadCalls"] == 0
+    assert any("请输入有效页码" in message for message in result["toasts"])
+
+
+def test_accounts_script_update_pagination_does_not_override_focused_input_and_sets_max():
+    result = run_accounts_js_scenario("update_pagination_focus_and_max")
+    assert result["focusedValue"] == "42"
+    assert result["blurredValue"] == "4"
+    assert result["maxAfterFocused"] == "5"

@@ -458,7 +458,11 @@ function updatePagination() {
 
     elements.pageInfo.textContent = `第 ${currentPage} 页 / 共 ${totalPages} 页`;
     if (elements.pageJumpInput) {
-        elements.pageJumpInput.value = String(currentPage);
+        elements.pageJumpInput.max = String(totalPages);
+
+        if (document.activeElement !== elements.pageJumpInput) {
+            elements.pageJumpInput.value = String(currentPage);
+        }
     }
 }
 
@@ -467,8 +471,9 @@ function jumpToPageFromInput() {
         return;
     }
 
-    const requestedPage = parseInt(elements.pageJumpInput.value, 10);
-    if (!Number.isFinite(requestedPage)) {
+    const rawValue = elements.pageJumpInput.value.trim();
+    const requestedPage = Number(rawValue);
+    if (!rawValue || !Number.isInteger(requestedPage)) {
         toast.info('请输入有效页码');
         return;
     }
