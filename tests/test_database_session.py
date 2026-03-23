@@ -161,6 +161,41 @@ def test_postgresql_migrate_tables_adds_registration_task_pipeline_columns(monke
         'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "pipeline_status" VARCHAR(20)' in stmt
         for stmt in connection.statements
     )
+    assert any(
+        'CREATE INDEX IF NOT EXISTS "ix_registration_tasks_pipeline_key"' in stmt
+        and 'ON "registration_tasks" ("pipeline_key")' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'CREATE INDEX IF NOT EXISTS "ix_registration_tasks_pair_key"' in stmt
+        and 'ON "registration_tasks" ("pair_key")' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'CREATE INDEX IF NOT EXISTS "ix_registration_tasks_experiment_batch_id"' in stmt
+        and 'ON "registration_tasks" ("experiment_batch_id")' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'CREATE INDEX IF NOT EXISTS "ix_registration_tasks_current_step_key"' in stmt
+        and 'ON "registration_tasks" ("current_step_key")' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'CREATE INDEX IF NOT EXISTS "ix_registration_tasks_assigned_proxy_id"' in stmt
+        and 'ON "registration_tasks" ("assigned_proxy_id")' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'CREATE INDEX IF NOT EXISTS "ix_registration_tasks_proxy_check_run_id"' in stmt
+        and 'ON "registration_tasks" ("proxy_check_run_id")' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'CREATE INDEX IF NOT EXISTS "ix_registration_tasks_pipeline_status"' in stmt
+        and 'ON "registration_tasks" ("pipeline_status")' in stmt
+        for stmt in connection.statements
+    )
 
 
 def test_postgresql_migrate_tables_adds_scheduler_account_columns(monkeypatch):
@@ -339,6 +374,10 @@ def test_sqlite_migrate_tables_adds_registration_task_pipeline_columns(tmp_path)
             row[1]
             for row in conn.execute("PRAGMA table_info('registration_tasks')").fetchall()
         }
+        indexes = {
+            row[1]
+            for row in conn.execute("PRAGMA index_list('registration_tasks')").fetchall()
+        }
 
     assert "pipeline_key" in columns
     assert "pair_key" in columns
@@ -349,6 +388,13 @@ def test_sqlite_migrate_tables_adds_registration_task_pipeline_columns(tmp_path)
     assert "proxy_check_run_id" in columns
     assert "total_duration_ms" in columns
     assert "pipeline_status" in columns
+    assert "ix_registration_tasks_pipeline_key" in indexes
+    assert "ix_registration_tasks_pair_key" in indexes
+    assert "ix_registration_tasks_experiment_batch_id" in indexes
+    assert "ix_registration_tasks_current_step_key" in indexes
+    assert "ix_registration_tasks_assigned_proxy_id" in indexes
+    assert "ix_registration_tasks_proxy_check_run_id" in indexes
+    assert "ix_registration_tasks_pipeline_status" in indexes
 
 
 def test_sqlite_migrate_tables_adds_scheduler_account_columns(tmp_path):

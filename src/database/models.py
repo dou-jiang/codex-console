@@ -117,7 +117,7 @@ class RegistrationTask(Base):
     email_address = Column(String(255), index=True)  # 注册时使用的邮箱地址
     pipeline_key = Column(String(64), index=True)  # 流水线标识
     pair_key = Column(String(64), index=True)  # 实验分组键
-    experiment_batch_id = Column(Integer, index=True)  # 实验批次 ID
+    experiment_batch_id = Column(Integer, ForeignKey('experiment_batches.id'), index=True)  # 实验批次 ID
     current_step_key = Column(String(64), index=True)  # 当前执行步骤
     assigned_proxy_id = Column(Integer, ForeignKey('proxies.id'), index=True)  # 任务分配代理
     assigned_proxy_url = Column(String(255))  # 任务分配代理 URL
@@ -133,6 +133,7 @@ class RegistrationTask(Base):
 
     # 关系
     email_service = relationship('EmailService')
+    experiment_batch = relationship('ExperimentBatch', back_populates='registration_tasks')
 
 
 class PipelineStepRun(Base):
@@ -174,6 +175,9 @@ class ExperimentBatch(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
+
+    registration_tasks = relationship('RegistrationTask', back_populates='experiment_batch')
+    survival_checks = relationship('AccountSurvivalCheck', back_populates='experiment_batch')
 
 
 class ProxyCheckRun(Base):
@@ -220,7 +224,7 @@ class AccountSurvivalCheck(Base):
     account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False, index=True)
     task_uuid = Column(String(36), index=True)
     pipeline_key = Column(String(64), index=True)
-    experiment_batch_id = Column(Integer, index=True)
+    experiment_batch_id = Column(Integer, ForeignKey('experiment_batches.id'), index=True)
     check_source = Column(String(16), nullable=False)
     check_stage = Column(String(16), nullable=False)
     checked_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -231,6 +235,7 @@ class AccountSurvivalCheck(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     account = relationship('Account')
+    experiment_batch = relationship('ExperimentBatch', back_populates='survival_checks')
 
 
 class Setting(Base):
