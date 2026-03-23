@@ -180,6 +180,13 @@ def create_app() -> FastAPI:
         """支付页面"""
         return templates.TemplateResponse("payment.html", {"request": request})
 
+    @app.get("/registration-experiments", response_class=HTMLResponse)
+    async def registration_experiments_page(request: Request):
+        """实验对比页面"""
+        if not _is_authenticated(request):
+            return _redirect_to_login(request)
+        return templates.TemplateResponse("registration_experiments.html", {"request": request})
+
     @app.on_event("startup")
     async def startup_event():
         """应用启动事件"""

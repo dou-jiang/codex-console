@@ -298,6 +298,39 @@ body {
     font-size: 0.8125rem;
 }
 
+.experiment-dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+}
+
+.experiment-toolbar {
+    align-items: end;
+}
+
+.experiment-toolbar-actions {
+    display: flex;
+    align-items: end;
+}
+
+.experiment-summary-grid,
+.survival-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--spacing-md);
+}
+
+.experiment-overview-card,
+.experiment-metric-card {
+    margin-bottom: 0;
+}
+
+.stat-meta {
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    margin-top: var(--spacing-xs);
+}
+
 /* ============================================
    卡片
    ============================================ */
