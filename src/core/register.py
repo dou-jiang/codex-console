@@ -134,6 +134,9 @@ class RegistrationEngine:
         self._otp_sent_at: Optional[float] = None  # OTP 发送时间戳
         self._is_existing_account: bool = False  # 是否为已注册账号（用于自动登录）
         self._token_acquisition_requires_login: bool = False  # 新注册账号需要二次登录拿 token
+        self._signup_otp_code: Optional[str] = None
+        self._login_otp_code: Optional[str] = None
+        self._step_token_info: Dict[str, Any] = {}
 
     def _log(self, message: str, level: str = "info"):
         """记录日志"""
@@ -841,6 +844,203 @@ class RegistrationEngine:
         except Exception as e:
             self._log(f"处理 OAuth 回调失败: {e}", "error")
             return None
+
+    # ------------------------------------------------------------------
+    # Step-safe adapters (for pipeline steps)
+    # ------------------------------------------------------------------
+    def run_check_ip_location_step(self) -> dict[str, Any]:
+        ip_ok, location = self._check_ip_location()
+        if not ip_ok:
+            raise RuntimeError(f"ip location unsupported: {location}")
+        return {"metadata": {"ip_location": location}}
+
+    def run_create_email_step(self) -> dict[str, Any]:
+        if not self._create_email():
+            raise RuntimeError("create_email failed")
+        return {
+            "email": self.email,
+            "metadata": {
+                "email_info": self.email_info or {},
+            },
+        }
+
+    def run_init_auth_session_step(self) -> dict[str, Any]:
+        if not self._init_session():
+            raise RuntimeError("init auth session failed")
+        return {}
+
+    def run_prepare_authorize_flow_step(self) -> dict[str, Any]:
+        if not self.session and not self._init_session():
+            raise RuntimeError("init auth session failed")
+        if not self._start_oauth():
+            raise RuntimeError("start oauth failed")
+
+        did = self._get_device_id()
+        if not did:
+            raise RuntimeError("get device id failed")
+
+        sentinel_token = self._check_sentinel(did)
+        if not sentinel_token:
+            raise RuntimeError("sentinel check failed")
+
+        return {
+            "metadata": {
+                "auth_device_id": did,
+                "auth_sentinel_token": sentinel_token,
+            }
+        }
+
+    def run_submit_signup_email_step(self, *, did: str, sentinel_token: str) -> dict[str, Any]:
+        result = self._submit_signup_form(did, sentinel_token)
+        if not result.success:
+            raise RuntimeError(f"submit signup email failed: {result.error_message}")
+        return {"metadata": {"is_existing_account": self._is_existing_account}}
+
+    def run_register_password_step(self) -> dict[str, Any]:
+        if self._is_existing_account:
+            return {"metadata": {"password_registration_skipped": True}}
+        ok, password = self._register_password()
+        if not ok or not password:
+            raise RuntimeError("register password failed")
+        return {"password": password}
+
+    def run_send_signup_otp_step(self) -> dict[str, Any]:
+        if self._is_existing_account:
+            return {"metadata": {"send_signup_otp_skipped": True}}
+        if not self._send_verification_code():
+            raise RuntimeError("send signup otp failed")
+        return {}
+
+    def run_wait_signup_otp_step(self) -> dict[str, Any]:
+        if self._is_existing_account:
+            return {"metadata": {"wait_signup_otp_skipped": True}}
+        code = self._get_verification_code()
+        if not code:
+            raise RuntimeError("wait signup otp failed")
+        self._signup_otp_code = code
+        return {}
+
+    def run_validate_signup_otp_step(self) -> dict[str, Any]:
+        if self._is_existing_account:
+            return {"metadata": {"validate_signup_otp_skipped": True}}
+        if not self._signup_otp_code:
+            raise RuntimeError("signup otp missing")
+        if not self._validate_verification_code(self._signup_otp_code):
+            raise RuntimeError("validate signup otp failed")
+        return {}
+
+    def run_create_account_profile_step(self) -> dict[str, Any]:
+        if self._is_existing_account:
+            return {"metadata": {"create_account_profile_skipped": True}}
+        if not self._create_user_account():
+            raise RuntimeError("create account profile failed")
+        return {}
+
+    def run_prepare_token_acquisition_step(self) -> dict[str, Any]:
+        if self._is_existing_account:
+            self._token_acquisition_requires_login = False
+            return {"metadata": {"token_acquired_via_relogin": False}}
+
+        self._token_acquisition_requires_login = True
+        self._reset_auth_flow()
+
+        did, sentinel_token = self._prepare_authorize_flow("重新登录")
+        if not did:
+            raise RuntimeError("prepare relogin failed: missing device id")
+        if not sentinel_token:
+            raise RuntimeError("prepare relogin failed: missing sentinel token")
+
+        return {
+            "metadata": {
+                "token_acquired_via_relogin": True,
+                "relogin_device_id": did,
+                "relogin_sentinel_token": sentinel_token,
+            }
+        }
+
+    def run_submit_login_email_step(self, *, did: Optional[str] = None, sentinel_token: Optional[str] = None) -> dict[str, Any]:
+        if self._is_existing_account:
+            return {"metadata": {"submit_login_email_skipped": True}}
+        if not did or not sentinel_token:
+            raise RuntimeError("relogin metadata missing")
+        login_start_result = self._submit_login_start(did, sentinel_token)
+        if not login_start_result.success:
+            raise RuntimeError(f"submit login email failed: {login_start_result.error_message}")
+        if login_start_result.page_type != OPENAI_PAGE_TYPES["LOGIN_PASSWORD"]:
+            raise RuntimeError(f"unexpected login page type: {login_start_result.page_type or 'unknown'}")
+        return {}
+
+    def run_submit_login_password_step(self) -> dict[str, Any]:
+        if self._is_existing_account:
+            return {"metadata": {"submit_login_password_skipped": True}}
+        result = self._submit_login_password()
+        if not result.success:
+            raise RuntimeError(f"submit login password failed: {result.error_message}")
+        if not result.is_existing_account:
+            raise RuntimeError(f"unexpected page after login password: {result.page_type or 'unknown'}")
+        return {}
+
+    def run_wait_login_otp_step(self) -> dict[str, Any]:
+        code = self._get_verification_code()
+        if not code:
+            raise RuntimeError("wait login otp failed")
+        self._login_otp_code = code
+        return {}
+
+    def run_validate_login_otp_step(self) -> dict[str, Any]:
+        if not self._login_otp_code:
+            raise RuntimeError("login otp missing")
+        if not self._validate_verification_code(self._login_otp_code):
+            raise RuntimeError("validate login otp failed")
+        return {}
+
+    def run_resolve_consent_and_workspace_step(self) -> dict[str, Any]:
+        workspace_id = self._get_workspace_id()
+        if not workspace_id:
+            raise RuntimeError("workspace id missing")
+
+        continue_url = self._select_workspace(workspace_id)
+        if not continue_url:
+            raise RuntimeError("select workspace failed")
+
+        callback_url = self._follow_redirects(continue_url)
+        if not callback_url:
+            raise RuntimeError("oauth callback url missing")
+
+        return {
+            "metadata": {
+                "workspace_id": workspace_id,
+                "oauth_callback_url": callback_url,
+            }
+        }
+
+    def run_exchange_oauth_token_step(self, *, callback_url: Optional[str]) -> dict[str, Any]:
+        if not callback_url:
+            raise RuntimeError("oauth callback url missing")
+        token_info = self._handle_oauth_callback(callback_url)
+        if not token_info:
+            raise RuntimeError("exchange oauth token failed")
+
+        self._step_token_info = dict(token_info)
+        self._step_token_info.setdefault("email", self.email)
+        self._step_token_info.setdefault("password", self.password)
+        self._step_token_info.setdefault("source", "login" if self._is_existing_account else "register")
+
+        session_cookie = self.session.cookies.get("__Secure-next-auth.session-token") if self.session else None
+        if session_cookie:
+            self.session_token = session_cookie
+            self._step_token_info["session_token"] = session_cookie
+
+        return {
+            "metadata": {
+                "account_id": token_info.get("account_id"),
+                "access_token": token_info.get("access_token"),
+                "refresh_token": token_info.get("refresh_token"),
+                "id_token": token_info.get("id_token"),
+                "session_token": self._step_token_info.get("session_token"),
+                "token_acquired_via_relogin": self._token_acquisition_requires_login,
+            }
+        }
 
     def run(self) -> RegistrationResult:
         """
