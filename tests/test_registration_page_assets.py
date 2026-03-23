@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 from tests_runtime.app_js_harness import run_app_js_scenario
 
@@ -68,8 +69,15 @@ def test_accounts_template_filter_panel_uses_shared_shell_classes():
     assert "filter-panel-actions" in template
     assert "pagination-panel" in template
     assert "pagination-jump" in template
-    assert '<div class="card toolbar-card filter-panel">' not in template
-    assert 'class="card-body toolbar filter-panel"' in template
+    toolbar_card_tag = _get_div_by_class_tokens(template, {"card", "toolbar-card"})
+    assert toolbar_card_tag is not None
+    _assert_tag_class_lacks(toolbar_card_tag, "filter-panel")
+
+    toolbar_body_tag = _get_div_by_class_tokens(template, {"card-body", "toolbar", "filter-panel"})
+    assert toolbar_body_tag is not None
+    _assert_tag_class_contains(toolbar_body_tag, "card-body")
+    _assert_tag_class_contains(toolbar_body_tag, "toolbar")
+    _assert_tag_class_contains(toolbar_body_tag, "filter-panel")
 
 
 def test_shared_stylesheet_defines_filter_and_pagination_panel_selectors():
@@ -79,6 +87,32 @@ def test_shared_stylesheet_defines_filter_and_pagination_panel_selectors():
     assert ".filter-panel-actions" in stylesheet
     assert ".pagination-panel" in stylesheet
     assert ".pagination-jump" in stylesheet
+
+
+def _get_div_by_class_tokens(template: str, class_tokens: set[str]) -> str | None:
+    for match in re.finditer(r"<div\b[^>]*>", template):
+        tag = match.group(0)
+        class_match = re.search(r'class\s*=\s*"([^"]*)"', tag)
+        if class_match is None:
+            continue
+        classes = set(class_match.group(1).split())
+        if class_tokens.issubset(classes):
+            return tag
+    return None
+
+
+def _assert_tag_class_contains(tag_html: str, expected_class: str) -> None:
+    class_match = re.search(r'class\s*=\s*"([^"]*)"', tag_html)
+    assert class_match is not None, f"missing class attribute: {tag_html}"
+    classes = set(class_match.group(1).split())
+    assert expected_class in classes, f"class {expected_class!r} missing in {classes!r}"
+
+
+def _assert_tag_class_lacks(tag_html: str, unexpected_class: str) -> None:
+    class_match = re.search(r'class\s*=\s*"([^"]*)"', tag_html)
+    assert class_match is not None, f"missing class attribute: {tag_html}"
+    classes = set(class_match.group(1).split())
+    assert unexpected_class not in classes, f"class {unexpected_class!r} unexpectedly present in {classes!r}"
 
 
 def run_accounts_js_scenario(name: str) -> dict:

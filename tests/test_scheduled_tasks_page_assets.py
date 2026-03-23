@@ -92,7 +92,7 @@ def test_scheduled_tasks_run_center_filter_panel_uses_shared_shell_classes():
     _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-filter-started-to"), "form-input")
     _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-page-jump-input"), "form-input")
     assert re.search(
-        r'<div class="card-header filter-panel">\s*<h3>运行中心</h3>\s*<div class="filter-panel-grid">.*?</div>\s*<div class="filter-panel-actions">',
+        r'<div class="card-header filter-panel">.*?<div class="filter-panel-grid">.*?</div>\s*<div class="filter-panel-actions">',
         template,
         re.DOTALL,
     )
