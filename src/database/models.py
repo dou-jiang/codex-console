@@ -115,6 +115,9 @@ class RegistrationTask(Base):
     email_service_id = Column(Integer, ForeignKey('email_services.id'), index=True)  # 使用的邮箱服务
     proxy = Column(String(255))  # 使用的代理
     email_address = Column(String(255), index=True)  # 注册时使用的邮箱地址
+    pipeline_key = Column(String(64), index=True)  # 流水线标识
+    pair_key = Column(String(64), index=True)  # 实验分组键
+    experiment_batch_id = Column(Integer, index=True)  # 实验批次 ID
     logs = Column(Text)  # 注册过程日志
     result = Column(JSONEncodedDict)  # 注册结果
     error_message = Column(Text)
@@ -124,6 +127,104 @@ class RegistrationTask(Base):
 
     # 关系
     email_service = relationship('EmailService')
+
+
+class PipelineStepRun(Base):
+    """流水线 Step 执行记录表"""
+    __tablename__ = 'pipeline_step_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_uuid = Column(String(36), index=True, nullable=False)
+    pipeline_key = Column(String(64), nullable=False, index=True)
+    step_key = Column(String(64), nullable=False, index=True)
+    step_order = Column(Integer, nullable=False)
+    step_impl = Column(String(100))
+    status = Column(String(20), nullable=False, default='pending')
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime)
+    duration_ms = Column(Integer)
+    input_summary = Column(Text)
+    output_summary = Column(Text)
+    error_code = Column(String(64))
+    error_message = Column(Text)
+    metadata_json = Column(JSONEncodedDict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ExperimentBatch(Base):
+    """实验批次表"""
+    __tablename__ = 'experiment_batches'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), nullable=False)
+    mode = Column(String(32), nullable=False, default='paired_compare')
+    status = Column(String(20), nullable=False, default='pending', index=True)
+    pipelines = Column(Text, nullable=False)
+    email_service_type = Column(String(50))
+    email_service_config_snapshot = Column(JSONEncodedDict)
+    proxy_strategy_snapshot = Column(JSONEncodedDict)
+    target_count = Column(Integer, default=0)
+    notes = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+
+
+class ProxyCheckRun(Base):
+    """代理预检运行记录表"""
+    __tablename__ = 'proxy_check_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope_type = Column(String(32), nullable=False, index=True)
+    scope_id = Column(String(64), index=True)
+    status = Column(String(20), nullable=False, default='pending', index=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime)
+    total_count = Column(Integer, default=0)
+    available_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    results = relationship('ProxyCheckResult', back_populates='run', cascade='all, delete-orphan')
+
+
+class ProxyCheckResult(Base):
+    """代理预检结果表"""
+    __tablename__ = 'proxy_check_results'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    proxy_check_run_id = Column(Integer, ForeignKey('proxy_check_runs.id'), nullable=False, index=True)
+    proxy_id = Column(Integer, ForeignKey('proxies.id'), index=True)
+    proxy_url = Column(String(255))
+    status = Column(String(20), nullable=False, index=True)
+    latency_ms = Column(Integer)
+    country_code = Column(String(8))
+    ip_address = Column(String(64))
+    error_message = Column(Text)
+    checked_at = Column(DateTime, default=datetime.utcnow)
+
+    run = relationship('ProxyCheckRun', back_populates='results')
+    proxy = relationship('Proxy')
+
+
+class AccountSurvivalCheck(Base):
+    """账号存活检查记录表"""
+    __tablename__ = 'account_survival_checks'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False, index=True)
+    task_uuid = Column(String(36), index=True)
+    pipeline_key = Column(String(64), index=True)
+    experiment_batch_id = Column(Integer, index=True)
+    check_source = Column(String(16), nullable=False)
+    check_stage = Column(String(16), nullable=False)
+    checked_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    result_level = Column(String(16), nullable=False, index=True)
+    signal_type = Column(String(64))
+    latency_ms = Column(Integer)
+    detail_json = Column(JSONEncodedDict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    account = relationship('Account')
 
 
 class Setting(Base):

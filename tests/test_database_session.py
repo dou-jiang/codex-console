@@ -110,6 +110,35 @@ def test_postgresql_migrate_tables_adds_registration_task_email_column(monkeypat
     )
 
 
+def test_postgresql_migrate_tables_adds_registration_task_pipeline_columns(monkeypatch):
+    connection = _FakeConnection()
+    manager = _build_manager(connection)
+
+    class _FakeInspector:
+        def get_columns(self, table_name: str):
+            if table_name == "registration_tasks":
+                return [{"name": "id"}, {"name": "task_uuid"}, {"name": "email_address"}]
+            return [{"name": "id"}]
+
+    monkeypatch.setattr(session_module.Base.metadata, "create_all", lambda bind: None)
+    monkeypatch.setattr(session_module, "inspect", lambda conn: _FakeInspector())
+
+    manager.migrate_tables()
+
+    assert any(
+        'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "pipeline_key" VARCHAR(64)' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "pair_key" VARCHAR(64)' in stmt
+        for stmt in connection.statements
+    )
+    assert any(
+        'ALTER TABLE "registration_tasks" ADD COLUMN IF NOT EXISTS "experiment_batch_id" INTEGER' in stmt
+        for stmt in connection.statements
+    )
+
+
 def test_postgresql_migrate_tables_adds_scheduler_account_columns(monkeypatch):
     connection = _FakeConnection()
     manager = _build_manager(connection)
@@ -252,6 +281,44 @@ def test_sqlite_migrate_tables_adds_registration_task_email_column(tmp_path):
         }
 
     assert "email_address" in columns
+
+
+def test_sqlite_migrate_tables_adds_registration_task_pipeline_columns(tmp_path):
+    db_path = tmp_path / "legacy-registration-task-pipeline-columns.db"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE registration_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_uuid VARCHAR(36) NOT NULL,
+                status VARCHAR(20),
+                email_service_id INTEGER,
+                proxy VARCHAR(255),
+                email_address VARCHAR(255),
+                logs TEXT,
+                result TEXT,
+                error_message TEXT,
+                created_at DATETIME,
+                started_at DATETIME,
+                completed_at DATETIME
+            )
+            """
+        )
+        conn.commit()
+
+    manager = DatabaseSessionManager(f"sqlite:///{db_path}")
+    manager.migrate_tables()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info('registration_tasks')").fetchall()
+        }
+
+    assert "pipeline_key" in columns
+    assert "pair_key" in columns
+    assert "experiment_batch_id" in columns
 
 
 def test_sqlite_migrate_tables_adds_scheduler_account_columns(tmp_path):
