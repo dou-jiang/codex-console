@@ -830,6 +830,10 @@ body {
     flex-wrap: wrap;
 }
 
+.card-body.filter-panel {
+    overflow: visible;
+}
+
 .filter-panel-grid {
     display: flex;
     align-items: center;
@@ -902,6 +906,18 @@ body {
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
+}
+
+.filter-input-cpa-service-id {
+    width: 160px;
+}
+
+.filter-input-search {
+    min-width: 200px;
+}
+
+.pagination-jump-input {
+    width: 88px;
 }
 
 #page-info {

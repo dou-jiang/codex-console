@@ -21,6 +21,20 @@ def _assert_tag_class_contains(tag_html: str, expected_class: str) -> None:
     assert expected_class in classes, f"class {expected_class!r} missing in {classes!r}"
 
 
+def _find_div_start_by_class_tokens(template: str, class_tokens: set[str], start: int = 0) -> tuple[int, int] | None:
+    for match in re.finditer(r"<div\b[^>]*>", template[start:]):
+        absolute_start = start + match.start()
+        absolute_end = start + match.end()
+        tag = match.group(0)
+        class_match = re.search(r'class\s*=\s*"([^"]*)"', tag)
+        if class_match is None:
+            continue
+        classes = set(class_match.group(1).split())
+        if class_tokens.issubset(classes):
+            return absolute_start, absolute_end
+    return None
+
+
 def test_scheduled_tasks_page_requires_auth_and_renders_script():
     app = create_app()
     with TestClient(app) as client:
@@ -91,11 +105,23 @@ def test_scheduled_tasks_run_center_filter_panel_uses_shared_shell_classes():
     _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-filter-started-from"), "form-input")
     _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-filter-started-to"), "form-input")
     _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-page-jump-input"), "form-input")
-    assert re.search(
-        r'<div class="card-header filter-panel">.*?<div class="filter-panel-grid">.*?</div>\s*<div class="filter-panel-actions">',
-        template,
-        re.DOTALL,
-    )
+
+    header_span = _find_div_start_by_class_tokens(template, {"card-header", "filter-panel"})
+    assert header_span is not None
+    _, header_open_end = header_span
+
+    grid_span = _find_div_start_by_class_tokens(template, {"filter-panel-grid"}, start=header_open_end)
+    assert grid_span is not None
+    grid_start, grid_open_end = grid_span
+
+    actions_span = _find_div_start_by_class_tokens(template, {"filter-panel-actions"}, start=header_open_end)
+    assert actions_span is not None
+    actions_start, _ = actions_span
+
+    assert grid_start < actions_start
+    grid_first_close = template.find("</div>", grid_open_end)
+    assert grid_first_close != -1
+    assert grid_first_close < actions_start
 
 
 def test_scheduled_tasks_template_contains_run_center_pagination_hooks():

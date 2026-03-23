@@ -72,12 +72,20 @@ def test_accounts_template_filter_panel_uses_shared_shell_classes():
     toolbar_card_tag = _get_div_by_class_tokens(template, {"card", "toolbar-card"})
     assert toolbar_card_tag is not None
     _assert_tag_class_lacks(toolbar_card_tag, "filter-panel")
+    _assert_tag_class_lacks(toolbar_card_tag, "toolbar")
 
-    toolbar_body_tag = _get_div_by_class_tokens(template, {"card-body", "toolbar", "filter-panel"})
+    toolbar_body_tag = _get_div_by_class_tokens(template, {"card-body", "filter-panel"})
     assert toolbar_body_tag is not None
     _assert_tag_class_contains(toolbar_body_tag, "card-body")
-    _assert_tag_class_contains(toolbar_body_tag, "toolbar")
     _assert_tag_class_contains(toolbar_body_tag, "filter-panel")
+    _assert_tag_class_lacks(toolbar_body_tag, "toolbar")
+
+    cpa_input_tag = _get_tag_by_id(template, "input", "filter-primary-cpa-service-id")
+    search_input_tag = _get_tag_by_id(template, "input", "search-input")
+    page_jump_input_tag = _get_tag_by_id(template, "input", "page-jump-input")
+    assert "style=" not in cpa_input_tag
+    assert "style=" not in search_input_tag
+    assert "style=" not in page_jump_input_tag
 
 
 def test_shared_stylesheet_defines_filter_and_pagination_panel_selectors():
@@ -87,6 +95,9 @@ def test_shared_stylesheet_defines_filter_and_pagination_panel_selectors():
     assert ".filter-panel-actions" in stylesheet
     assert ".pagination-panel" in stylesheet
     assert ".pagination-jump" in stylesheet
+    assert ".filter-input-cpa-service-id" in stylesheet
+    assert ".filter-input-search" in stylesheet
+    assert ".pagination-jump-input" in stylesheet
 
 
 def _get_div_by_class_tokens(template: str, class_tokens: set[str]) -> str | None:
@@ -99,6 +110,12 @@ def _get_div_by_class_tokens(template: str, class_tokens: set[str]) -> str | Non
         if class_tokens.issubset(classes):
             return tag
     return None
+
+
+def _get_tag_by_id(template: str, tag: str, element_id: str) -> str:
+    match = re.search(rf"<{tag}\b[^>]*\bid=\"{re.escape(element_id)}\"[^>]*>", template)
+    assert match is not None, f"missing <{tag}> with id={element_id}"
+    return match.group(0)
 
 
 def _assert_tag_class_contains(tag_html: str, expected_class: str) -> None:

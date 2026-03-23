@@ -96,8 +96,8 @@
 
             <!-- 工具栏 -->
             <div class="card toolbar-card">
-                <div class="card-body toolbar filter-panel">
-                    <div class="toolbar-left filter-panel-grid">
+                <div class="card-body filter-panel">
+                    <div class="filter-panel-grid">
                         <select id="filter-status" class="form-select">
                             <option value="">全部状态</option>
                             <option value="active">活跃</option>
@@ -116,16 +116,15 @@
                         <input
                             type="number"
                             id="filter-primary-cpa-service-id"
-                            class="form-input"
+                            class="form-input filter-input-cpa-service-id"
                             placeholder="主 CPA 服务 ID"
                             min="1"
-                            style="width: 160px;"
                         >
 
-                        <input type="text" id="search-input" class="form-input" placeholder="🔍 搜索邮箱..." style="min-width: 200px;">
+                        <input type="text" id="search-input" class="form-input filter-input-search" placeholder="🔍 搜索邮箱...">
                     </div>
 
-                    <div class="toolbar-right filter-panel-actions">
+                    <div class="filter-panel-actions">
                         <button class="btn btn-ghost" id="refresh-btn" title="刷新">
                             🔄 刷新
                         </button>
@@ -210,11 +209,10 @@
                             <input
                                 type="number"
                                 id="page-jump-input"
-                                class="form-input"
+                                class="form-input pagination-jump-input"
                                 min="1"
                                 inputmode="numeric"
                                 placeholder="页码"
-                                style="width: 88px;"
                             >
                             <button class="btn btn-secondary btn-sm" id="page-jump-btn">跳转</button>
                         </div>
