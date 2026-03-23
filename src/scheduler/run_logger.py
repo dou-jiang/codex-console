@@ -7,10 +7,10 @@ from ..database import crud
 from ..database.session import get_db
 
 
-def append_run_log(run_id: int, message: str) -> bool:
+def append_run_log(run_id: int, message: str, *, logged_at: datetime | None = None) -> bool:
     """Append a log line for a scheduled run."""
     with get_db() as db:
-        return crud.append_scheduled_run_log(db, run_id, message)
+        return crud.append_scheduled_run_log(db, run_id, message, logged_at=logged_at)
 
 
 def finalize_run(

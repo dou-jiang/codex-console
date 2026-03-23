@@ -1047,7 +1047,13 @@ def get_scheduled_run_log_chunk(
     }
 
 
-def append_scheduled_run_log(db: Session, run_id: int, log_message: str) -> bool:
+def append_scheduled_run_log(
+    db: Session,
+    run_id: int,
+    log_message: str,
+    *,
+    logged_at: Optional[datetime] = None,
+) -> bool:
     """追加运行日志"""
     run = get_scheduled_run_by_id(db, run_id)
     if not run:
@@ -1059,7 +1065,7 @@ def append_scheduled_run_log(db: Session, run_id: int, log_message: str) -> bool
         run.logs = log_message
 
     run.log_version = int(run.log_version or 0) + 1
-    run.last_log_at = datetime.utcnow()
+    run.last_log_at = logged_at or datetime.utcnow()
     db.commit()
     return True
 

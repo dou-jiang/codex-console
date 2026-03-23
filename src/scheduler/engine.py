@@ -25,6 +25,10 @@ class SchedulerDispatchError(RuntimeError):
     """Raised when a plan trigger cannot be dispatched."""
 
 
+class ScheduledRunCancelledError(RuntimeError):
+    """Raised by runners when a run is cancelled by user stop request."""
+
+
 @dataclass(frozen=True)
 class DispatchResult:
     run_id: int | None
@@ -199,6 +203,29 @@ class SchedulerEngine:
             raise SchedulerDispatchError(f"failed to dispatch scheduled plan {plan_id}")
         return dispatch_result.run_id
 
+    def request_run_stop(
+        self,
+        run_id: int,
+        *,
+        requested_by: str | None = None,
+        reason: str | None = None,
+    ) -> bool:
+        with get_db() as db:
+            run = crud.mark_scheduled_run_stop_requested(
+                db,
+                run_id=run_id,
+                requested_by=requested_by,
+                reason=reason,
+            )
+            return run is not None
+
+    def is_run_stop_requested(self, run_id: int) -> bool:
+        with get_db() as db:
+            run = crud.get_scheduled_run_by_id(db, run_id)
+            if run is None:
+                return False
+            return run.stop_requested_at is not None
+
     def _poll_forever(self) -> None:
         while True:
             with self._state_lock:
@@ -240,6 +267,7 @@ class SchedulerEngine:
         try:
             run_id = self._create_run_and_mark_started(
                 plan_id=plan_id,
+                task_type=task_type,
                 trigger_source=trigger_source,
                 schedule_now=schedule_now,
             )
@@ -255,6 +283,8 @@ class SchedulerEngine:
             def _worker() -> None:
                 try:
                     runner(plan_id=plan_id, run_id=run_id)
+                except ScheduledRunCancelledError:
+                    self._ensure_run_cancelled(run_id, "user requested stop")
                 except Exception as exc:
                     logger.exception("scheduled runner failed (plan_id=%s, run_id=%s)", plan_id, run_id)
                     self._ensure_run_failed(run_id, str(exc))
@@ -280,6 +310,7 @@ class SchedulerEngine:
         self,
         *,
         plan_id: int,
+        task_type: str,
         trigger_source: str,
         schedule_now: datetime | None,
     ) -> int | None:
@@ -291,6 +322,7 @@ class SchedulerEngine:
             run = crud.create_scheduled_run(
                 db,
                 plan_id=plan_id,
+                task_type=task_type,
                 trigger_source=trigger_source,
                 status="running",
             )
@@ -306,6 +338,12 @@ class SchedulerEngine:
             return int(run.id)
 
     def _ensure_run_failed(self, run_id: int, error_message: str) -> None:
+        self._finish_running_run(run_id, status="failed", error_message=error_message)
+
+    def _ensure_run_cancelled(self, run_id: int, error_message: str) -> None:
+        self._finish_running_run(run_id, status="cancelled", error_message=error_message)
+
+    def _finish_running_run(self, run_id: int, *, status: str, error_message: str) -> None:
         with get_db() as db:
             run = db.query(ScheduledRun).filter(ScheduledRun.id == run_id).first()
             if run is None or run.status != "running":
@@ -313,7 +351,7 @@ class SchedulerEngine:
             crud.finish_scheduled_run(
                 db,
                 run_id=run_id,
-                status="failed",
+                status=status,
                 error_message=error_message,
                 finished_at=datetime.utcnow(),
             )
