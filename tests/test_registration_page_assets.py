@@ -53,3 +53,24 @@ def test_app_js_restore_unlimited_task_uses_batch_endpoint():
     result = run_app_js_scenario("restore_unlimited_task")
     assert result["api_get_paths"] == ["/registration/batch/batch-unlimited-01"]
     assert result["batch_progress_display"] == "block"
+
+
+def test_accounts_template_contains_pagination_jump_controls():
+    template = Path("templates/accounts.html").read_text(encoding="utf-8")
+    assert 'id="page-jump-input"' in template
+    assert 'id="page-jump-btn"' in template
+
+
+def test_accounts_script_supports_jump_button_and_enter_key():
+    script = Path("static/js/accounts.js").read_text(encoding="utf-8")
+    assert 'page-jump-input' in script
+    assert 'page-jump-btn' in script
+    assert 'keydown' in script and 'Enter' in script
+    assert "addEventListener('click'" in script
+
+
+def test_accounts_script_clamps_jump_range_and_shows_notice_path():
+    script = Path("static/js/accounts.js").read_text(encoding="utf-8")
+    assert 'Math.max(1' in script
+    assert 'Math.min(' in script
+    assert "toast.info" in script

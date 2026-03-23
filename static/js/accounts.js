@@ -35,6 +35,8 @@ const elements = {
     prevPage: document.getElementById('prev-page'),
     nextPage: document.getElementById('next-page'),
     pageInfo: document.getElementById('page-info'),
+    pageJumpInput: document.getElementById('page-jump-input'),
+    pageJumpBtn: document.getElementById('page-jump-btn'),
     detailModal: document.getElementById('detail-modal'),
     modalBody: document.getElementById('modal-body'),
     closeModal: document.getElementById('close-modal')
@@ -152,6 +154,19 @@ function initEventListeners() {
             loadAccounts();
         }
     });
+
+    if (elements.pageJumpBtn) {
+        elements.pageJumpBtn.addEventListener('click', jumpToPageFromInput);
+    }
+
+    if (elements.pageJumpInput) {
+        elements.pageJumpInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                jumpToPageFromInput();
+            }
+        });
+    }
 
     // 导出
     elements.exportBtn.addEventListener('click', (e) => {
@@ -442,6 +457,35 @@ function updatePagination() {
     elements.nextPage.disabled = currentPage >= totalPages;
 
     elements.pageInfo.textContent = `第 ${currentPage} 页 / 共 ${totalPages} 页`;
+    if (elements.pageJumpInput) {
+        elements.pageJumpInput.value = String(currentPage);
+    }
+}
+
+function jumpToPageFromInput() {
+    if (!elements.pageJumpInput || isLoading) {
+        return;
+    }
+
+    const requestedPage = parseInt(elements.pageJumpInput.value, 10);
+    if (!Number.isFinite(requestedPage)) {
+        toast.info('请输入有效页码');
+        return;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(totalAccounts / pageSize));
+    const targetPage = Math.min(totalPages, Math.max(1, requestedPage));
+
+    if (targetPage !== requestedPage) {
+        toast.info(`页码超出范围，已调整到第 ${targetPage} 页`);
+    }
+
+    if (targetPage === currentPage) {
+        return;
+    }
+
+    currentPage = targetPage;
+    loadAccounts();
 }
 
 // 重置全选所有页状态
