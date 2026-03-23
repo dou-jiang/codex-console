@@ -326,7 +326,14 @@ def validate_account_token(account_id: int, proxy_url: Optional[str] = None) -> 
             return False, "账号不存在"
 
         if not account.access_token:
+            crud.update_account(db, account_id, status="failed")
             return False, "账号没有 access_token"
 
         manager = TokenRefreshManager(proxy_url=proxy_url)
-        return manager.validate_token(account.access_token)
+        is_valid, error = manager.validate_token(account.access_token)
+        crud.update_account(
+            db,
+            account_id,
+            status="active" if is_valid else "failed",
+        )
+        return is_valid, error
