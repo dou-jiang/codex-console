@@ -68,6 +68,8 @@ def test_accounts_template_filter_panel_uses_shared_shell_classes():
     assert "filter-panel-actions" in template
     assert "pagination-panel" in template
     assert "pagination-jump" in template
+    assert '<div class="card toolbar-card filter-panel">' not in template
+    assert 'class="card-body toolbar filter-panel"' in template
 
 
 def test_shared_stylesheet_defines_filter_and_pagination_panel_selectors():

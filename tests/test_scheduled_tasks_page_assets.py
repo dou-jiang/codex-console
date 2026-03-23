@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 from pathlib import Path
 import json
+import re
 import subprocess
 
 from src.config.settings import get_settings
@@ -72,6 +73,11 @@ def test_scheduled_tasks_run_center_filter_panel_uses_shared_shell_classes():
     assert "filter-panel-actions" in template
     assert "pagination-panel" in template
     assert "pagination-jump" in template
+    assert 'id="scheduled-run-filter-task-type" class="form-select"' in template
+    assert 'id="scheduled-run-filter-status" class="form-select"' in template
+    assert 'id="scheduled-run-filter-started-from" class="form-input"' in template
+    assert 'id="scheduled-run-filter-started-to" class="form-input"' in template
+    assert 'id="scheduled-run-page-jump-input"' in template and 'class="form-input"' in template
 
 
 def test_scheduled_tasks_template_contains_run_center_pagination_hooks():
@@ -86,8 +92,9 @@ def test_scheduled_tasks_template_contains_run_center_pagination_hooks():
 def test_scheduled_tasks_template_keeps_pagination_markup_minimal_without_inline_layout_styles():
     template = Path("templates/scheduled_tasks.html").read_text(encoding="utf-8")
     assert 'id="scheduled-run-pagination-summary" style=' not in template
-    assert 'id="scheduled-run-page-jump-input"' in template
-    assert 'id="scheduled-run-page-jump-input"\n                                style=' not in template
+    jump_input_match = re.search(r"<input[^>]*id=\"scheduled-run-page-jump-input\"[^>]*>", template)
+    assert jump_input_match is not None
+    assert "style=" not in jump_input_match.group(0)
 
 
 def run_scheduled_tasks_pagination_scenario(name: str) -> dict:

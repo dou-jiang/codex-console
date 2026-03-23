@@ -75,13 +75,13 @@
                 <div class="card-header filter-panel">
                     <h3>运行中心</h3>
                     <div class="filter-panel-grid">
-                        <select id="scheduled-run-filter-task-type">
+                        <select id="scheduled-run-filter-task-type" class="form-select">
                             <option value="">全部任务类型</option>
                             <option value="cpa_cleanup">CPA 清理</option>
                             <option value="cpa_refill">CPA 补量</option>
                             <option value="account_refresh">账号刷新</option>
                         </select>
-                        <select id="scheduled-run-filter-status">
+                        <select id="scheduled-run-filter-status" class="form-select">
                             <option value="">全部状态</option>
                             <option value="running">运行中</option>
                             <option value="success">成功</option>
@@ -89,8 +89,8 @@
                             <option value="skipped">已跳过</option>
                             <option value="cancelled">已取消</option>
                         </select>
-                        <input type="datetime-local" id="scheduled-run-filter-started-from" title="开始时间从">
-                        <input type="datetime-local" id="scheduled-run-filter-started-to" title="开始时间到">
+                        <input type="datetime-local" id="scheduled-run-filter-started-from" class="form-input" title="开始时间从">
+                        <input type="datetime-local" id="scheduled-run-filter-started-to" class="form-input" title="开始时间到">
                         <div class="filter-panel-actions">
                             <button class="btn btn-secondary btn-sm" id="scheduled-run-filter-apply-btn">筛选</button>
                             <button class="btn btn-secondary btn-sm" id="scheduled-run-filter-reset-btn">重置</button>
@@ -134,6 +134,7 @@
                             <input
                                 type="number"
                                 id="scheduled-run-page-jump-input"
+                                class="form-input"
                                 min="1"
                                 step="1"
                                 inputmode="numeric"
