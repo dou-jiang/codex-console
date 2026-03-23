@@ -274,6 +274,14 @@ async function runScenario() {{
       await flush();
       return {{ runRequests, warnings }};
     }}
+    case 'focused_input_preserves_user_text': {{
+      jumpInput.value = '444';
+      document.activeElement = jumpInput;
+      trigger('click', nextBtn, {{ preventDefault() {{}} }});
+      await flush();
+      await flush();
+      return {{ runRequests, warnings, jumpInputValue: jumpInput.value }};
+    }}
     default:
       throw new Error('unknown scenario: ' + scenarioName);
   }}
@@ -327,6 +335,12 @@ def test_scheduled_tasks_pagination_prev_next_buttons_change_requested_page():
     result = run_scheduled_tasks_pagination_scenario("prev_next_wiring")
     assert any(request.endswith("page=2&page_size=20") for request in result["runRequests"])
     assert result["runRequests"][-1].endswith("page=3&page_size=20")
+
+
+def test_scheduled_tasks_pagination_keeps_jump_input_when_focused():
+    result = run_scheduled_tasks_pagination_scenario("focused_input_preserves_user_text")
+    assert result["runRequests"][-1].endswith("page=2&page_size=20")
+    assert result["jumpInputValue"] == "444"
 
 
 def test_shared_list_templates_opt_into_table_shell_styling():

@@ -117,7 +117,17 @@ async def list_all_scheduled_runs(
     page_size: int = Query(20, ge=1, le=200),
 ):
     with get_db() as db:
-        skip = (page - 1) * page_size
+        total = crud.count_scheduled_runs(
+            db,
+            plan_id=plan_id,
+            task_type=task_type,
+            status=status,
+            started_after=started_from,
+            started_before=started_to,
+        )
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        normalized_page = min(page, total_pages)
+        skip = (normalized_page - 1) * page_size
         runs = crud.get_scheduled_runs(
             db,
             plan_id=plan_id,
@@ -128,18 +138,10 @@ async def list_all_scheduled_runs(
             skip=skip,
             limit=page_size,
         )
-        total = crud.count_scheduled_runs(
-            db,
-            plan_id=plan_id,
-            task_type=task_type,
-            status=status,
-            started_after=started_from,
-            started_before=started_to,
-        )
         return ScheduledRunListCenterResponse(
             items=[_build_scheduled_run_list_item(run) for run in runs],
             total=total,
-            page=page,
+            page=normalized_page,
             page_size=page_size,
         )
 

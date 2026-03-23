@@ -1197,8 +1197,10 @@ function updateScheduledRunPaginationControls() {
         scheduledTaskElements.runPaginationSummary.textContent = `第 ${currentPage} / ${totalPages} 页 · 共 ${total} 条`;
     }
     if (scheduledTaskElements.runPageJumpInput) {
-        scheduledTaskElements.runPageJumpInput.value = String(currentPage);
         scheduledTaskElements.runPageJumpInput.max = String(totalPages);
+        if (document.activeElement !== scheduledTaskElements.runPageJumpInput) {
+            scheduledTaskElements.runPageJumpInput.value = String(currentPage);
+        }
     }
     if (scheduledTaskElements.runPrevPageBtn) {
         scheduledTaskElements.runPrevPageBtn.disabled = currentPage <= 1;
