@@ -58,7 +58,6 @@ def client(route_db):
         worker_spawner=lambda fn, _name: fn(),
     )
     app.include_router(api_router, prefix="/api")
-    app.include_router(scheduled_routes.runs_router, prefix="/api")
 
     with TestClient(app) as test_client:
         yield test_client
