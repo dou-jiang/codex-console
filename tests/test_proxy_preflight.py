@@ -37,14 +37,16 @@ def test_choose_available_proxy_raises_when_no_available_proxy():
 def test_run_proxy_preflight_persists_results_and_updates_run(temp_db):
     proxy_a = crud.create_proxy(temp_db, name="proxy-a", type="http", host="127.0.0.1", port=9001)
     proxy_b = crud.create_proxy(temp_db, name="proxy-b", type="http", host="127.0.0.2", port=9002)
+    proxy_a_id = proxy_a.id
+    proxy_b_id = proxy_b.id
 
     proxies = [
-        {"proxy_id": proxy_a.id, "proxy_url": proxy_a.proxy_url},
-        {"proxy_id": proxy_b.id, "proxy_url": proxy_b.proxy_url},
+        {"proxy_id": proxy_a_id, "proxy_url": proxy_a.proxy_url},
+        {"proxy_id": proxy_b_id, "proxy_url": proxy_b.proxy_url},
     ]
 
     def fake_checker(proxy_row):
-        if proxy_row["proxy_id"] == proxy_a.id:
+        if proxy_row["proxy_id"] == proxy_a_id:
             return {"status": "available", "latency_ms": 123, "country_code": "US", "ip_address": "1.1.1.1"}
         return {"status": "unavailable", "error_message": "timeout"}
 
@@ -64,7 +66,7 @@ def test_run_proxy_preflight_persists_results_and_updates_run(temp_db):
     assert run.completed_at is not None
 
     assert len(results) == 2
-    assert {item["proxy_id"] for item in results} == {proxy_a.id, proxy_b.id}
+    assert {item["proxy_id"] for item in results} == {proxy_a_id, proxy_b_id}
 
     stored_run = temp_db.query(ProxyCheckRun).filter(ProxyCheckRun.id == run.id).one()
     assert stored_run.total_count == 2
@@ -100,3 +102,71 @@ def test_run_proxy_preflight_marks_failed_probe_as_unavailable(temp_db):
     assert run.available_count == 0
     assert results[0]["status"] == "unavailable"
     assert "boom" in (results[0]["error_message"] or "")
+
+
+def test_run_proxy_preflight_marks_run_failed_when_result_persistence_breaks(temp_db, monkeypatch):
+    proxy_a = crud.create_proxy(temp_db, name="proxy-d", type="http", host="127.0.0.4", port=9004)
+    proxy_b = crud.create_proxy(temp_db, name="proxy-e", type="http", host="127.0.0.5", port=9005)
+    proxy_a_id = proxy_a.id
+    proxy_b_id = proxy_b.id
+    original_create_result = crud.create_proxy_check_result
+    call_count = {"value": 0}
+
+    def flaky_create_result(*args, **kwargs):
+        call_count["value"] += 1
+        if call_count["value"] == 2:
+            raise RuntimeError("persist broken")
+        return original_create_result(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "src.core.pipeline.proxy_preflight.crud.create_proxy_check_result",
+        flaky_create_result,
+    )
+
+    with pytest.raises(RuntimeError, match="persist broken"):
+        run_proxy_preflight(
+            temp_db,
+            scope_type="batch",
+            scope_id="batch-persist-fail",
+            proxies=[
+                {"proxy_id": proxy_a_id, "proxy_url": proxy_a.proxy_url},
+                {"proxy_id": proxy_b_id, "proxy_url": proxy_b.proxy_url},
+            ],
+            check_single_proxy=lambda _: {"status": "available"},
+        )
+
+    run = (
+        temp_db.query(ProxyCheckRun)
+        .filter(ProxyCheckRun.scope_type == "batch", ProxyCheckRun.scope_id == "batch-persist-fail")
+        .one()
+    )
+    assert run.status == "failed"
+    assert run.completed_at is not None
+    assert run.total_count == 2
+    assert run.available_count == 2
+
+
+def test_run_proxy_preflight_falls_back_to_direct_failed_mark_when_finalization_errors(temp_db, monkeypatch):
+    proxy = crud.create_proxy(temp_db, name="proxy-f", type="http", host="127.0.0.6", port=9006)
+
+    monkeypatch.setattr(
+        "src.core.pipeline.proxy_preflight.crud.finalize_proxy_check_run",
+        lambda *_, **__: (_ for _ in ()).throw(RuntimeError("finalize broken")),
+    )
+
+    with pytest.raises(RuntimeError, match="finalize broken"):
+        run_proxy_preflight(
+            temp_db,
+            scope_type="single_task",
+            scope_id="task-finalize-fail",
+            proxies=[{"proxy_id": proxy.id, "proxy_url": proxy.proxy_url}],
+            check_single_proxy=lambda _: {"status": "available"},
+        )
+
+    run = (
+        temp_db.query(ProxyCheckRun)
+        .filter(ProxyCheckRun.scope_type == "single_task", ProxyCheckRun.scope_id == "task-finalize-fail")
+        .one()
+    )
+    assert run.status == "failed"
+    assert run.completed_at is not None

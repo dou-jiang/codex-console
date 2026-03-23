@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import random
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from datetime import datetime
 from typing import Any, Callable, Iterable
 
 from sqlalchemy.orm import Session
@@ -38,34 +39,49 @@ def run_proxy_preflight(
     )
 
     with ThreadPoolExecutor(max_workers=min(32, len(proxy_rows) or 1)) as pool:
-        futures = [pool.submit(check_single_proxy, proxy) for proxy in proxy_rows]
-        checked_rows = [_merge_probe_result(proxy, future) for proxy, future in zip(proxy_rows, futures)]
+        future_to_index = {
+            pool.submit(check_single_proxy, proxy): index for index, proxy in enumerate(proxy_rows)
+        }
+        checked_rows: list[ProxyRow | None] = [None] * len(proxy_rows)
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            checked_rows[index] = _merge_probe_result(proxy_rows[index], future)
+    normalized_rows: list[ProxyRow] = [item for item in checked_rows if item is not None]
 
     available_count = 0
-    for item in checked_rows:
-        if item["status"] == "available":
-            available_count += 1
-        crud.create_proxy_check_result(
+    try:
+        for item in normalized_rows:
+            if item["status"] == "available":
+                available_count += 1
+            crud.create_proxy_check_result(
+                db,
+                proxy_check_run_id=run.id,
+                proxy_id=item.get("proxy_id"),
+                proxy_url=item.get("proxy_url"),
+                status=item["status"],
+                latency_ms=item.get("latency_ms"),
+                country_code=item.get("country_code"),
+                ip_address=item.get("ip_address"),
+                error_message=item.get("error_message"),
+            )
+
+        run = crud.finalize_proxy_check_run(
             db,
-            proxy_check_run_id=run.id,
-            proxy_id=item.get("proxy_id"),
-            proxy_url=item.get("proxy_url"),
-            status=item["status"],
-            latency_ms=item.get("latency_ms"),
-            country_code=item.get("country_code"),
-            ip_address=item.get("ip_address"),
-            error_message=item.get("error_message"),
+            run.id,
+            status="completed",
+            total_count=len(proxy_rows),
+            available_count=available_count,
+        ) or run
+    except Exception:
+        _mark_run_failed(
+            db,
+            run_id=run.id,
+            total_count=len(proxy_rows),
+            available_count=sum(1 for item in normalized_rows if item.get("status") == "available"),
         )
+        raise
 
-    run = crud.finalize_proxy_check_run(
-        db,
-        run.id,
-        status="completed",
-        total_count=len(proxy_rows),
-        available_count=available_count,
-    ) or run
-
-    return run, checked_rows
+    return run, normalized_rows
 
 
 def choose_available_proxy(results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -151,3 +167,44 @@ def _default_check_single_proxy(proxy_row: ProxyRow) -> dict[str, Any]:
             "latency_ms": latency_ms,
             "error_message": str(exc),
         }
+
+
+def _mark_run_failed(
+    db: Session,
+    *,
+    run_id: int,
+    total_count: int,
+    available_count: int,
+) -> None:
+    try:
+        db.rollback()
+    except Exception:
+        pass
+
+    try:
+        row = crud.finalize_proxy_check_run(
+            db,
+            run_id,
+            status="failed",
+            total_count=total_count,
+            available_count=available_count,
+        )
+        if row is not None:
+            return
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+    now = datetime.utcnow()
+    db.query(ProxyCheckRun).filter(ProxyCheckRun.id == run_id).update(
+        {
+            ProxyCheckRun.status: "failed",
+            ProxyCheckRun.total_count: total_count,
+            ProxyCheckRun.available_count: available_count,
+            ProxyCheckRun.completed_at: now,
+        },
+        synchronize_session=False,
+    )
+    db.commit()
