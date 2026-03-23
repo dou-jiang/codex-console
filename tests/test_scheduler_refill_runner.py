@@ -7,6 +7,7 @@ from src.database import crud
 from src.database.models import Base, ScheduledRun
 from src.database.session import DatabaseSessionManager
 from src.database import session as session_module
+from src.scheduler import engine as engine_module
 from src.scheduler.runners import refill as refill_runner
 from src.scheduler.runners.refill import run_refill_plan
 
@@ -130,3 +131,70 @@ def test_refill_runner_marks_run_failed_when_registration_succeeds_but_cpa_uploa
     assert summary["uploaded_failed"] == 1
     assert summary["uploaded_success"] == 0
     assert summary["auto_disabled"] is True
+
+
+def test_refill_runner_logs_target_resolution_and_progress_summaries(temp_db, monkeypatch):
+    _, plan, run = _create_refill_plan_and_run(
+        temp_db,
+        target_valid_count=45,
+        max_refill_count=45,
+        max_consecutive_failures=50,
+    )
+
+    account_counter = {"value": 0}
+
+    monkeypatch.setattr(refill_runner, "count_valid_accounts", lambda *a, **k: 0)
+
+    def _run_registration_job(**kwargs):
+        account_counter["value"] += 1
+        return RegistrationJobResult(success=True, account_id=account_counter["value"])
+
+    monkeypatch.setattr(refill_runner, "run_registration_job", _run_registration_job)
+    monkeypatch.setattr(refill_runner, "upload_account_to_bound_cpa", lambda **_: (True, "ok"))
+
+    summary = run_refill_plan(plan_id=plan.id, run_id=run.id)
+
+    temp_db.expire_all()
+    persisted_run = temp_db.get(ScheduledRun, run.id)
+    assert persisted_run is not None
+    assert summary["uploaded_success"] == 45
+    assert "refill target resolved" in (persisted_run.logs or "")
+    assert "refill progress" in (persisted_run.logs or "")
+
+
+def test_refill_runner_marks_run_cancelled_and_logs_user_stop_when_stop_requested_mid_loop(temp_db, monkeypatch):
+    _, plan, run = _create_refill_plan_and_run(
+        temp_db,
+        target_valid_count=3,
+        max_refill_count=3,
+        max_consecutive_failures=5,
+    )
+
+    account_counter = {"value": 0}
+    stop_requested = {"done": False}
+
+    monkeypatch.setattr(refill_runner, "count_valid_accounts", lambda *a, **k: 0)
+
+    def _run_registration_job(**kwargs):
+        account_counter["value"] += 1
+        return RegistrationJobResult(success=True, account_id=account_counter["value"])
+
+    def _upload_account_to_bound_cpa(**kwargs):
+        if not stop_requested["done"]:
+            stop_requested["done"] = True
+            assert engine_module.request_run_stop(run.id, requested_by="tester", reason="user_requested") is True
+        return True, "ok"
+
+    monkeypatch.setattr(refill_runner, "run_registration_job", _run_registration_job)
+    monkeypatch.setattr(refill_runner, "upload_account_to_bound_cpa", _upload_account_to_bound_cpa)
+
+    summary = run_refill_plan(plan_id=plan.id, run_id=run.id)
+
+    temp_db.expire_all()
+    persisted_run = temp_db.get(ScheduledRun, run.id)
+    assert persisted_run is not None
+    assert persisted_run.status == "cancelled"
+    assert persisted_run.error_message == "user requested stop"
+    assert summary["uploaded_success"] == 1
+    assert "收到停止请求" in (persisted_run.logs or "")
+    assert "任务已按请求停止" in (persisted_run.logs or "")

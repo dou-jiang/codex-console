@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ...database import crud
 from ...database.models import ScheduledPlan
 from ...database.session import get_db
 from ..cpa_client import delete_invalid_accounts, probe_invalid_accounts
-from ..run_logger import append_run_log, finalize_run
+from ..engine import ScheduledRunCancelledError, is_run_stop_requested
+from ..run_logger import append_run_log, finalize_cancelled_run, finalize_run, raise_if_stop_requested
+
+
+_PROBE_PROGRESS_PATTERN = re.compile(r"scanned=(\d+)(?:/\d+)?, invalid=(\d+)")
+_PROGRESS_EVERY = 100
 
 
 def _resolve_max_cleanup_count(config: dict[str, Any]) -> int:
@@ -67,11 +73,30 @@ def run_cleanup_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
             ),
         )
 
+        next_probe_progress = _PROGRESS_EVERY
+
+        def _on_probe_progress(message: str) -> None:
+            nonlocal next_probe_progress
+            append_run_log(run_id, message)
+
+            match = _PROBE_PROGRESS_PATTERN.search(message)
+            if match:
+                scanned = int(match.group(1))
+                invalid = int(match.group(2))
+                while scanned >= next_probe_progress:
+                    append_run_log(
+                        run_id,
+                        f"cleanup probe progress (scanned={next_probe_progress}, invalid={invalid})",
+                    )
+                    next_probe_progress += _PROGRESS_EVERY
+
+            raise_if_stop_requested(run_id, stage="cleanup probe")
+
         invalid_items = probe_invalid_accounts(
             service=service_payload,
             limit=max_cleanup_count if max_cleanup_count > 0 else None,
             max_probe_count=max_probe_count if max_probe_count > 0 else None,
-            progress_callback=lambda message: append_run_log(run_id, message),
+            progress_callback=_on_probe_progress,
         )
         summary["invalid_items_found"] = len(invalid_items)
 
@@ -79,9 +104,11 @@ def run_cleanup_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
         summary["invalid_items_considered"] = len(selected_items)
 
         remote_names: list[str] = []
+        local_processed = 0
 
         with get_db() as db:
             for item in selected_items:
+                raise_if_stop_requested(run_id, stage="cleanup expire")
                 email = str(item.get("email") or "").strip()
                 if not email:
                     continue
@@ -92,7 +119,16 @@ def run_cleanup_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                     cpa_service_id=cpa_service_id,
                     reason="cpa_cleanup",
                 )
+                local_processed += 1
                 summary["local_marked_expired"] += marked
+                if local_processed % _PROGRESS_EVERY == 0:
+                    append_run_log(
+                        run_id,
+                        (
+                            "cleanup expire progress "
+                            f"(processed={local_processed}, local_expired={summary['local_marked_expired']})"
+                        ),
+                    )
 
                 name = str(item.get("name") or "").strip()
                 if not name:
@@ -100,9 +136,23 @@ def run_cleanup_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                 remote_names.append(name)
 
         if remote_names:
-            delete_result = delete_invalid_accounts(service=service_payload, names=remote_names)
-            summary["remote_deleted"] = int(delete_result.get("deleted", 0) or 0)
-            summary["remote_delete_failed"] = int(delete_result.get("failed", 0) or 0)
+            remote_processed = 0
+            for start in range(0, len(remote_names), _PROGRESS_EVERY):
+                raise_if_stop_requested(run_id, stage="cleanup delete")
+                batch = remote_names[start:start + _PROGRESS_EVERY]
+                delete_result = delete_invalid_accounts(service=service_payload, names=batch)
+                summary["remote_deleted"] += int(delete_result.get("deleted", 0) or 0)
+                summary["remote_delete_failed"] += int(delete_result.get("failed", 0) or 0)
+                remote_processed += len(batch)
+                if remote_processed % _PROGRESS_EVERY == 0:
+                    append_run_log(
+                        run_id,
+                        (
+                            "cleanup delete progress "
+                            f"(processed={remote_processed}, remote_deleted={summary['remote_deleted']}, "
+                            f"remote_delete_failed={summary['remote_delete_failed']})"
+                        ),
+                    )
 
         append_run_log(
             run_id,
@@ -116,6 +166,11 @@ def run_cleanup_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
         finalize_run(run_id, status="success", summary=summary)
         return summary
 
+    except ScheduledRunCancelledError:
+        if is_run_stop_requested(run_id):
+            finalize_cancelled_run(run_id, summary=summary)
+            return summary
+        raise
     except Exception as exc:
         append_run_log(run_id, f"cleanup runner failed: {exc}")
         finalize_run(run_id, status="failed", summary=summary, error_message=str(exc))

@@ -7,7 +7,8 @@ from ...core.openai.payment import check_subscription_status
 from ...core.openai.token_refresh import refresh_account_token
 from ...database import crud
 from ...database.session import get_db
-from ..run_logger import append_run_log, finalize_run
+from ..engine import ScheduledRunCancelledError, is_run_stop_requested
+from ..run_logger import append_run_log, finalize_cancelled_run, finalize_run, raise_if_stop_requested
 from .refill import upload_account_to_bound_cpa
 
 
@@ -73,9 +74,11 @@ def run_refresh_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
         )
 
         for account_id in due_account_ids:
+            raise_if_stop_requested(run_id, stage="refresh account")
             summary["processed"] += 1
 
             refresh_result = refresh_account_token(account_id, proxy_url=proxy)
+            raise_if_stop_requested(run_id, stage="refresh token")
             if not refresh_result.success:
                 with get_db() as db:
                     crud.mark_account_expired(db, account_id, reason="refresh_failed")
@@ -110,6 +113,7 @@ def run_refresh_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                 account.invalid_reason = None
                 db.commit()
                 db.refresh(account)
+                raise_if_stop_requested(run_id, stage="refresh subscription")
 
                 try:
                     subscription = check_subscription_status(account, proxy)
@@ -126,6 +130,7 @@ def run_refresh_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                 account.subscription_at = datetime.utcnow()
                 db.commit()
 
+                raise_if_stop_requested(run_id, stage="refresh upload")
                 summary["upload_attempted"] += 1
                 upload_ok, upload_message = upload_account_to_bound_cpa(
                     db=db,
@@ -155,6 +160,7 @@ def run_refresh_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                         run_id,
                         f"cpa upload failed (account_id={account_id}): {upload_message}",
                     )
+                raise_if_stop_requested(run_id, stage="refresh upload complete")
 
         append_run_log(
             run_id,
@@ -169,6 +175,11 @@ def run_refresh_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
         finalize_run(run_id, status="success", summary=summary)
         return summary
 
+    except ScheduledRunCancelledError:
+        if is_run_stop_requested(run_id):
+            finalize_cancelled_run(run_id, summary=summary)
+            return summary
+        raise
     except Exception as exc:
         append_run_log(run_id, f"refresh runner failed: {exc}")
         finalize_run(run_id, status="failed", summary=summary, error_message=str(exc))

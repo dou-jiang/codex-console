@@ -8,10 +8,12 @@ from ...core.upload.cpa_upload import generate_token_json, upload_to_cpa
 from ...database import crud
 from ...database.session import get_db
 from ..cpa_client import count_valid_accounts
-from ..run_logger import append_run_log, finalize_run
+from ..engine import ScheduledRunCancelledError, is_run_stop_requested
+from ..run_logger import append_run_log, finalize_cancelled_run, finalize_run, raise_if_stop_requested
 
 
 AUTO_DISABLE_REASON = "consecutive_failures_reached"
+_PROGRESS_EVERY = 20
 
 
 def _parse_int(value: Any, default: int = 0) -> int:
@@ -50,6 +52,41 @@ def upload_account_to_bound_cpa(*, db, account_id: int, cpa_service_id: int) -> 
     account.primary_cpa_service_id = cpa_service_id
     db.commit()
     return True, message
+
+
+def _emit_refill_progress_if_needed(
+    run_id: int,
+    summary: dict[str, Any],
+    *,
+    refill_target: int,
+    next_attempt_progress: list[int],
+    next_success_progress: list[int],
+) -> None:
+    attempts = int(summary["registered_success"]) + int(summary["registered_failed"])
+    uploaded_success = int(summary["uploaded_success"])
+    emitted = False
+
+    while attempts >= next_attempt_progress[0]:
+        next_attempt_progress[0] += _PROGRESS_EVERY
+        emitted = True
+
+    while uploaded_success >= next_success_progress[0]:
+        next_success_progress[0] += _PROGRESS_EVERY
+        emitted = True
+
+    if not emitted:
+        return
+
+    append_run_log(
+        run_id,
+        (
+            "refill progress "
+            f"(attempted={attempts}, uploaded_success={uploaded_success}, "
+            f"registered_failed={summary['registered_failed']}, "
+            f"uploaded_failed={summary['uploaded_failed']}, "
+            f"refill_target={refill_target})"
+        ),
+    )
 
 
 def run_refill_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
@@ -116,7 +153,10 @@ def run_refill_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
         )
 
         consecutive_failures = 0
+        next_attempt_progress = [_PROGRESS_EVERY]
+        next_success_progress = [_PROGRESS_EVERY]
         while summary["uploaded_success"] < refill_target:
+            raise_if_stop_requested(run_id, stage="refill loop")
             with get_db() as db:
                 job = run_registration_job(
                     db=db,
@@ -132,14 +172,17 @@ def run_refill_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                     consecutive_failures += 1
                     summary["consecutive_failures"] = consecutive_failures
                     append_run_log(run_id, f"registration failed: {job.error_message or 'unknown error'}")
+                    raise_if_stop_requested(run_id, stage="refill registration")
                 elif not job.account_id:
                     summary["registered_failed"] += 1
                     consecutive_failures += 1
                     summary["consecutive_failures"] = consecutive_failures
                     append_run_log(run_id, "registration returned no account_id")
+                    raise_if_stop_requested(run_id, stage="refill registration")
                 else:
                     summary["registered_success"] += 1
                     summary["upload_attempted"] += 1
+                    raise_if_stop_requested(run_id, stage="refill registration")
                     ok, message = upload_account_to_bound_cpa(
                         db=db,
                         account_id=job.account_id,
@@ -161,6 +204,16 @@ def run_refill_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
                             run_id,
                             f"upload failed (account_id={job.account_id}): {message}",
                         )
+                    raise_if_stop_requested(run_id, stage="refill upload")
+
+            raise_if_stop_requested(run_id, stage="refill iteration")
+            _emit_refill_progress_if_needed(
+                run_id,
+                summary,
+                refill_target=refill_target,
+                next_attempt_progress=next_attempt_progress,
+                next_success_progress=next_success_progress,
+            )
 
             if consecutive_failures >= max_consecutive_failures:
                 with get_db() as db:
@@ -202,6 +255,11 @@ def run_refill_plan(*, plan_id: int, run_id: int) -> dict[str, Any]:
         )
         return summary
 
+    except ScheduledRunCancelledError:
+        if is_run_stop_requested(run_id):
+            finalize_cancelled_run(run_id, summary=summary)
+            return summary
+        raise
     except Exception as exc:
         append_run_log(run_id, f"refill runner failed: {exc}")
         finalize_run(run_id, status="failed", summary=summary, error_message=str(exc))

@@ -7,9 +7,10 @@ from uuid import uuid4
 import pytest
 
 from src.database import crud
-from src.database.models import Base
+from src.database.models import Base, ScheduledRun
 from src.database.session import DatabaseSessionManager
 from src.database import session as session_module
+from src.scheduler import engine as engine_module
 from src.scheduler.runners import refresh as refresh_runner
 from src.scheduler.runners.refresh import run_refresh_plan
 
@@ -252,3 +253,61 @@ def test_refresh_runner_updates_tokens_subscription_and_cpa_state_on_success(tem
     assert refreshed.cpa_uploaded_at is not None
     assert refreshed.invalid_reason is None
     assert summary["uploaded_success"] == 1
+
+
+def test_refresh_runner_marks_run_cancelled_and_logs_user_stop_when_stop_requested_mid_loop(temp_db, monkeypatch):
+    service, plan, run = _create_refresh_plan_and_run(temp_db, max_refresh_count=5)
+    first = make_account(
+        temp_db,
+        status="active",
+        primary_cpa_service_id=service.id,
+        registered_days_ago=9,
+        last_refresh=None,
+    )
+    second = make_account(
+        temp_db,
+        status="active",
+        primary_cpa_service_id=service.id,
+        registered_days_ago=8,
+        last_refresh=None,
+    )
+
+    monkeypatch.setattr(
+        refresh_runner,
+        "refresh_account_token",
+        lambda *a, **k: SimpleNamespace(
+            success=True,
+            access_token="new-ak",
+            refresh_token="new-rk",
+            expires_at=datetime.utcnow() + timedelta(days=10),
+        ),
+    )
+    monkeypatch.setattr(refresh_runner, "check_subscription_status", lambda *a, **k: "plus")
+
+    stop_requested = {"done": False}
+
+    def _upload_account_to_bound_cpa(**kwargs):
+        if not stop_requested["done"]:
+            stop_requested["done"] = True
+            assert engine_module.request_run_stop(run.id, requested_by="tester", reason="user_requested") is True
+        return True, "ok"
+
+    monkeypatch.setattr(refresh_runner, "upload_account_to_bound_cpa", _upload_account_to_bound_cpa)
+
+    summary = run_refresh_plan(plan_id=plan.id, run_id=run.id)
+
+    temp_db.expire_all()
+    first_refreshed = crud.get_account_by_id(temp_db, first.id)
+    second_refreshed = crud.get_account_by_id(temp_db, second.id)
+    persisted_run = temp_db.get(ScheduledRun, run.id)
+    assert persisted_run is not None
+    assert persisted_run.status == "cancelled"
+    assert persisted_run.error_message == "user requested stop"
+    assert summary["processed"] == 1
+    assert first_refreshed is not None
+    assert first_refreshed.cpa_uploaded is True
+    assert second_refreshed is not None
+    assert second_refreshed.last_refresh is None
+    assert second_refreshed.cpa_uploaded is False
+    assert "收到停止请求" in (persisted_run.logs or "")
+    assert "任务已按请求停止" in (persisted_run.logs or "")

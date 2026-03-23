@@ -8,6 +8,7 @@ from src.database import crud
 from src.database.models import Base, ScheduledRun
 from src.database.session import DatabaseSessionManager
 from src.database import session as session_module
+from src.scheduler import engine as engine_module
 from src.scheduler.runners import cleanup as cleanup_runner
 from src.scheduler.runners.cleanup import run_cleanup_plan
 
@@ -190,6 +191,85 @@ def test_cleanup_runner_persists_probe_progress_logs(temp_db, monkeypatch):
     assert persisted_run is not None
     assert "probe candidates loaded (total=200, selected=20)" in (persisted_run.logs or "")
     assert "probe progress (scanned=20/20, invalid=0)" in (persisted_run.logs or "")
+
+
+def test_cleanup_runner_logs_staged_probe_expire_and_delete_progress(temp_db, monkeypatch):
+    service, plan, run = _create_cleanup_plan_and_run(temp_db, max_cleanup_count=250, max_probe_count=250)
+
+    invalid_items = []
+    for idx in range(250):
+        email = f"user{idx}@example.com"
+        account = crud.create_account(temp_db, email=email, email_service="tempmail")
+        crud.update_account(temp_db, account.id, primary_cpa_service_id=service.id, status="active")
+        invalid_items.append({"email": email, "name": f"{email}.json"})
+
+    def _fake_probe_invalid_accounts(**kwargs):
+        kwargs["progress_callback"]("probe candidates loaded (total=250, selected=250)")
+        kwargs["progress_callback"]("probe progress (scanned=100/250, invalid=10)")
+        kwargs["progress_callback"]("probe progress (scanned=200/250, invalid=25)")
+        kwargs["progress_callback"]("probe progress (scanned=250/250, invalid=30)")
+        return invalid_items
+
+    monkeypatch.setattr(cleanup_runner, "probe_invalid_accounts", _fake_probe_invalid_accounts)
+    monkeypatch.setattr(
+        cleanup_runner,
+        "delete_invalid_accounts",
+        lambda **kwargs: {"deleted": len(kwargs["names"]), "failed": 0},
+    )
+
+    summary = run_cleanup_plan(plan_id=plan.id, run_id=run.id)
+
+    temp_db.expire_all()
+    persisted_run = temp_db.get(ScheduledRun, run.id)
+    assert persisted_run is not None
+    assert summary["local_marked_expired"] == 250
+    assert summary["remote_deleted"] == 250
+    assert "cleanup probe progress (scanned=100, invalid=10)" in (persisted_run.logs or "")
+    assert "cleanup probe progress (scanned=200, invalid=25)" in (persisted_run.logs or "")
+    assert "cleanup expire progress" in (persisted_run.logs or "")
+    assert "cleanup delete progress" in (persisted_run.logs or "")
+
+
+def test_cleanup_runner_marks_run_cancelled_and_logs_user_stop_when_stop_requested_mid_loop(temp_db, monkeypatch):
+    service, plan, run = _create_cleanup_plan_and_run(temp_db, max_cleanup_count=5)
+
+    invalid_items = []
+    for idx in range(5):
+        email = f"stop-{idx}@example.com"
+        account = crud.create_account(temp_db, email=email, email_service="tempmail")
+        crud.update_account(temp_db, account.id, primary_cpa_service_id=service.id, status="active")
+        invalid_items.append({"email": email, "name": f"{email}.json"})
+
+    monkeypatch.setattr(cleanup_runner, "probe_invalid_accounts", lambda **_: invalid_items)
+    monkeypatch.setattr(cleanup_runner, "delete_invalid_accounts", lambda **_: {"deleted": 0, "failed": 0})
+
+    original_mark_expired = cleanup_runner.crud.mark_account_expired_by_email_and_cpa
+    stop_requested = {"done": False}
+
+    def _mark_account_expired_and_request_stop(db, **kwargs):
+        marked = original_mark_expired(db, **kwargs)
+        if not stop_requested["done"]:
+            stop_requested["done"] = True
+            assert engine_module.request_run_stop(run.id, requested_by="tester", reason="user_requested") is True
+        return marked
+
+    monkeypatch.setattr(
+        cleanup_runner.crud,
+        "mark_account_expired_by_email_and_cpa",
+        _mark_account_expired_and_request_stop,
+    )
+
+    summary = run_cleanup_plan(plan_id=plan.id, run_id=run.id)
+
+    temp_db.expire_all()
+    persisted_run = temp_db.get(ScheduledRun, run.id)
+    assert persisted_run is not None
+    assert persisted_run.status == "cancelled"
+    assert persisted_run.error_message == "user requested stop"
+    assert summary["local_marked_expired"] == 1
+    assert summary["remote_deleted"] == 0
+    assert "收到停止请求" in (persisted_run.logs or "")
+    assert "任务已按请求停止" in (persisted_run.logs or "")
 
 
 def test_cleanup_runner_persists_failure_status_when_probe_raises(temp_db, monkeypatch):
