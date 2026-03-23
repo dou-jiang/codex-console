@@ -105,6 +105,7 @@ def test_scheduled_tasks_run_center_filter_panel_uses_shared_shell_classes():
     _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-filter-started-from"), "form-input")
     _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-filter-started-to"), "form-input")
     _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-page-jump-input"), "form-input")
+    _assert_tag_class_contains(_get_tag_by_id(template, "input", "scheduled-run-page-jump-input"), "pagination-jump-input")
 
     header_span = _find_div_start_by_class_tokens(template, {"card-header", "filter-panel"})
     assert header_span is not None
@@ -139,6 +140,7 @@ def test_scheduled_tasks_template_keeps_pagination_markup_minimal_without_inline
     jump_input_match = re.search(r"<input[^>]*id=\"scheduled-run-page-jump-input\"[^>]*>", template)
     assert jump_input_match is not None
     assert "style=" not in jump_input_match.group(0)
+    assert 'placeholder="页码"' in jump_input_match.group(0)
 
 
 def run_scheduled_tasks_pagination_scenario(name: str) -> dict:
@@ -221,6 +223,7 @@ const document = {{
 
 const runRequests = [];
 const warnings = [];
+const totalRuns = scenarioName === 'empty_state_controls_disabled' ? 0 : 95;
 const context = {{
   console,
   URLSearchParams,
@@ -249,7 +252,7 @@ const context = {{
         const pageSize = Number.parseInt(params.get('page_size') || '20', 10);
         return {{
           items: [],
-          total: 95,
+          total: totalRuns,
           page,
           page_size: pageSize,
         }};
@@ -342,6 +345,16 @@ async function runScenario() {{
       await flush();
       return {{ runRequests, warnings, jumpInputValue: jumpInput.value }};
     }}
+    case 'empty_state_controls_disabled': {{
+      return {{
+        runRequests,
+        warnings,
+        prevDisabled: prevBtn.disabled,
+        nextDisabled: nextBtn.disabled,
+        jumpInputDisabled: jumpInput.disabled,
+        jumpBtnDisabled: jumpBtn.disabled,
+      }};
+    }}
     default:
       throw new Error('unknown scenario: ' + scenarioName);
   }}
@@ -401,6 +414,15 @@ def test_scheduled_tasks_pagination_keeps_jump_input_when_focused():
     result = run_scheduled_tasks_pagination_scenario("focused_input_preserves_user_text")
     assert result["runRequests"][-1].endswith("page=2&page_size=20")
     assert result["jumpInputValue"] == "444"
+
+
+def test_scheduled_tasks_pagination_disables_prev_next_and_jump_when_list_is_empty():
+    result = run_scheduled_tasks_pagination_scenario("empty_state_controls_disabled")
+    assert len(result["runRequests"]) == 1
+    assert result["prevDisabled"] is True
+    assert result["nextDisabled"] is True
+    assert result["jumpInputDisabled"] is True
+    assert result["jumpBtnDisabled"] is True
 
 
 def test_shared_list_templates_opt_into_table_shell_styling():

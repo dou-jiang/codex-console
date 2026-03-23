@@ -452,17 +452,22 @@ function togglePassword(element, password) {
 // 更新分页
 function updatePagination() {
     const totalPages = Math.max(1, Math.ceil(totalAccounts / pageSize));
+    const hasData = totalAccounts > 0;
 
-    elements.prevPage.disabled = currentPage <= 1;
-    elements.nextPage.disabled = currentPage >= totalPages;
+    elements.prevPage.disabled = !hasData || currentPage <= 1;
+    elements.nextPage.disabled = !hasData || currentPage >= totalPages;
 
     elements.pageInfo.textContent = `第 ${currentPage} 页 / 共 ${totalPages} 页`;
     if (elements.pageJumpInput) {
         elements.pageJumpInput.max = String(totalPages);
+        elements.pageJumpInput.disabled = !hasData;
 
         if (document.activeElement !== elements.pageJumpInput) {
             elements.pageJumpInput.value = String(currentPage);
         }
+    }
+    if (elements.pageJumpBtn) {
+        elements.pageJumpBtn.disabled = !hasData;
     }
 }
 
@@ -471,12 +476,16 @@ function jumpToPageFromInput() {
         return;
     }
 
+    if (totalAccounts <= 0) {
+        return;
+    }
+
     const rawValue = elements.pageJumpInput.value.trim();
-    const requestedPage = Number(rawValue);
-    if (!rawValue || !Number.isInteger(requestedPage)) {
+    if (!/^\d+$/.test(rawValue)) {
         toast.info('请输入有效页码');
         return;
     }
+    const requestedPage = Number.parseInt(rawValue, 10);
 
     const totalPages = Math.max(1, Math.ceil(totalAccounts / pageSize));
     const targetPage = Math.min(totalPages, Math.max(1, requestedPage));

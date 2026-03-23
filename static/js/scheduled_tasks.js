@@ -1175,6 +1175,7 @@ function updateScheduledRunPaginationControls() {
     const total = Number.isFinite(Number(scheduledRunPaginationMeta.total))
         ? Math.max(0, Number(scheduledRunPaginationMeta.total))
         : 0;
+    const hasData = total > 0;
     const pageSize = Number.isFinite(Number(scheduledRunFilters.pageSize))
         ? Math.max(1, Number(scheduledRunFilters.pageSize))
         : 20;
@@ -1198,15 +1199,19 @@ function updateScheduledRunPaginationControls() {
     }
     if (scheduledTaskElements.runPageJumpInput) {
         scheduledTaskElements.runPageJumpInput.max = String(totalPages);
+        scheduledTaskElements.runPageJumpInput.disabled = !hasData;
         if (document.activeElement !== scheduledTaskElements.runPageJumpInput) {
             scheduledTaskElements.runPageJumpInput.value = String(currentPage);
         }
     }
     if (scheduledTaskElements.runPrevPageBtn) {
-        scheduledTaskElements.runPrevPageBtn.disabled = currentPage <= 1;
+        scheduledTaskElements.runPrevPageBtn.disabled = !hasData || currentPage <= 1;
     }
     if (scheduledTaskElements.runNextPageBtn) {
-        scheduledTaskElements.runNextPageBtn.disabled = currentPage >= totalPages;
+        scheduledTaskElements.runNextPageBtn.disabled = !hasData || currentPage >= totalPages;
+    }
+    if (scheduledTaskElements.runPageJumpBtn) {
+        scheduledTaskElements.runPageJumpBtn.disabled = !hasData;
     }
 }
 

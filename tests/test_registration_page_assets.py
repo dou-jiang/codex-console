@@ -316,6 +316,32 @@ function runScenario() {{
         toasts: exported.getToasts(),
       }};
     }}
+    case 'jump_rejects_scientific_notation': {{
+      let loadCalls = 0;
+      exported.replaceLoadAccounts(() => {{ loadCalls += 1; }});
+      exported.setState({{ currentPage: 3, pageSize: 20, totalAccounts: 95, isLoading: false }});
+      exported.initEventListeners();
+
+      input.value = '1e2';
+      trigger('click', button);
+
+      return {{
+        currentPage: exported.getState().currentPage,
+        loadCalls,
+        toasts: exported.getToasts(),
+      }};
+    }}
+    case 'update_pagination_disables_controls_when_empty': {{
+      exported.setState({{ currentPage: 1, pageSize: 20, totalAccounts: 0, isLoading: false }});
+      document.activeElement = createMockElement('other');
+      exported.updatePagination();
+      return {{
+        prevDisabled: exported.elements.prevPage.disabled,
+        nextDisabled: exported.elements.nextPage.disabled,
+        jumpInputDisabled: exported.elements.pageJumpInput.disabled,
+        jumpBtnDisabled: exported.elements.pageJumpBtn.disabled,
+      }};
+    }}
     case 'update_pagination_focus_and_max': {{
       exported.setState({{ currentPage: 4, pageSize: 20, totalAccounts: 95, isLoading: false }});
       input.value = '42';
@@ -367,6 +393,21 @@ def test_accounts_script_rejects_decimal_jump_input_without_coercion():
     assert result["currentPage"] == 3
     assert result["loadCalls"] == 0
     assert any("请输入有效页码" in message for message in result["toasts"])
+
+
+def test_accounts_script_rejects_scientific_notation_jump_input_without_coercion():
+    result = run_accounts_js_scenario("jump_rejects_scientific_notation")
+    assert result["currentPage"] == 3
+    assert result["loadCalls"] == 0
+    assert any("请输入有效页码" in message for message in result["toasts"])
+
+
+def test_accounts_script_disables_prev_next_and_jump_when_list_is_empty():
+    result = run_accounts_js_scenario("update_pagination_disables_controls_when_empty")
+    assert result["prevDisabled"] is True
+    assert result["nextDisabled"] is True
+    assert result["jumpInputDisabled"] is True
+    assert result["jumpBtnDisabled"] is True
 
 
 def test_accounts_script_update_pagination_does_not_override_focused_input_and_sets_max():
