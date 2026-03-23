@@ -61,6 +61,24 @@ def test_accounts_template_contains_pagination_jump_controls():
     assert 'id="page-jump-btn"' in template
 
 
+def test_accounts_template_filter_panel_uses_shared_shell_classes():
+    template = Path("templates/accounts.html").read_text(encoding="utf-8")
+    assert "filter-panel" in template
+    assert "filter-panel-grid" in template
+    assert "filter-panel-actions" in template
+    assert "pagination-panel" in template
+    assert "pagination-jump" in template
+
+
+def test_shared_stylesheet_defines_filter_and_pagination_panel_selectors():
+    stylesheet = Path("static/css/style.css").read_text(encoding="utf-8")
+    assert ".filter-panel" in stylesheet
+    assert ".filter-panel-grid" in stylesheet
+    assert ".filter-panel-actions" in stylesheet
+    assert ".pagination-panel" in stylesheet
+    assert ".pagination-jump" in stylesheet
+
+
 def run_accounts_js_scenario(name: str) -> dict:
     import json
     import subprocess

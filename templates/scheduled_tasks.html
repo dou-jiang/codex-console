@@ -72,9 +72,9 @@
             </div>
 
             <div class="card" id="scheduled-runs-card">
-                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+                <div class="card-header filter-panel" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
                     <h3>运行中心</h3>
-                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <div class="filter-panel-grid" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                         <select id="scheduled-run-filter-task-type">
                             <option value="">全部任务类型</option>
                             <option value="cpa_cleanup">CPA 清理</option>
@@ -91,8 +91,10 @@
                         </select>
                         <input type="datetime-local" id="scheduled-run-filter-started-from" title="开始时间从">
                         <input type="datetime-local" id="scheduled-run-filter-started-to" title="开始时间到">
-                        <button class="btn btn-secondary btn-sm" id="scheduled-run-filter-apply-btn">筛选</button>
-                        <button class="btn btn-secondary btn-sm" id="scheduled-run-filter-reset-btn">重置</button>
+                        <div class="filter-panel-actions">
+                            <button class="btn btn-secondary btn-sm" id="scheduled-run-filter-apply-btn">筛选</button>
+                            <button class="btn btn-secondary btn-sm" id="scheduled-run-filter-reset-btn">重置</button>
+                        </div>
                     </div>
                 </div>
                 <div class="card-body" style="padding:0;">
@@ -123,9 +125,9 @@
                             </tbody>
                         </table>
                     </div>
-                    <div>
+                    <div class="pagination-panel">
                         <div id="scheduled-run-pagination-summary">第 1 / 1 页 · 共 0 条</div>
-                        <div>
+                        <div class="pagination-jump">
                             <button class="btn btn-secondary btn-sm" id="scheduled-run-prev-page">上一页</button>
                             <button class="btn btn-secondary btn-sm" id="scheduled-run-next-page">下一页</button>
                             <label for="scheduled-run-page-jump-input">跳转到</label>

@@ -65,6 +65,15 @@ def test_scheduled_tasks_template_contains_run_center_hooks():
     assert 'id="run-log-stop-btn"' in template
 
 
+def test_scheduled_tasks_run_center_filter_panel_uses_shared_shell_classes():
+    template = Path("templates/scheduled_tasks.html").read_text(encoding="utf-8")
+    assert "filter-panel" in template
+    assert "filter-panel-grid" in template
+    assert "filter-panel-actions" in template
+    assert "pagination-panel" in template
+    assert "pagination-jump" in template
+
+
 def test_scheduled_tasks_template_contains_run_center_pagination_hooks():
     template = Path("templates/scheduled_tasks.html").read_text(encoding="utf-8")
     assert 'id="scheduled-run-prev-page"' in template

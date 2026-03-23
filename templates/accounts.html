@@ -95,9 +95,9 @@
             </div>
 
             <!-- 工具栏 -->
-            <div class="card toolbar-card">
+            <div class="card toolbar-card filter-panel">
                 <div class="card-body toolbar">
-                    <div class="toolbar-left">
+                    <div class="toolbar-left filter-panel-grid">
                         <select id="filter-status" class="form-select">
                             <option value="">全部状态</option>
                             <option value="active">活跃</option>
@@ -125,7 +125,7 @@
                         <input type="text" id="search-input" class="form-input" placeholder="🔍 搜索邮箱..." style="min-width: 200px;">
                     </div>
 
-                    <div class="toolbar-right">
+                    <div class="toolbar-right filter-panel-actions">
                         <button class="btn btn-ghost" id="refresh-btn" title="刷新">
                             🔄 刷新
                         </button>
@@ -201,12 +201,12 @@
                     </div>
 
                     <!-- 分页 -->
-                    <div class="pagination" id="pagination">
+                    <div class="pagination pagination-panel" id="pagination">
                         <button class="btn btn-secondary btn-sm" id="prev-page" disabled>
                             ← 上一页
                         </button>
                         <span id="page-info">第 1 页 / 共 1 页</span>
-                        <div style="display: inline-flex; align-items: center; gap: 6px;">
+                        <div class="pagination-jump">
                             <input
                                 type="number"
                                 id="page-jump-input"
