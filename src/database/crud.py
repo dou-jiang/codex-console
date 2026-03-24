@@ -408,6 +408,21 @@ def get_registration_tasks(
     return query.all()
 
 
+def get_registration_tasks_by_uuids(
+    db: Session,
+    task_uuids: List[str],
+) -> List[RegistrationTask]:
+    """根据任务 UUID 列表获取任务。"""
+    if not task_uuids:
+        return []
+    return (
+        db.query(RegistrationTask)
+        .filter(RegistrationTask.task_uuid.in_(task_uuids))
+        .order_by(asc(RegistrationTask.id))
+        .all()
+    )
+
+
 def update_registration_task(
     db: Session,
     task_uuid: str,
@@ -476,6 +491,21 @@ def get_pipeline_step_runs_by_task_uuid(db: Session, task_uuid: str) -> List[Pip
     )
 
 
+def get_pipeline_step_runs_by_task_uuids(
+    db: Session,
+    task_uuids: List[str],
+) -> List[PipelineStepRun]:
+    """按任务 UUID 列表获取 Step 运行记录。"""
+    if not task_uuids:
+        return []
+    return (
+        db.query(PipelineStepRun)
+        .filter(PipelineStepRun.task_uuid.in_(task_uuids))
+        .order_by(asc(PipelineStepRun.step_order), asc(PipelineStepRun.id))
+        .all()
+    )
+
+
 def create_experiment_batch(
     db: Session,
     name: str,
@@ -526,6 +556,18 @@ def create_registration_batch_stat(
     """创建普通批量注册统计主记录"""
     row = RegistrationBatchStat(**kwargs)
     return _persist_row(db, row, commit=commit)
+
+
+def get_registration_batch_stat_by_batch_id(
+    db: Session,
+    batch_id: str,
+) -> Optional[RegistrationBatchStat]:
+    """根据运行批次 ID 获取统计快照。"""
+    return (
+        db.query(RegistrationBatchStat)
+        .filter(RegistrationBatchStat.batch_id == batch_id)
+        .first()
+    )
 
 
 def create_registration_batch_step_stat(
