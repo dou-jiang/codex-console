@@ -5,7 +5,7 @@ SQLAlchemy ORM 模型定义
 from datetime import datetime
 from typing import Optional, Dict, Any
 import json
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, Float, String, Text, Boolean, DateTime, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import relationship
@@ -178,6 +178,68 @@ class ExperimentBatch(Base):
 
     registration_tasks = relationship('RegistrationTask', back_populates='experiment_batch')
     survival_checks = relationship('AccountSurvivalCheck', back_populates='experiment_batch')
+
+
+class RegistrationBatchStat(Base):
+    """普通批量注册统计快照主表"""
+    __tablename__ = 'registration_batch_stats'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_id = Column(String(36), nullable=False, unique=True, index=True)
+    status = Column(String(20), nullable=False, index=True)
+    mode = Column(String(32), nullable=False)
+    pipeline_key = Column(String(64), nullable=False, index=True)
+    email_service_type = Column(String(50))
+    email_service_id = Column(Integer, ForeignKey('email_services.id'), index=True)
+    proxy_strategy_snapshot = Column(JSONEncodedDict)
+    config_snapshot = Column(JSONEncodedDict)
+    target_count = Column(Integer, default=0)
+    finished_count = Column(Integer, default=0)
+    success_count = Column(Integer, default=0)
+    failed_count = Column(Integer, default=0)
+    total_duration_ms = Column(Integer)
+    avg_duration_ms = Column(Float)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    email_service = relationship('EmailService')
+    step_stats = relationship('RegistrationBatchStepStat', back_populates='batch_stat', cascade='all, delete-orphan')
+    stage_stats = relationship('RegistrationBatchStageStat', back_populates='batch_stat', cascade='all, delete-orphan')
+
+
+class RegistrationBatchStepStat(Base):
+    """普通批量注册统计快照 Step 聚合表"""
+    __tablename__ = 'registration_batch_step_stats'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_stat_id = Column(Integer, ForeignKey('registration_batch_stats.id'), nullable=False, index=True)
+    step_key = Column(String(64), nullable=False, index=True)
+    step_order = Column(Integer, nullable=False)
+    sample_count = Column(Integer, default=0)
+    success_count = Column(Integer, default=0)
+    avg_duration_ms = Column(Float)
+    p50_duration_ms = Column(Integer)
+    p90_duration_ms = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    batch_stat = relationship('RegistrationBatchStat', back_populates='step_stats')
+
+
+class RegistrationBatchStageStat(Base):
+    """普通批量注册统计快照阶段聚合表"""
+    __tablename__ = 'registration_batch_stage_stats'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_stat_id = Column(Integer, ForeignKey('registration_batch_stats.id'), nullable=False, index=True)
+    stage_key = Column(String(64), nullable=False, index=True)
+    sample_count = Column(Integer, default=0)
+    avg_duration_ms = Column(Float)
+    p50_duration_ms = Column(Integer)
+    p90_duration_ms = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    batch_stat = relationship('RegistrationBatchStat', back_populates='stage_stats')
 
 
 class ProxyCheckRun(Base):

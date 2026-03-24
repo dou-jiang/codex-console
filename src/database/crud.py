@@ -15,6 +15,9 @@ from .models import (
     PipelineStepRun,
     ProxyCheckResult,
     ProxyCheckRun,
+    RegistrationBatchStageStat,
+    RegistrationBatchStat,
+    RegistrationBatchStepStat,
     RegistrationTask,
     Setting,
     Proxy,
@@ -497,6 +500,33 @@ def create_experiment_batch(
         target_count=target_count,
         notes=notes,
     )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def create_registration_batch_stat(db: Session, **kwargs) -> RegistrationBatchStat:
+    """创建普通批量注册统计主记录"""
+    row = RegistrationBatchStat(**kwargs)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def create_registration_batch_step_stat(db: Session, **kwargs) -> RegistrationBatchStepStat:
+    """创建普通批量注册 Step 统计记录"""
+    row = RegistrationBatchStepStat(**kwargs)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def create_registration_batch_stage_stat(db: Session, **kwargs) -> RegistrationBatchStageStat:
+    """创建普通批量注册阶段统计记录"""
+    row = RegistrationBatchStageStat(**kwargs)
     db.add(row)
     db.commit()
     db.refresh(row)
