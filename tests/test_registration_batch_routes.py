@@ -463,6 +463,183 @@ def test_run_batch_registration_attaches_sorted_domain_stats(route_db, fake_task
     assert [row["domain"] for row in stats] == ["yahoo.com", "gmail.com"]
 
 
+def test_run_batch_parallel_finalizes_statistics_on_completed_batch(route_db, fake_task_manager, monkeypatch):
+    task_ids = []
+    for idx in range(2):
+        task = crud.create_registration_task(route_db, task_uuid=f"stats-complete-{idx}")
+        task_ids.append(task.task_uuid)
+
+    async def fake_run_registration_task(task_uuid, *args, **kwargs):
+        crud.update_registration_task(
+            route_db,
+            task_uuid,
+            status="completed",
+            completed_at=datetime.utcnow(),
+            total_duration_ms=1200,
+        )
+
+    monkeypatch.setattr(registration_routes, "run_registration_task", fake_run_registration_task)
+
+    asyncio.run(
+        registration_routes.run_batch_registration(
+            batch_id="stats-completed-1",
+            task_uuids=task_ids,
+            email_service_type="tempmail",
+            proxy="http://proxy.local",
+            email_service_config=None,
+            email_service_id=42,
+            interval_min=3,
+            interval_max=5,
+            concurrency=2,
+            mode="parallel",
+            pipeline_key="stats_pipeline",
+        )
+    )
+
+    stat = crud.get_registration_batch_stat_by_batch_id(route_db, "stats-completed-1")
+    assert stat is not None
+    assert stat.status == "completed"
+    assert stat.mode == "parallel"
+    assert stat.pipeline_key == "stats_pipeline"
+    assert stat.email_service_type == "tempmail"
+    assert stat.email_service_id == 42
+    assert stat.target_count == len(task_ids)
+    assert stat.config_snapshot == {
+        "proxy": "http://proxy.local",
+        "interval_min": 3,
+        "interval_max": 5,
+        "concurrency": 2,
+    }
+    assert stat.started_at is not None
+    assert stat.completed_at is not None
+
+
+def test_run_batch_pipeline_finalizes_statistics_on_cancelled_batch(route_db, fake_task_manager, monkeypatch):
+    task_ids = []
+    for idx in range(2):
+        task = crud.create_registration_task(route_db, task_uuid=f"stats-cancel-{idx}")
+        task_ids.append(task.task_uuid)
+
+    monkeypatch.setattr(fake_task_manager, "is_batch_cancelled", lambda batch_id: True)
+
+    asyncio.run(
+        registration_routes.run_batch_pipeline(
+            batch_id="stats-cancelled-1",
+            task_uuids=task_ids,
+            email_service_type="tempmail",
+            proxy=None,
+            email_service_config=None,
+            email_service_id=None,
+            interval_min=1,
+            interval_max=2,
+            concurrency=1,
+            pipeline_key="cancel_pipeline",
+        )
+    )
+
+    stat = crud.get_registration_batch_stat_by_batch_id(route_db, "stats-cancelled-1")
+    assert stat is not None
+    assert stat.status == "cancelled"
+    assert stat.mode == "pipeline"
+    assert stat.pipeline_key == "cancel_pipeline"
+    assert stat.target_count == len(task_ids)
+    assert stat.finished_count == len(task_ids)
+    assert stat.config_snapshot == {
+        "proxy": None,
+        "interval_min": 1,
+        "interval_max": 2,
+        "concurrency": 1,
+    }
+
+
+def test_run_batch_parallel_finalizes_statistics_on_failed_batch(route_db, fake_task_manager, monkeypatch):
+    task_ids = []
+    for idx in range(2):
+        task = crud.create_registration_task(route_db, task_uuid=f"stats-failed-{idx}")
+        task_ids.append(task.task_uuid)
+
+    async def fake_run_registration_task(task_uuid, *args, **kwargs):
+        crud.update_registration_task(
+            route_db,
+            task_uuid,
+            status="failed",
+            completed_at=datetime.utcnow(),
+            error_message="boom",
+        )
+
+    calls = {"count": 0}
+
+    def flaky_finalize(batch_id, task_uuids):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("boom")
+        return None
+
+    monkeypatch.setattr(registration_routes, "run_registration_task", fake_run_registration_task)
+    monkeypatch.setattr(registration_routes, "_finalize_batch_domain_stats", flaky_finalize)
+
+    asyncio.run(
+        registration_routes.run_batch_parallel(
+            batch_id="stats-failed-1",
+            task_uuids=task_ids,
+            email_service_type="tempmail",
+            proxy=None,
+            email_service_config=None,
+            email_service_id=None,
+            concurrency=1,
+            interval_min=0,
+            interval_max=0,
+            pipeline_key="failed_pipeline",
+        )
+    )
+
+    stat = crud.get_registration_batch_stat_by_batch_id(route_db, "stats-failed-1")
+    assert stat is not None
+    assert stat.status == "failed"
+    assert stat.mode == "parallel"
+    assert fake_task_manager.get_batch_status("stats-failed-1")["status"] == "failed"
+
+
+def test_run_batch_parallel_finalizes_statistics_failure_does_not_override_status(route_db, fake_task_manager, monkeypatch):
+    task_ids = []
+    for idx in range(2):
+        task = crud.create_registration_task(route_db, task_uuid=f"stats-error-{idx}")
+        task_ids.append(task.task_uuid)
+
+    async def fake_run_registration_task(task_uuid, *args, **kwargs):
+        crud.update_registration_task(
+            route_db,
+            task_uuid,
+            status="completed",
+            completed_at=datetime.utcnow(),
+            total_duration_ms=900,
+        )
+
+    def exploding_finalize(*args, **kwargs):
+        raise RuntimeError("stats boom")
+
+    monkeypatch.setattr(registration_routes, "run_registration_task", fake_run_registration_task)
+    monkeypatch.setattr(registration_routes, "finalize_batch_statistics", exploding_finalize)
+
+    asyncio.run(
+        registration_routes.run_batch_registration(
+            batch_id="stats-error-1",
+            task_uuids=task_ids,
+            email_service_type="tempmail",
+            proxy=None,
+            email_service_config=None,
+            email_service_id=None,
+            interval_min=0,
+            interval_max=0,
+            concurrency=1,
+            mode="parallel",
+        )
+    )
+
+    assert fake_task_manager.get_batch_status("stats-error-1")["status"] == "completed"
+    assert crud.get_registration_batch_stat_by_batch_id(route_db, "stats-error-1") is None
+
+
 def test_run_batch_pipeline_finalizes_domain_stats_before_marking_cancelled_batch_finished(route_db, fake_task_manager, monkeypatch):
     task_ids = []
     for name in ["a", "b"]:
