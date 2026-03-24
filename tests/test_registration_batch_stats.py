@@ -8,6 +8,8 @@ from src.core.registration_batch_stats import (
     build_batch_stats_compare,
     finalize_batch_statistics,
 )
+from src.core.pipeline.steps.codexgen import build_codexgen_pipeline_definition
+from src.core.pipeline.steps.current import build_current_pipeline_definition
 from src.database import crud
 from src.database.models import Base, RegistrationBatchStat
 from src.database.session import DatabaseSessionManager
@@ -58,6 +60,12 @@ def _seed_task_and_steps(
         )
 
 
+def _live_pipeline_step_keys() -> set[str]:
+    current_keys = {step.step_key for step in build_current_pipeline_definition().steps}
+    codexgen_keys = {step.step_key for step in build_codexgen_pipeline_definition().steps}
+    return current_keys | codexgen_keys
+
+
 def test_step_stage_map_contains_approved_stage_keys():
     assert STEP_STAGE_MAP["init_auth_session"] == "signup_prepare"
     assert STEP_STAGE_MAP["send_signup_otp"] == "signup_otp"
@@ -84,6 +92,15 @@ def test_stage_mapping_explicitly_excludes_non_stage_live_steps():
     }
     assert "persist_account" not in STEP_STAGE_MAP
     assert "schedule_survival_checks" not in STEP_STAGE_MAP
+
+
+def test_live_pipeline_step_keys_are_fully_and_explicitly_accounted_for():
+    live_keys = _live_pipeline_step_keys()
+    mapped_keys = set(STEP_STAGE_MAP)
+    excluded_keys = set(EXCLUDED_STAGE_STEP_KEYS)
+
+    assert sorted(live_keys - (mapped_keys | excluded_keys)) == []
+    assert sorted((mapped_keys | excluded_keys) - live_keys) == []
 
 
 def test_finalize_batch_statistics_builds_snapshot_for_completed_batch(temp_db):
