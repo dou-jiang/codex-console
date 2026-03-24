@@ -31,6 +31,16 @@ STEP_STAGE_MAP: dict[str, str] = {
     "exchange_oauth_token": "token_exchange",
 }
 
+STAGE_ORDER: tuple[str, ...] = (
+    "signup_prepare",
+    "signup_otp",
+    "create_account",
+    "login_prepare",
+    "login_otp",
+    "token_exchange",
+)
+_STAGE_ORDER_INDEX: dict[str, int] = {key: index for index, key in enumerate(STAGE_ORDER)}
+
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -138,7 +148,7 @@ def _build_stage_stats(step_rows: list[PipelineStepRun]) -> list[dict[str, Any]]
                 "p90_duration_ms": _percentile(durations, 0.90),
             }
         )
-    return sorted(records, key=lambda item: str(item["stage_key"]))
+    return sorted(records, key=lambda item: _stage_sort_key(str(item["stage_key"])))
 
 
 def _batch_stat_to_dict(stat: RegistrationBatchStat) -> dict[str, Any]:
@@ -213,7 +223,7 @@ def _diff_stage_stats(
     right_map = {str(row.stage_key): row for row in right_rows}
 
     result: list[dict[str, Any]] = []
-    for stage_key in sorted(set(left_map) | set(right_map)):
+    for stage_key in sorted(set(left_map) | set(right_map), key=_stage_sort_key):
         left_row = left_map.get(stage_key)
         right_row = right_map.get(stage_key)
         left_avg = left_row.avg_duration_ms if left_row else None
@@ -269,6 +279,10 @@ def _step_sort_order(left: RegistrationBatchStepStat | None, right: Registration
         if row is not None and row.step_order is not None:
             return int(row.step_order)
     return 9999
+
+
+def _stage_sort_key(stage_key: str) -> tuple[int, str]:
+    return (_STAGE_ORDER_INDEX.get(stage_key, len(STAGE_ORDER)), stage_key)
 
 
 def _success_rate(stat: RegistrationBatchStat) -> float:
