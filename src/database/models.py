@@ -204,7 +204,12 @@ class RegistrationBatchStat(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     email_service = relationship('EmailService')
-    step_stats = relationship('RegistrationBatchStepStat', back_populates='batch_stat', cascade='all, delete-orphan')
+    step_stats = relationship(
+        'RegistrationBatchStepStat',
+        back_populates='batch_stat',
+        cascade='all, delete-orphan',
+        order_by=lambda: (RegistrationBatchStepStat.step_order, RegistrationBatchStepStat.id),
+    )
     stage_stats = relationship('RegistrationBatchStageStat', back_populates='batch_stat', cascade='all, delete-orphan')
 
 

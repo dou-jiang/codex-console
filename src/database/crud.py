@@ -506,31 +506,48 @@ def create_experiment_batch(
     return row
 
 
-def create_registration_batch_stat(db: Session, **kwargs) -> RegistrationBatchStat:
+def _persist_row(db: Session, row: Any, *, commit: bool) -> Any:
+    """持久化 ORM 行并支持可选提交。"""
+    db.add(row)
+    if commit:
+        db.commit()
+        db.refresh(row)
+    else:
+        db.flush()
+    return row
+
+
+def create_registration_batch_stat(
+    db: Session,
+    *,
+    commit: bool = True,
+    **kwargs,
+) -> RegistrationBatchStat:
     """创建普通批量注册统计主记录"""
     row = RegistrationBatchStat(**kwargs)
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
+    return _persist_row(db, row, commit=commit)
 
 
-def create_registration_batch_step_stat(db: Session, **kwargs) -> RegistrationBatchStepStat:
+def create_registration_batch_step_stat(
+    db: Session,
+    *,
+    commit: bool = True,
+    **kwargs,
+) -> RegistrationBatchStepStat:
     """创建普通批量注册 Step 统计记录"""
     row = RegistrationBatchStepStat(**kwargs)
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
+    return _persist_row(db, row, commit=commit)
 
 
-def create_registration_batch_stage_stat(db: Session, **kwargs) -> RegistrationBatchStageStat:
+def create_registration_batch_stage_stat(
+    db: Session,
+    *,
+    commit: bool = True,
+    **kwargs,
+) -> RegistrationBatchStageStat:
     """创建普通批量注册阶段统计记录"""
     row = RegistrationBatchStageStat(**kwargs)
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
+    return _persist_row(db, row, commit=commit)
 
 
 def create_proxy_check_run(
