@@ -16,6 +16,7 @@ from ...database import crud
 from ...database.session import get_db
 from ...database.models import RegistrationTask, Proxy
 from ...core.registration_batch_metrics import apply_task_outcome, build_domain_stats
+from ...core.registration_batch_stats import finalize_batch_statistics
 from ...core.registration_job import run_registration_job
 from ...services import EmailServiceType
 from ..task_manager import task_manager
@@ -487,6 +488,7 @@ def _init_batch_state(
     *,
     is_unlimited: bool = False,
     total: Optional[int] = None,
+    statistics_context: Optional[dict] = None,
 ):
     """初始化批量任务内存状态"""
     computed_total = 0 if is_unlimited else (total if total is not None else len(task_uuids))
@@ -514,6 +516,7 @@ def _init_batch_state(
         "max_consecutive_failures": 10,
         "stop_reason": None,
         "domain_stats": [],
+        "statistics_context": statistics_context,
     }
 
 
@@ -547,6 +550,54 @@ def _finalize_batch_domain_stats(batch_id: str, task_uuids: List[str]) -> None:
         batch_tasks[batch_id]["domain_stats"] = stats
 
     task_manager.update_batch_status(batch_id, domain_stats=stats)
+
+
+def _build_batch_statistics_context(
+    *,
+    batch_id: str,
+    task_uuids: List[str],
+    mode: str,
+    pipeline_key: Optional[str],
+    email_service_type: str,
+    email_service_id: Optional[int],
+    proxy: Optional[str],
+    interval_min: Optional[int],
+    interval_max: Optional[int],
+    concurrency: int,
+) -> dict:
+    return {
+        "batch_id": batch_id,
+        "mode": mode,
+        "pipeline_key": pipeline_key or "current_pipeline",
+        "email_service_type": email_service_type,
+        "email_service_id": email_service_id,
+        "config_snapshot": {
+            "proxy": proxy,
+            "interval_min": interval_min,
+            "interval_max": interval_max,
+            "concurrency": concurrency,
+        },
+        "started_at": datetime.utcnow(),
+        "task_uuids": list(task_uuids),
+        "target_count": len(task_uuids),
+    }
+
+
+def _finalize_ordinary_batch_statistics(*, batch_id: str, status: str) -> None:
+    context = batch_tasks.get(batch_id, {}).get("statistics_context")
+    if not context:
+        logger.warning("Batch %s missing statistics context; skipping stats finalization.", batch_id)
+        return
+
+    payload = dict(context)
+    payload["status"] = status
+    payload["completed_at"] = datetime.utcnow()
+
+    with get_db() as db:
+        try:
+            finalize_batch_statistics(db, batch_context=payload)
+        except Exception:
+            logger.exception("Failed to finalize batch statistics for batch %s", batch_id)
 
 
 async def run_unlimited_batch_registration(
@@ -677,6 +728,8 @@ async def run_batch_parallel(
     email_service_config: Optional[dict],
     email_service_id: Optional[int],
     concurrency: int,
+    interval_min: int = 0,
+    interval_max: int = 0,
     auto_upload_cpa: bool = False,
     cpa_service_ids: List[int] = None,
     auto_upload_sub2api: bool = False,
@@ -688,7 +741,19 @@ async def run_batch_parallel(
     """
     并行模式：所有任务同时提交，Semaphore 控制最大并发数
     """
-    _init_batch_state(batch_id, task_uuids)
+    statistics_context = _build_batch_statistics_context(
+        batch_id=batch_id,
+        task_uuids=task_uuids,
+        mode="parallel",
+        pipeline_key=pipeline_key,
+        email_service_type=email_service_type,
+        email_service_id=email_service_id,
+        proxy=proxy,
+        interval_min=interval_min,
+        interval_max=interval_max,
+        concurrency=concurrency,
+    )
+    _init_batch_state(batch_id, task_uuids, statistics_context=statistics_context)
     add_batch_log, update_batch_status = _make_batch_helpers(batch_id)
     semaphore = asyncio.Semaphore(concurrency)
     counter_lock = asyncio.Lock()
@@ -726,13 +791,16 @@ async def run_batch_parallel(
         _finalize_batch_domain_stats(batch_id, task_uuids)
         if not task_manager.is_batch_cancelled(batch_id):
             add_batch_log(f"[完成] 批量任务完成！成功: {batch_tasks[batch_id]['success']}, 失败: {batch_tasks[batch_id]['failed']}")
-            update_batch_status(finished=True, status="completed")
+            terminal_status = "completed"
         else:
-            update_batch_status(finished=True, status="cancelled")
+            terminal_status = "cancelled"
+        _finalize_ordinary_batch_statistics(batch_id=batch_id, status=terminal_status)
+        update_batch_status(finished=True, status=terminal_status)
     except Exception as e:
         logger.error(f"批量任务 {batch_id} 异常: {e}")
         add_batch_log(f"[错误] 批量任务异常: {str(e)}")
         _finalize_batch_domain_stats(batch_id, task_uuids)
+        _finalize_ordinary_batch_statistics(batch_id=batch_id, status="failed")
         update_batch_status(finished=True, status="failed")
     finally:
         batch_tasks[batch_id]["finished"] = True
@@ -759,7 +827,19 @@ async def run_batch_pipeline(
     """
     流水线模式：每隔 interval 秒启动一个新任务，Semaphore 限制最大并发数
     """
-    _init_batch_state(batch_id, task_uuids)
+    statistics_context = _build_batch_statistics_context(
+        batch_id=batch_id,
+        task_uuids=task_uuids,
+        mode="pipeline",
+        pipeline_key=pipeline_key,
+        email_service_type=email_service_type,
+        email_service_id=email_service_id,
+        proxy=proxy,
+        interval_min=interval_min,
+        interval_max=interval_max,
+        concurrency=concurrency,
+    )
+    _init_batch_state(batch_id, task_uuids, statistics_context=statistics_context)
     add_batch_log, update_batch_status = _make_batch_helpers(batch_id)
     semaphore = asyncio.Semaphore(concurrency)
     counter_lock = asyncio.Lock()
@@ -822,14 +902,17 @@ async def run_batch_pipeline(
         _finalize_batch_domain_stats(batch_id, task_uuids)
 
         if task_manager.is_batch_cancelled(batch_id) or batch_tasks[batch_id]["cancelled"]:
-            update_batch_status(finished=True, status="cancelled")
+            terminal_status = "cancelled"
         else:
             add_batch_log(f"[完成] 批量任务完成！成功: {batch_tasks[batch_id]['success']}, 失败: {batch_tasks[batch_id]['failed']}")
-            update_batch_status(finished=True, status="completed")
+            terminal_status = "completed"
+        _finalize_ordinary_batch_statistics(batch_id=batch_id, status=terminal_status)
+        update_batch_status(finished=True, status=terminal_status)
     except Exception as e:
         logger.error(f"批量任务 {batch_id} 异常: {e}")
         add_batch_log(f"[错误] 批量任务异常: {str(e)}")
         _finalize_batch_domain_stats(batch_id, task_uuids)
+        _finalize_ordinary_batch_statistics(batch_id=batch_id, status="failed")
         update_batch_status(finished=True, status="failed")
     finally:
         batch_tasks[batch_id]["finished"] = True
@@ -859,6 +942,8 @@ async def run_batch_registration(
         await run_batch_parallel(
             batch_id, task_uuids, email_service_type, proxy,
             email_service_config, email_service_id, concurrency,
+            interval_min=interval_min,
+            interval_max=interval_max,
             auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids,
             auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids,
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
