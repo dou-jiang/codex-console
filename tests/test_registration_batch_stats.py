@@ -161,6 +161,44 @@ def test_finalize_batch_statistics_keeps_cancelled_batch_snapshot(temp_db):
     assert stat.failed_count == 0
 
 
+def test_finalize_batch_statistics_stage_stats_follow_approved_order(temp_db):
+    _seed_task_and_steps(
+        temp_db,
+        task_uuid="task-order-1",
+        status="completed",
+        total_duration_ms=2000,
+        step_rows=[
+            {"step_key": "validate_login_otp", "step_order": 11, "duration_ms": 80},
+            {"step_key": "create_account", "step_order": 7, "duration_ms": 120},
+            {"step_key": "create_email", "step_order": 1, "duration_ms": 100},
+            {"step_key": "send_signup_otp", "step_order": 4, "duration_ms": 90},
+            {"step_key": "exchange_oauth_token", "step_order": 14, "duration_ms": 60},
+            {"step_key": "submit_login_password", "step_order": 10, "duration_ms": 110},
+        ],
+    )
+
+    stat = finalize_batch_statistics(
+        temp_db,
+        batch_context={
+            "batch_id": "batch-stage-order",
+            "status": "completed",
+            "mode": "pipeline",
+            "pipeline_key": "current_pipeline",
+            "target_count": 1,
+            "task_uuids": ["task-order-1"],
+        },
+    )
+
+    assert [item.stage_key for item in stat.stage_stats] == [
+        "signup_prepare",
+        "signup_otp",
+        "create_account",
+        "login_prepare",
+        "login_otp",
+        "token_exchange",
+    ]
+
+
 def test_finalize_batch_statistics_is_idempotent_by_batch_id(temp_db):
     _seed_task_and_steps(
         temp_db,
@@ -287,3 +325,68 @@ def test_build_batch_stats_compare_aligns_missing_steps_and_stages(temp_db):
 
     assert compare["summary_diff"]["success_count"] == -1
     assert compare["summary_diff"]["avg_duration_ms"] == 500.0
+
+
+def test_build_batch_stats_compare_stage_diffs_follow_approved_order(temp_db):
+    left = crud.create_registration_batch_stat(
+        temp_db,
+        batch_id="left-ordered",
+        status="completed",
+        mode="pipeline",
+        pipeline_key="current_pipeline",
+        target_count=1,
+        finished_count=1,
+        success_count=1,
+        failed_count=0,
+        total_duration_ms=1000,
+        avg_duration_ms=1000,
+    )
+    right = crud.create_registration_batch_stat(
+        temp_db,
+        batch_id="right-ordered",
+        status="completed",
+        mode="pipeline",
+        pipeline_key="current_pipeline",
+        target_count=1,
+        finished_count=1,
+        success_count=1,
+        failed_count=0,
+        total_duration_ms=1000,
+        avg_duration_ms=1000,
+    )
+
+    crud.create_registration_batch_stage_stat(
+        temp_db,
+        batch_stat_id=left.id,
+        stage_key="token_exchange",
+        sample_count=1,
+        avg_duration_ms=30,
+        p50_duration_ms=30,
+        p90_duration_ms=30,
+    )
+    crud.create_registration_batch_stage_stat(
+        temp_db,
+        batch_stat_id=left.id,
+        stage_key="signup_prepare",
+        sample_count=1,
+        avg_duration_ms=10,
+        p50_duration_ms=10,
+        p90_duration_ms=10,
+    )
+    crud.create_registration_batch_stage_stat(
+        temp_db,
+        batch_stat_id=right.id,
+        stage_key="login_prepare",
+        sample_count=1,
+        avg_duration_ms=20,
+        p50_duration_ms=20,
+        p90_duration_ms=20,
+    )
+
+    compare = build_batch_stats_compare(left, right)
+
+    assert [item["stage_key"] for item in compare["stage_diffs"]] == [
+        "signup_prepare",
+        "login_prepare",
+        "token_exchange",
+    ]
