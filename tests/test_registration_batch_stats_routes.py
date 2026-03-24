@@ -54,6 +54,7 @@ def _create_batch_stat(
     batch_id: str,
     status: str = "completed",
     pipeline_key: str = "current_pipeline",
+    started_at: datetime | None = None,
     created_at: datetime | None = None,
 ):
     return crud.create_registration_batch_stat(
@@ -68,6 +69,7 @@ def _create_batch_stat(
         failed_count=1,
         total_duration_ms=900,
         avg_duration_ms=300.0,
+        started_at=started_at,
         created_at=created_at,
     )
 
@@ -76,12 +78,14 @@ def test_list_batch_stats_orders_newest_first(client, route_db):
     newest = _create_batch_stat(
         route_db,
         batch_id="batch-new",
-        created_at=datetime(2026, 1, 2, 10, 0, 0),
+        started_at=datetime(2026, 1, 3, 8, 0, 0),
+        created_at=datetime(2026, 1, 1, 9, 0, 0),
     )
     oldest = _create_batch_stat(
         route_db,
         batch_id="batch-old",
-        created_at=datetime(2026, 1, 1, 9, 0, 0),
+        started_at=datetime(2026, 1, 2, 9, 0, 0),
+        created_at=datetime(2026, 1, 4, 9, 0, 0),
     )
 
     response = client.get("/api/registration/batch-stats?limit=10&offset=0")
@@ -90,6 +94,12 @@ def test_list_batch_stats_orders_newest_first(client, route_db):
 
     assert body["total"] == 2
     assert [item["id"] for item in body["items"]] == [newest.id, oldest.id]
+
+    paged = client.get("/api/registration/batch-stats?limit=1&offset=1")
+    assert paged.status_code == 200
+    paged_body = paged.json()
+    assert paged_body["total"] == 2
+    assert [item["id"] for item in paged_body["items"]] == [oldest.id]
 
 
 def test_list_batch_stats_filters_by_status_and_pipeline(client, route_db):
