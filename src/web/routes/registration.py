@@ -737,22 +737,25 @@ async def run_batch_parallel(
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
     pipeline_key: Optional[str] = None,
+    enable_stats_finalization: bool = True,
 ):
     """
     并行模式：所有任务同时提交，Semaphore 控制最大并发数
     """
-    statistics_context = _build_batch_statistics_context(
-        batch_id=batch_id,
-        task_uuids=task_uuids,
-        mode="parallel",
-        pipeline_key=pipeline_key,
-        email_service_type=email_service_type,
-        email_service_id=email_service_id,
-        proxy=proxy,
-        interval_min=interval_min,
-        interval_max=interval_max,
-        concurrency=concurrency,
-    )
+    statistics_context = None
+    if enable_stats_finalization:
+        statistics_context = _build_batch_statistics_context(
+            batch_id=batch_id,
+            task_uuids=task_uuids,
+            mode="parallel",
+            pipeline_key=pipeline_key,
+            email_service_type=email_service_type,
+            email_service_id=email_service_id,
+            proxy=proxy,
+            interval_min=interval_min,
+            interval_max=interval_max,
+            concurrency=concurrency,
+        )
     _init_batch_state(batch_id, task_uuids, statistics_context=statistics_context)
     add_batch_log, update_batch_status = _make_batch_helpers(batch_id)
     semaphore = asyncio.Semaphore(concurrency)
@@ -794,13 +797,15 @@ async def run_batch_parallel(
             terminal_status = "completed"
         else:
             terminal_status = "cancelled"
-        _finalize_ordinary_batch_statistics(batch_id=batch_id, status=terminal_status)
+        if enable_stats_finalization:
+            _finalize_ordinary_batch_statistics(batch_id=batch_id, status=terminal_status)
         update_batch_status(finished=True, status=terminal_status)
     except Exception as e:
         logger.error(f"批量任务 {batch_id} 异常: {e}")
         add_batch_log(f"[错误] 批量任务异常: {str(e)}")
         _finalize_batch_domain_stats(batch_id, task_uuids)
-        _finalize_ordinary_batch_statistics(batch_id=batch_id, status="failed")
+        if enable_stats_finalization:
+            _finalize_ordinary_batch_statistics(batch_id=batch_id, status="failed")
         update_batch_status(finished=True, status="failed")
     finally:
         batch_tasks[batch_id]["finished"] = True
@@ -823,22 +828,25 @@ async def run_batch_pipeline(
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
     pipeline_key: Optional[str] = None,
+    enable_stats_finalization: bool = True,
 ):
     """
     流水线模式：每隔 interval 秒启动一个新任务，Semaphore 限制最大并发数
     """
-    statistics_context = _build_batch_statistics_context(
-        batch_id=batch_id,
-        task_uuids=task_uuids,
-        mode="pipeline",
-        pipeline_key=pipeline_key,
-        email_service_type=email_service_type,
-        email_service_id=email_service_id,
-        proxy=proxy,
-        interval_min=interval_min,
-        interval_max=interval_max,
-        concurrency=concurrency,
-    )
+    statistics_context = None
+    if enable_stats_finalization:
+        statistics_context = _build_batch_statistics_context(
+            batch_id=batch_id,
+            task_uuids=task_uuids,
+            mode="pipeline",
+            pipeline_key=pipeline_key,
+            email_service_type=email_service_type,
+            email_service_id=email_service_id,
+            proxy=proxy,
+            interval_min=interval_min,
+            interval_max=interval_max,
+            concurrency=concurrency,
+        )
     _init_batch_state(batch_id, task_uuids, statistics_context=statistics_context)
     add_batch_log, update_batch_status = _make_batch_helpers(batch_id)
     semaphore = asyncio.Semaphore(concurrency)
@@ -906,13 +914,15 @@ async def run_batch_pipeline(
         else:
             add_batch_log(f"[完成] 批量任务完成！成功: {batch_tasks[batch_id]['success']}, 失败: {batch_tasks[batch_id]['failed']}")
             terminal_status = "completed"
-        _finalize_ordinary_batch_statistics(batch_id=batch_id, status=terminal_status)
+        if enable_stats_finalization:
+            _finalize_ordinary_batch_statistics(batch_id=batch_id, status=terminal_status)
         update_batch_status(finished=True, status=terminal_status)
     except Exception as e:
         logger.error(f"批量任务 {batch_id} 异常: {e}")
         add_batch_log(f"[错误] 批量任务异常: {str(e)}")
         _finalize_batch_domain_stats(batch_id, task_uuids)
-        _finalize_ordinary_batch_statistics(batch_id=batch_id, status="failed")
+        if enable_stats_finalization:
+            _finalize_ordinary_batch_statistics(batch_id=batch_id, status="failed")
         update_batch_status(finished=True, status="failed")
     finally:
         batch_tasks[batch_id]["finished"] = True
@@ -936,6 +946,7 @@ async def run_batch_registration(
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
     pipeline_key: Optional[str] = None,
+    enable_stats_finalization: bool = True,
 ):
     """根据 mode 分发到并行或流水线执行"""
     if mode == "parallel":
@@ -948,6 +959,7 @@ async def run_batch_registration(
             auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids,
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
             pipeline_key=pipeline_key,
+            enable_stats_finalization=enable_stats_finalization,
         )
     else:
         await run_batch_pipeline(
@@ -958,6 +970,7 @@ async def run_batch_registration(
             auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids,
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
             pipeline_key=pipeline_key,
+            enable_stats_finalization=enable_stats_finalization,
         )
 
 
@@ -1579,6 +1592,7 @@ async def run_outlook_batch_registration(
         sub2api_service_ids=sub2api_service_ids,
         auto_upload_tm=auto_upload_tm,
         tm_service_ids=tm_service_ids,
+        enable_stats_finalization=False,
     )
 
 
