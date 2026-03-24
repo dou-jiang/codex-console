@@ -17,18 +17,26 @@ from src.database.models import (
 
 STEP_STAGE_MAP: dict[str, str] = {
     "get_proxy_ip": "signup_prepare",
+    "check_ip_location": "signup_prepare",
     "create_email": "signup_prepare",
+    "init_auth_session": "signup_prepare",
+    "prepare_authorize_flow": "signup_prepare",
+    "submit_signup_email": "signup_prepare",
+    "register_password": "signup_prepare",
     "init_signup_session": "signup_prepare",
     "send_signup_otp": "signup_otp",
     "wait_signup_otp": "signup_otp",
     "validate_signup_otp": "signup_otp",
     "create_account": "create_account",
+    "create_account_profile": "create_account",
+    "prepare_token_acquisition": "login_prepare",
     "init_login_session": "login_prepare",
     "submit_login_email": "login_prepare",
     "submit_login_password": "login_prepare",
     "wait_login_otp": "login_otp",
     "validate_login_otp": "login_otp",
     "select_workspace": "token_exchange",
+    "resolve_consent_and_workspace": "token_exchange",
     "exchange_oauth_token": "token_exchange",
 }
 
