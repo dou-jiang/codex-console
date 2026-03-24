@@ -822,3 +822,35 @@ def test_get_outlook_batch_status_includes_domain_stats_if_present(batch_state):
     result = asyncio.run(registration_routes.get_outlook_batch_status("outlook-1"))
 
     assert result["domain_stats"] == [{"domain": "gmail.com", "total": 2, "success": 1, "failed": 1}]
+
+
+def test_run_outlook_batch_registration_does_not_finalize_ordinary_batch_stats(route_db, fake_task_manager, monkeypatch):
+    service_ids = [11, 12]
+    monkeypatch.setattr(fake_task_manager, "get_loop", lambda: None, raising=False)
+    monkeypatch.setattr(fake_task_manager, "set_loop", lambda loop: None, raising=False)
+
+    async def fake_run_registration_task(task_uuid, *args, **kwargs):
+        crud.update_registration_task(
+            route_db,
+            task_uuid,
+            status="completed",
+            completed_at=datetime.utcnow(),
+            total_duration_ms=500,
+        )
+
+    monkeypatch.setattr(registration_routes, "run_registration_task", fake_run_registration_task)
+
+    asyncio.run(
+        registration_routes.run_outlook_batch_registration(
+            batch_id="outlook-no-stats",
+            service_ids=service_ids,
+            skip_registered=False,
+            proxy=None,
+            interval_min=0,
+            interval_max=0,
+            concurrency=1,
+            mode="parallel",
+        )
+    )
+
+    assert crud.get_registration_batch_stat_by_batch_id(route_db, "outlook-no-stats") is None
