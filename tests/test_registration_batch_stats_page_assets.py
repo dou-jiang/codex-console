@@ -93,3 +93,24 @@ def test_registration_batch_stats_script_prevents_over_selection():
     assert result["toastWarnings"] == ["最多只能选择 2 个批次"]
     assert result["selectedIds"] == [1, 2]
     assert result["thirdChecked"] is False
+
+
+def test_registration_batch_stats_script_ignores_stale_detail_response():
+    result = run_registration_batch_stats_js_scenario("stale_detail_race")
+
+    assert "已选择两个批次" in result["detailPlaceholder"]
+    assert "已选择两个批次" in result["detailHtmlAfter"]
+    assert "batch-001" not in result["detailHtmlAfter"]
+    assert "batch-002" in result["compareHtmlAfter"]
+    assert result["toastWarnings"] == []
+    assert result["toastErrors"] == []
+
+
+def test_registration_batch_stats_script_clears_compare_on_two_to_one_transition():
+    result = run_registration_batch_stats_js_scenario("compare_to_detail_transition")
+
+    assert "请选择两个批次" in result["compareHtmlImmediate"]
+    assert "请选择两个批次" in result["compareHtmlFinal"]
+    assert "batch-001" in result["detailHtmlFinal"]
+    assert result["toastWarnings"] == []
+    assert result["toastErrors"] == []
