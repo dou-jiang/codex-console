@@ -53,7 +53,7 @@ def finalize_batch_statistics(db: Session, *, batch_context: dict[str, Any]) -> 
 
     existing = crud.get_registration_batch_stat_by_batch_id(db, batch_id)
     if existing is not None:
-        return existing
+        return _sort_stat_children(existing)
 
     task_uuids = [str(item) for item in batch_context.get("task_uuids") or []]
     tasks = crud.get_registration_tasks_by_uuids(db, task_uuids)
@@ -94,12 +94,12 @@ def finalize_batch_statistics(db: Session, *, batch_context: dict[str, Any]) -> 
 
         db.commit()
         db.refresh(stat)
-        return stat
+        return _sort_stat_children(stat)
     except IntegrityError:
         db.rollback()
         existing_after_conflict = crud.get_registration_batch_stat_by_batch_id(db, batch_id)
         if existing_after_conflict is not None:
-            return existing_after_conflict
+            return _sort_stat_children(existing_after_conflict)
         raise
 
 
@@ -288,14 +288,29 @@ def _stage_side_payload(row: RegistrationBatchStageStat | None) -> dict[str, Any
 
 
 def _step_sort_order(left: RegistrationBatchStepStat | None, right: RegistrationBatchStepStat | None) -> int:
-    for row in (left, right):
-        if row is not None and row.step_order is not None:
-            return int(row.step_order)
+    orders = [
+        int(row.step_order)
+        for row in (left, right)
+        if row is not None and row.step_order is not None
+    ]
+    if orders:
+        return min(orders)
     return 9999
 
 
 def _stage_sort_key(stage_key: str) -> tuple[int, str]:
     return (_STAGE_ORDER_INDEX.get(stage_key, len(STAGE_ORDER)), stage_key)
+
+
+def _sort_stat_children(stat: RegistrationBatchStat) -> RegistrationBatchStat:
+    stat.step_stats.sort(
+        key=lambda row: (
+            int(row.step_order) if row.step_order is not None else 9999,
+            str(row.step_key),
+        )
+    )
+    stat.stage_stats.sort(key=lambda row: _stage_sort_key(str(row.stage_key)))
+    return stat
 
 
 def _success_rate(stat: RegistrationBatchStat) -> float:

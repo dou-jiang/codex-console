@@ -240,6 +240,56 @@ def test_finalize_batch_statistics_stage_aggregates_per_task_not_per_step_row(te
     assert signup_prepare.p90_duration_ms == 390
 
 
+def test_finalize_batch_statistics_returns_stage_stats_in_approved_order_after_refresh(temp_db, monkeypatch):
+    _seed_task_and_steps(
+        temp_db,
+        task_uuid="task-stage-refresh-1",
+        status="completed",
+        total_duration_ms=1000,
+        step_rows=[
+            {"step_key": "create_email", "step_order": 1, "duration_ms": 100},
+            {"step_key": "exchange_oauth_token", "step_order": 14, "duration_ms": 200},
+        ],
+    )
+
+    def fake_build_stage_stats(_step_rows):
+        return [
+            {
+                "stage_key": "token_exchange",
+                "sample_count": 1,
+                "avg_duration_ms": 200.0,
+                "p50_duration_ms": 200,
+                "p90_duration_ms": 200,
+            },
+            {
+                "stage_key": "signup_prepare",
+                "sample_count": 1,
+                "avg_duration_ms": 100.0,
+                "p50_duration_ms": 100,
+                "p90_duration_ms": 100,
+            },
+        ]
+
+    monkeypatch.setattr("src.core.registration_batch_stats._build_stage_stats", fake_build_stage_stats)
+
+    stat = finalize_batch_statistics(
+        temp_db,
+        batch_context={
+            "batch_id": "batch-stage-refresh-order",
+            "status": "completed",
+            "mode": "pipeline",
+            "pipeline_key": "current_pipeline",
+            "target_count": 1,
+            "task_uuids": ["task-stage-refresh-1"],
+        },
+    )
+
+    assert [item.stage_key for item in stat.stage_stats] == [
+        "signup_prepare",
+        "token_exchange",
+    ]
+
+
 def test_finalize_batch_statistics_is_idempotent_by_batch_id(temp_db):
     _seed_task_and_steps(
         temp_db,
@@ -486,4 +536,86 @@ def test_build_batch_stats_compare_stage_diffs_follow_approved_order(temp_db):
         "signup_prepare",
         "login_prepare",
         "token_exchange",
+    ]
+
+
+def test_build_batch_stats_compare_step_ordering_is_stable_when_left_right_swap(temp_db):
+    left = crud.create_registration_batch_stat(
+        temp_db,
+        batch_id="left-step-order",
+        status="completed",
+        mode="pipeline",
+        pipeline_key="current_pipeline",
+        target_count=1,
+        finished_count=1,
+        success_count=1,
+        failed_count=0,
+    )
+    right = crud.create_registration_batch_stat(
+        temp_db,
+        batch_id="right-step-order",
+        status="completed",
+        mode="pipeline",
+        pipeline_key="current_pipeline",
+        target_count=1,
+        finished_count=1,
+        success_count=1,
+        failed_count=0,
+    )
+
+    crud.create_registration_batch_step_stat(
+        temp_db,
+        batch_stat_id=left.id,
+        step_key="shared_step",
+        step_order=10,
+        sample_count=1,
+        success_count=1,
+        avg_duration_ms=100,
+        p50_duration_ms=100,
+        p90_duration_ms=100,
+    )
+    crud.create_registration_batch_step_stat(
+        temp_db,
+        batch_stat_id=left.id,
+        step_key="other_step",
+        step_order=3,
+        sample_count=1,
+        success_count=1,
+        avg_duration_ms=200,
+        p50_duration_ms=200,
+        p90_duration_ms=200,
+    )
+    crud.create_registration_batch_step_stat(
+        temp_db,
+        batch_stat_id=right.id,
+        step_key="shared_step",
+        step_order=1,
+        sample_count=1,
+        success_count=1,
+        avg_duration_ms=110,
+        p50_duration_ms=110,
+        p90_duration_ms=110,
+    )
+    crud.create_registration_batch_step_stat(
+        temp_db,
+        batch_stat_id=right.id,
+        step_key="other_step",
+        step_order=3,
+        sample_count=1,
+        success_count=1,
+        avg_duration_ms=210,
+        p50_duration_ms=210,
+        p90_duration_ms=210,
+    )
+
+    compare_lr = build_batch_stats_compare(left, right)
+    compare_rl = build_batch_stats_compare(right, left)
+
+    assert [item["step_key"] for item in compare_lr["step_diffs"]] == [
+        "shared_step",
+        "other_step",
+    ]
+    assert [item["step_key"] for item in compare_rl["step_diffs"]] == [
+        "shared_step",
+        "other_step",
     ]
