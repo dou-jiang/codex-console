@@ -44,6 +44,7 @@
 - 支持批量注册、日志实时查看、基础任务管理
 - 支持 `current_pipeline` / `codexgen_pipeline` 双流水线切换与成对实验
 - 支持实验批次级别的步骤耗时对比与存活汇总看板
+- 支持普通批量注册历史统计记录、详情复盘与 A/B 对比报表
 - 支持账号存活自动巡检与手动复查（`healthy` / `warning` / `dead`）
 - 支持多种邮箱服务接码
 - 支持 SQLite 和远程 PostgreSQL
