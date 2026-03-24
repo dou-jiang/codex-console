@@ -990,7 +990,7 @@ class RegistrationEngine:
                     client_id=settings.openai_client_id,
                     session_token=result.session_token,
                     email_service=self.email_service.service_type.value,
-                    email_service_id=self.email_info.get("service_id") if self.email_info else None,
+                    email_service_id=str(self.email_info.get("service_id")) if self.email_info and self.email_info.get("service_id") is not None else None,
                     account_id=result.account_id,
                     workspace_id=result.workspace_id,
                     access_token=result.access_token,

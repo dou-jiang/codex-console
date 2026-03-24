@@ -68,6 +68,8 @@ const elements = {
     testTmServiceBtn: document.getElementById('test-tm-service-btn'),
     // 验证码设置
     emailCodeForm: document.getElementById('email-code-form'),
+    // 同步设置
+    syncSettingsForm: document.getElementById('sync-settings-form'),
     // Outlook 设置
     outlookSettingsForm: document.getElementById('outlook-settings-form'),
     // Web UI 访问控制
@@ -234,9 +236,14 @@ function initEventListeners() {
         elements.testDynamicProxyBtn.addEventListener('click', handleTestDynamicProxy);
     }
 
-    // 验证码设置
+    // 验证码配置表单
     if (elements.emailCodeForm) {
         elements.emailCodeForm.addEventListener('submit', handleSaveEmailCode);
+    }
+    
+    // 同步配置表单
+    if (elements.syncSettingsForm) {
+        elements.syncSettingsForm.addEventListener('submit', handleSaveSyncSettings);
     }
 
     // Outlook 设置
@@ -336,6 +343,13 @@ async function loadSettings() {
         if (data.email_code) {
             document.getElementById('email-code-timeout').value = data.email_code.timeout || 120;
             document.getElementById('email-code-poll-interval').value = data.email_code.poll_interval || 3;
+        }
+
+        // 同步配置
+        if (data.sync) {
+            document.getElementById('sync-enabled').checked = data.sync.enabled || false;
+            document.getElementById('sync-api-url').value = data.sync.api_url || '';
+            document.getElementById('sync-addr').value = data.sync.addr || '';
         }
 
         // 加载 Outlook 设置
@@ -508,6 +522,25 @@ async function handleSaveEmailCode(e) {
     try {
         await api.post('/settings/email-code', data);
         toast.success('验证码配置已保存');
+    } catch (error) {
+        toast.error('保存失败: ' + error.message);
+    }
+}
+
+// 保存同步配置
+async function handleSaveSyncSettings(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(e.target);
+    const data = {
+        enabled: document.getElementById('sync-enabled').checked,
+        api_url: formData.get('api_url') || 'http://localhost:48760/api/rpc',
+        addr: formData.get('addr') || 'localhost:48760'
+    };
+
+    try {
+        await api.post('/settings/sync', data);
+        toast.success('同步配置已保存');
     } catch (error) {
         toast.error('保存失败: ' + error.message);
     }

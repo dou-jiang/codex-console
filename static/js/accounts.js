@@ -105,6 +105,16 @@ function initEventListeners() {
     document.getElementById('batch-upload-cpa-item').addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadCpa(); });
     document.getElementById('batch-upload-sub2api-item').addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadSub2Api(); });
     document.getElementById('batch-upload-tm-item').addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadTm(); });
+    
+    // 同步到外部系统
+    const batchSyncItem = document.getElementById('batch-sync-item');
+    if (batchSyncItem) {
+        batchSyncItem.addEventListener('click', (e) => { 
+            e.preventDefault(); 
+            uploadMenu.classList.remove('active'); 
+            handleBatchSync(); 
+        });
+    }
 
     // 批量删除
     elements.batchDeleteBtn.addEventListener('click', handleBatchDelete);
@@ -540,6 +550,29 @@ async function handleBatchValidate() {
         toast.error('批量验证失败: ' + error.message);
     } finally {
         updateBatchButtons();
+    }
+}
+
+// 批量同步
+async function handleBatchSync() {
+    const count = getEffectiveCount();
+    if (count === 0) return;
+
+    const confirmed = await confirm(`确定要将选中的 ${count} 个账号同步到外部系统吗？\n(需要在设置中先配置好同步接口)`);
+    if (!confirmed) return;
+
+    toast.info('正在同步中，请稍候...');
+    
+    try {
+        const result = await api.post('/accounts/batch-sync', buildBatchPayload());
+        if (result.success) {
+            toast.success(`成功同步 ${result.sync_count} 个账号`);
+            loadAccounts();
+        } else {
+            toast.error(result.message || '同步失败');
+        }
+    } catch (error) {
+        toast.error('批量同步失败: ' + error.message);
     }
 }
 

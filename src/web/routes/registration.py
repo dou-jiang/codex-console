@@ -411,12 +411,14 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 # 保存到数据库
                 engine.save_to_database(result)
 
+                # 获取更新后的账户信息用于后续上传
+                from ...database.models import Account as AccountModel
+                saved_account = db.query(AccountModel).filter_by(email=result.email).first()
+
                 # 自动上传到 CPA（可多服务）
                 if auto_upload_cpa:
                     try:
                         from ...core.upload.cpa_upload import upload_to_cpa, generate_token_json
-                        from ...database.models import Account as AccountModel
-                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
                         if saved_account and saved_account.access_token:
                             token_data = generate_token_json(saved_account)
                             _cpa_ids = cpa_service_ids or []
@@ -448,8 +450,6 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 if auto_upload_sub2api:
                     try:
                         from ...core.upload.sub2api_upload import upload_to_sub2api
-                        from ...database.models import Account as AccountModel
-                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
                         if saved_account and saved_account.access_token:
                             _s2a_ids = sub2api_service_ids or []
                             if not _s2a_ids:
@@ -473,8 +473,6 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 if auto_upload_tm:
                     try:
                         from ...core.upload.team_manager_upload import upload_to_team_manager
-                        from ...database.models import Account as AccountModel
-                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
                         if saved_account and saved_account.access_token:
                             _tm_ids = tm_service_ids or []
                             if not _tm_ids:
@@ -493,6 +491,28 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                                     log_callback(f"[TM] 异常({_sid}): {_e}")
                     except Exception as tm_err:
                         log_callback(f"[TM] 上传异常: {tm_err}")
+
+                # 自动上传到本地同步服务
+                settings = get_settings()
+                if settings.sync_enabled:
+                    try:
+                        from ...core.upload.sync_upload import upload_to_sync_manager
+                        if saved_account and saved_account.access_token:
+                            log_callback(f"[SYNC] 正在同步账号到本地服务...")
+                            _ok, _msg = upload_to_sync_manager(
+                                [saved_account], 
+                                api_url=settings.sync_api_url, 
+                                addr=settings.sync_addr
+                            )
+                            if _ok:
+                                saved_account.sync_uploaded = True
+                                saved_account.sync_uploaded_at = datetime.utcnow()
+                                db.commit()
+                                log_callback(f"[SYNC] 账号同步成功")
+                            else:
+                                log_callback(f"[SYNC] 同步失败: {_msg}")
+                    except Exception as sync_err:
+                        log_callback(f"[SYNC] 同步异常: {sync_err}")
 
                 # 更新任务状态
                 crud.update_registration_task(

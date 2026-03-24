@@ -343,6 +343,26 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         is_secret=True
     ),
 
+    # 本地同步配置
+    "sync_enabled": SettingDefinition(
+        db_key="sync.enabled",
+        default_value=False,
+        category=SettingCategory.GENERAL,
+        description="是否启用本地账号同步"
+    ),
+    "sync_api_url": SettingDefinition(
+        db_key="sync.api_url",
+        default_value="http://localhost:48760/api/rpc",
+        category=SettingCategory.GENERAL,
+        description="本地同步 API 地址"
+    ),
+    "sync_addr": SettingDefinition(
+        db_key="sync.addr",
+        default_value="localhost:48760",
+        category=SettingCategory.GENERAL,
+        description="本地同步 Addr 参数"
+    ),
+
     # 验证码配置
     "email_code_timeout": SettingDefinition(
         db_key="email_code.timeout",
@@ -405,6 +425,7 @@ SETTING_TYPES: Dict[str, Type] = {
     "tempmail_max_retries": int,
     "tm_enabled": bool,
     "cpa_enabled": bool,
+    "sync_enabled": bool,
     "email_code_timeout": int,
     "email_code_poll_interval": int,
     "outlook_provider_priority": list,
@@ -688,6 +709,11 @@ class Settings(BaseModel):
     cpa_enabled: bool = False
     cpa_api_url: str = ""
     cpa_api_token: SecretStr = SecretStr("")
+
+    # 本地同步配置
+    sync_enabled: bool = False
+    sync_api_url: str = "http://localhost:48760/api/rpc"
+    sync_addr: str = "localhost:48760"
 
     # 验证码配置
     email_code_timeout: int = 120

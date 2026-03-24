@@ -109,6 +109,11 @@ async def get_all_settings():
             "timeout": settings.email_code_timeout,
             "poll_interval": settings.email_code_poll_interval,
         },
+        "sync": {
+            "enabled": settings.sync_enabled,
+            "api_url": settings.sync_api_url,
+            "addr": settings.sync_addr,
+        },
     }
 
 
@@ -272,6 +277,24 @@ async def get_database_info():
         "email_services_count": service_count,
         "tasks_count": task_count,
     }
+
+
+class SyncSettings(BaseModel):
+    """同步设置"""
+    enabled: bool = False
+    api_url: str = "http://localhost:48760/api/rpc"
+    addr: str = "localhost:48760"
+
+
+@router.post("/sync")
+async def update_sync_settings(request: SyncSettings):
+    """更新同步设置"""
+    update_settings(
+        sync_enabled=request.enabled,
+        sync_api_url=request.api_url,
+        sync_addr=request.addr
+    )
+    return {"success": True, "message": "同步设置已更新"}
 
 
 @router.post("/database/backup")

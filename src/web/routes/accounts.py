@@ -324,13 +324,57 @@ async def batch_update_accounts(request: BatchUpdateRequest):
         }
 
 
-class BatchExportRequest(BaseModel):
-    """批量导出请求"""
+class BatchActionRequest(BaseModel):
+    """批量操作基础请求"""
     ids: List[int] = []
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+
+class BatchExportRequest(BatchActionRequest):
+    """批量导出请求"""
+    pass
+
+class BatchSyncRequest(BatchActionRequest):
+    """批量同步请求"""
+    pass
+
+
+@router.post("/batch-sync")
+async def batch_sync_accounts(request: BatchSyncRequest):
+    """手动批量同步账号到外部系统"""
+    settings = get_settings()
+    if not settings.sync_enabled:
+        raise HTTPException(status_code=400, detail="未启用本地同步功能，请先在设置中开启并配置")
+        
+    with get_db() as db:
+        ids = resolve_account_ids(
+            db, request.ids, request.select_all,
+            request.status_filter, request.email_service_filter, request.search_filter
+        )
+        if not ids:
+            return {"success": True, "sync_count": 0, "message": "没有需要同步的账号"}
+            
+        accounts = db.query(Account).filter(Account.id.in_(ids)).all()
+        
+        from ...core.upload.sync_upload import upload_to_sync_manager
+        from datetime import datetime
+        
+        success, msg = upload_to_sync_manager(
+            accounts, 
+            api_url=settings.sync_api_url, 
+            addr=settings.sync_addr
+        )
+        
+        if success:
+            for acc in accounts:
+                acc.sync_uploaded = True
+                acc.sync_uploaded_at = datetime.utcnow()
+            db.commit()
+            return {"success": True, "sync_count": len(accounts), "message": "同步成功"}
+        else:
+            raise HTTPException(status_code=500, detail=f"同步失败: {msg}")
 
 
 @router.post("/export/json")

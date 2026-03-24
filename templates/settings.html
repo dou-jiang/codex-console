@@ -37,6 +37,7 @@
             <!-- 设置标签页 -->
             <div class="tabs">
                 <button class="tab-btn active" data-tab="proxy">🌐 代理设置</button>
+                <button class="tab-btn" data-tab="sync">🔄 同步设置</button>
                 <button class="tab-btn" data-tab="webui">🔒 访问控制</button>
                 <button class="tab-btn" data-tab="upload">☁️ 上传</button>
                 <button class="tab-btn" data-tab="outlook">📮 Outlook配置</button>
@@ -126,6 +127,37 @@
                                 </tbody>
                             </table>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 同步设置 -->
+            <div class="tab-content" id="sync-tab">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>本地账号同步设置</h3>
+                        <span class="hint">配置外部管理程序的同步接口，用于账号创建后自动同步</span>
+                    </div>
+                    <div class="card-body">
+                        <form id="sync-settings-form">
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="sync-enabled" name="enabled">
+                                    启用自动同步
+                                </label>
+                            </div>
+                            <div class="form-group">
+                                <label for="sync-api-url">RPC 接口地址</label>
+                                <input type="text" id="sync-api-url" name="api_url" placeholder="http://localhost:48760/api/rpc">
+                            </div>
+                            <div class="form-group">
+                                <label for="sync-addr">Addr 参数</label>
+                                <input type="text" id="sync-addr" name="addr" placeholder="localhost:48760">
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">💾 保存设置</button>
+                            </div>
+                        </form>
                     </div>
                 </div>
             </div>

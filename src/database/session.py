@@ -20,6 +20,8 @@ def _build_sqlalchemy_url(database_url: str) -> str:
         return "postgresql+psycopg://" + database_url[len("postgresql://"):]
     if database_url.startswith("postgres://"):
         return "postgresql+psycopg://" + database_url[len("postgres://"):]
+    if not database_url.startswith("sqlite://") and "://" not in database_url:
+        return f"sqlite:///{database_url}"
     return database_url
 
 
@@ -111,6 +113,8 @@ class DatabaseSessionManager:
             ("accounts", "subscription_at", "DATETIME"),
             ("accounts", "cookies", "TEXT"),
             ("proxies", "is_default", "BOOLEAN DEFAULT 0"),
+            ("accounts", "sync_uploaded", "BOOLEAN DEFAULT 0"),
+            ("accounts", "sync_uploaded_at", "DATETIME"),
         ]
 
         # 确保新表存在（create_tables 已处理，此处兜底）
