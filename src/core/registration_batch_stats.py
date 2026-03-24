@@ -66,9 +66,17 @@ def finalize_batch_statistics(db: Session, *, batch_context: dict[str, Any]) -> 
     if existing is not None:
         return _sort_stat_children(existing)
 
+    status = str(batch_context.get("status") or "")
+    if status not in TERMINAL_STATUSES:
+        raise ValueError(
+            f"finalize_batch_statistics requires terminal status, got: {status or 'missing'}"
+        )
+
     task_uuids = [str(item) for item in batch_context.get("task_uuids") or []]
     tasks = crud.get_registration_tasks_by_uuids(db, task_uuids)
     step_rows = crud.get_pipeline_step_runs_by_task_uuids(db, task_uuids)
+    step_stats = _build_step_stats(step_rows)
+    stage_stats = _build_stage_stats(step_rows)
 
     finished_tasks = [task for task in tasks if str(task.status or "") in TERMINAL_STATUSES]
     success_count = sum(1 for task in finished_tasks if task.status == "completed")
@@ -79,7 +87,7 @@ def finalize_batch_statistics(db: Session, *, batch_context: dict[str, Any]) -> 
         stat = crud.create_registration_batch_stat(
             db,
             batch_id=batch_id,
-            status=str(batch_context.get("status") or "completed"),
+            status=status,
             mode=str(batch_context.get("mode") or "pipeline"),
             pipeline_key=str(batch_context.get("pipeline_key") or "current_pipeline"),
             email_service_type=batch_context.get("email_service_type"),
@@ -97,10 +105,10 @@ def finalize_batch_statistics(db: Session, *, batch_context: dict[str, Any]) -> 
             commit=False,
         )
 
-        for item in _build_step_stats(step_rows):
+        for item in step_stats:
             crud.create_registration_batch_step_stat(db, batch_stat_id=stat.id, commit=False, **item)
 
-        for item in _build_stage_stats(step_rows):
+        for item in stage_stats:
             crud.create_registration_batch_stage_stat(db, batch_stat_id=stat.id, commit=False, **item)
 
         db.commit()
@@ -149,13 +157,20 @@ def _build_step_stats(step_rows: list[PipelineStepRun]) -> list[dict[str, Any]]:
 
 def _build_stage_stats(step_rows: list[PipelineStepRun]) -> list[dict[str, Any]]:
     grouped_by_stage_task: dict[str, dict[str, list[PipelineStepRun]]] = defaultdict(lambda: defaultdict(list))
+    unexpected_step_keys: set[str] = set()
     for row in step_rows:
         step_key = str(row.step_key)
         if step_key in EXCLUDED_STAGE_STEP_KEYS:
             continue
         stage_key = STEP_STAGE_MAP.get(step_key)
-        if stage_key:
-            grouped_by_stage_task[stage_key][str(row.task_uuid)].append(row)
+        if stage_key is None:
+            unexpected_step_keys.add(step_key)
+            continue
+        grouped_by_stage_task[stage_key][str(row.task_uuid)].append(row)
+
+    if unexpected_step_keys:
+        keys = ", ".join(sorted(unexpected_step_keys))
+        raise ValueError(f"unmapped stage step keys: {keys}")
 
     records: list[dict[str, Any]] = []
     for stage_key, task_rows_map in grouped_by_stage_task.items():
