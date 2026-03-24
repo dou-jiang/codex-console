@@ -273,6 +273,69 @@ def test_finalize_batch_statistics_keeps_cancelled_batch_snapshot(temp_db):
     assert stat.failed_count == 0
 
 
+def test_finalize_batch_statistics_rejects_missing_or_non_terminal_status_on_create(temp_db):
+    _seed_task_and_steps(
+        temp_db,
+        task_uuid="task-status-check-1",
+        status="completed",
+        total_duration_ms=500,
+        step_rows=[
+            {"step_key": "create_email", "step_order": 1, "duration_ms": 100},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="terminal status"):
+        finalize_batch_statistics(
+            temp_db,
+            batch_context={
+                "batch_id": "batch-missing-status",
+                "mode": "pipeline",
+                "pipeline_key": "current_pipeline",
+                "target_count": 1,
+                "task_uuids": ["task-status-check-1"],
+            },
+        )
+
+    with pytest.raises(ValueError, match="terminal status"):
+        finalize_batch_statistics(
+            temp_db,
+            batch_context={
+                "batch_id": "batch-non-terminal-status",
+                "status": "running",
+                "mode": "pipeline",
+                "pipeline_key": "current_pipeline",
+                "target_count": 1,
+                "task_uuids": ["task-status-check-1"],
+            },
+        )
+
+
+def test_finalize_batch_statistics_rejects_unmapped_unexcluded_stage_step_keys(temp_db):
+    _seed_task_and_steps(
+        temp_db,
+        task_uuid="task-unmapped-stage-1",
+        status="completed",
+        total_duration_ms=500,
+        step_rows=[
+            {"step_key": "create_email", "step_order": 1, "duration_ms": 100},
+            {"step_key": "totally_new_runtime_step", "step_order": 2, "duration_ms": 200},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="totally_new_runtime_step"):
+        finalize_batch_statistics(
+            temp_db,
+            batch_context={
+                "batch_id": "batch-unmapped-stage",
+                "status": "completed",
+                "mode": "pipeline",
+                "pipeline_key": "current_pipeline",
+                "target_count": 1,
+                "task_uuids": ["task-unmapped-stage-1"],
+            },
+        )
+
+
 def test_finalize_batch_statistics_stage_stats_follow_approved_order(temp_db):
     _seed_task_and_steps(
         temp_db,
