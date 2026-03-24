@@ -597,7 +597,7 @@ def list_registration_batch_stats(
     if pipeline_key:
         query = query.filter(RegistrationBatchStat.pipeline_key == pipeline_key)
     return (
-        query.order_by(desc(RegistrationBatchStat.created_at), desc(RegistrationBatchStat.id))
+        query.order_by(desc(RegistrationBatchStat.started_at), desc(RegistrationBatchStat.id))
         .offset(offset)
         .limit(limit)
         .all()
