@@ -281,7 +281,7 @@ def test_finalize_batch_statistics_stage_stats_follow_approved_order(temp_db):
         total_duration_ms=2000,
         step_rows=[
             {"step_key": "validate_login_otp", "step_order": 11, "duration_ms": 80},
-            {"step_key": "create_account", "step_order": 7, "duration_ms": 120},
+            {"step_key": "create_account_profile", "step_order": 7, "duration_ms": 120},
             {"step_key": "create_email", "step_order": 1, "duration_ms": 100},
             {"step_key": "send_signup_otp", "step_order": 4, "duration_ms": 90},
             {"step_key": "exchange_oauth_token", "step_order": 14, "duration_ms": 60},
@@ -319,7 +319,7 @@ def test_finalize_batch_statistics_stage_aggregates_per_task_not_per_step_row(te
         total_duration_ms=500,
         step_rows=[
             {"step_key": "create_email", "step_order": 1, "duration_ms": 100},
-            {"step_key": "init_signup_session", "step_order": 2, "duration_ms": 200},
+            {"step_key": "prepare_authorize_flow", "step_order": 2, "duration_ms": 200},
         ],
     )
     _seed_task_and_steps(
