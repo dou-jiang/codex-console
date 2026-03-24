@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>注册批次统计 - OpenAI 注册系统</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar">
+            <div class="nav-brand">
+                <h1>OpenAI 注册系统</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/" class="nav-link">注册</a>
+                <a href="/registration-experiments" class="nav-link">实验对比</a>
+                <a href="/registration-batch-stats" class="nav-link active">批次统计</a>
+                <a href="/accounts" class="nav-link">账号管理</a>
+                <a href="/email-services" class="nav-link">邮箱服务</a>
+                <a href="/scheduled-tasks" class="nav-link">定时任务</a>
+                <a href="/payment" class="nav-link">支付</a>
+                <a href="/settings" class="nav-link">设置</a>
+                <a href="/logout" class="nav-link">退出</a>
+            </div>
+        </nav>
+
+        <main class="main-content batch-stats-dashboard">
+            <div class="page-header">
+                <h2>注册批次统计</h2>
+                <p class="subtitle">查看批次统计明细与双批次对比</p>
+            </div>
+
+            <div class="batch-stats-layout">
+                <section class="card batch-stats-list">
+                    <div class="card-header">
+                        <h3>批次列表</h3>
+                    </div>
+                    <div class="card-body">
+                        <div id="batch-stats-list"></div>
+                    </div>
+                </section>
+
+                <section class="card batch-stats-detail">
+                    <div class="card-header">
+                        <h3>批次详情</h3>
+                    </div>
+                    <div class="card-body">
+                        <div id="batch-stats-detail"></div>
+                    </div>
+                </section>
+
+                <section class="card batch-stats-compare">
+                    <div class="card-header">
+                        <h3>批次对比</h3>
+                    </div>
+                    <div class="card-body">
+                        <div id="batch-stats-compare"></div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/static/js/registration_batch_stats.js?v={{ static_version }}"></script>
+</body>
+</html>

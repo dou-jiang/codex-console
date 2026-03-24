@@ -331,6 +331,108 @@ body {
     margin-top: var(--spacing-xs);
 }
 
+.batch-stats-dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+}
+
+.batch-stats-layout {
+    display: grid;
+    grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr);
+    gap: var(--spacing-lg);
+    align-items: start;
+}
+
+.batch-stats-list {
+    grid-row: span 2;
+}
+
+.batch-stats-detail,
+.batch-stats-compare {
+    margin-bottom: 0;
+}
+
+.batch-stats-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+}
+
+.batch-stats-meta-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.batch-stats-meta-value {
+    font-weight: 600;
+    margin-top: var(--spacing-xs);
+}
+
+.batch-stats-summary-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    margin-bottom: var(--spacing-lg);
+}
+
+.batch-stats-subsection {
+    margin-bottom: var(--spacing-lg);
+}
+
+.batch-stats-subsection h4 {
+    font-size: 0.875rem;
+    margin-bottom: var(--spacing-sm);
+    color: var(--text-secondary);
+}
+
+.batch-stats-compare-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-lg);
+}
+
+.batch-stats-compare-panel {
+    background: var(--surface-hover);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    padding: var(--spacing-md);
+}
+
+.batch-stats-compare-title {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    letter-spacing: 0.05em;
+}
+
+.batch-stats-compare-value {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-top: var(--spacing-xs);
+}
+
+.batch-stats-compare-meta {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    margin-top: var(--spacing-xs);
+}
+
+.batch-stats-compare-diff {
+    background: var(--primary-light);
+    border-color: var(--primary-light);
+}
+
+@media (max-width: 1024px) {
+    .batch-stats-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .batch-stats-list {
+        grid-row: auto;
+    }
+}
+
 /* ============================================
    卡片
    ============================================ */
