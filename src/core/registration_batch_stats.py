@@ -4,6 +4,7 @@ from collections import defaultdict
 from math import floor
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.database import crud
@@ -63,36 +64,43 @@ def finalize_batch_statistics(db: Session, *, batch_context: dict[str, Any]) -> 
     failed_count = sum(1 for task in finished_tasks if task.status == "failed")
     task_durations = [int(task.total_duration_ms) for task in finished_tasks if task.total_duration_ms is not None]
 
-    stat = crud.create_registration_batch_stat(
-        db,
-        batch_id=batch_id,
-        status=str(batch_context.get("status") or "completed"),
-        mode=str(batch_context.get("mode") or "pipeline"),
-        pipeline_key=str(batch_context.get("pipeline_key") or "current_pipeline"),
-        email_service_type=batch_context.get("email_service_type"),
-        email_service_id=batch_context.get("email_service_id"),
-        proxy_strategy_snapshot=dict(batch_context.get("proxy_strategy_snapshot") or {}),
-        config_snapshot=dict(batch_context.get("config_snapshot") or {}),
-        target_count=int(batch_context.get("target_count") or 0),
-        finished_count=len(finished_tasks),
-        success_count=success_count,
-        failed_count=failed_count,
-        total_duration_ms=sum(task_durations) if task_durations else None,
-        avg_duration_ms=_average(task_durations),
-        started_at=batch_context.get("started_at"),
-        completed_at=batch_context.get("completed_at"),
-        commit=False,
-    )
+    try:
+        stat = crud.create_registration_batch_stat(
+            db,
+            batch_id=batch_id,
+            status=str(batch_context.get("status") or "completed"),
+            mode=str(batch_context.get("mode") or "pipeline"),
+            pipeline_key=str(batch_context.get("pipeline_key") or "current_pipeline"),
+            email_service_type=batch_context.get("email_service_type"),
+            email_service_id=batch_context.get("email_service_id"),
+            proxy_strategy_snapshot=dict(batch_context.get("proxy_strategy_snapshot") or {}),
+            config_snapshot=dict(batch_context.get("config_snapshot") or {}),
+            target_count=int(batch_context.get("target_count") or 0),
+            finished_count=len(finished_tasks),
+            success_count=success_count,
+            failed_count=failed_count,
+            total_duration_ms=sum(task_durations) if task_durations else None,
+            avg_duration_ms=_average(task_durations),
+            started_at=batch_context.get("started_at"),
+            completed_at=batch_context.get("completed_at"),
+            commit=False,
+        )
 
-    for item in _build_step_stats(step_rows):
-        crud.create_registration_batch_step_stat(db, batch_stat_id=stat.id, commit=False, **item)
+        for item in _build_step_stats(step_rows):
+            crud.create_registration_batch_step_stat(db, batch_stat_id=stat.id, commit=False, **item)
 
-    for item in _build_stage_stats(step_rows):
-        crud.create_registration_batch_stage_stat(db, batch_stat_id=stat.id, commit=False, **item)
+        for item in _build_stage_stats(step_rows):
+            crud.create_registration_batch_stage_stat(db, batch_stat_id=stat.id, commit=False, **item)
 
-    db.commit()
-    db.refresh(stat)
-    return stat
+        db.commit()
+        db.refresh(stat)
+        return stat
+    except IntegrityError:
+        db.rollback()
+        existing_after_conflict = crud.get_registration_batch_stat_by_batch_id(db, batch_id)
+        if existing_after_conflict is not None:
+            return existing_after_conflict
+        raise
 
 
 def build_batch_stats_compare(left: RegistrationBatchStat, right: RegistrationBatchStat) -> dict[str, Any]:
@@ -129,23 +137,28 @@ def _build_step_stats(step_rows: list[PipelineStepRun]) -> list[dict[str, Any]]:
 
 
 def _build_stage_stats(step_rows: list[PipelineStepRun]) -> list[dict[str, Any]]:
-    grouped: dict[str, list[PipelineStepRun]] = defaultdict(list)
+    grouped_by_stage_task: dict[str, dict[str, list[PipelineStepRun]]] = defaultdict(lambda: defaultdict(list))
     for row in step_rows:
         stage_key = STEP_STAGE_MAP.get(str(row.step_key))
         if stage_key:
-            grouped[stage_key].append(row)
+            grouped_by_stage_task[stage_key][str(row.task_uuid)].append(row)
 
     records: list[dict[str, Any]] = []
-    for stage_key, rows in grouped.items():
-        completed_rows = [row for row in rows if row.status == "completed"]
-        durations = [int(row.duration_ms) for row in completed_rows if row.duration_ms is not None]
+    for stage_key, task_rows_map in grouped_by_stage_task.items():
+        task_durations: list[int] = []
+        for rows in task_rows_map.values():
+            completed_rows = [row for row in rows if row.status == "completed" and row.duration_ms is not None]
+            total_duration = sum(int(row.duration_ms) for row in completed_rows)
+            if completed_rows:
+                task_durations.append(total_duration)
+
         records.append(
             {
                 "stage_key": stage_key,
-                "sample_count": len(rows),
-                "avg_duration_ms": _average(durations),
-                "p50_duration_ms": _percentile(durations, 0.50),
-                "p90_duration_ms": _percentile(durations, 0.90),
+                "sample_count": len(task_rows_map),
+                "avg_duration_ms": _average(task_durations),
+                "p50_duration_ms": _percentile(task_durations, 0.50),
+                "p90_duration_ms": _percentile(task_durations, 0.90),
             }
         )
     return sorted(records, key=lambda item: _stage_sort_key(str(item["stage_key"])))

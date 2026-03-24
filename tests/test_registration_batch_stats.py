@@ -199,6 +199,47 @@ def test_finalize_batch_statistics_stage_stats_follow_approved_order(temp_db):
     ]
 
 
+def test_finalize_batch_statistics_stage_aggregates_per_task_not_per_step_row(temp_db):
+    _seed_task_and_steps(
+        temp_db,
+        task_uuid="task-stage-agg-1",
+        status="completed",
+        total_duration_ms=500,
+        step_rows=[
+            {"step_key": "create_email", "step_order": 1, "duration_ms": 100},
+            {"step_key": "init_signup_session", "step_order": 2, "duration_ms": 200},
+        ],
+    )
+    _seed_task_and_steps(
+        temp_db,
+        task_uuid="task-stage-agg-2",
+        status="completed",
+        total_duration_ms=900,
+        step_rows=[
+            {"step_key": "create_email", "step_order": 1, "duration_ms": 400},
+        ],
+    )
+
+    stat = finalize_batch_statistics(
+        temp_db,
+        batch_context={
+            "batch_id": "batch-stage-agg",
+            "status": "completed",
+            "mode": "pipeline",
+            "pipeline_key": "current_pipeline",
+            "target_count": 2,
+            "task_uuids": ["task-stage-agg-1", "task-stage-agg-2"],
+        },
+    )
+
+    stage_by_key = {row.stage_key: row for row in stat.stage_stats}
+    signup_prepare = stage_by_key["signup_prepare"]
+    assert signup_prepare.sample_count == 2
+    assert signup_prepare.avg_duration_ms == 350.0
+    assert signup_prepare.p50_duration_ms == 350
+    assert signup_prepare.p90_duration_ms == 390
+
+
 def test_finalize_batch_statistics_is_idempotent_by_batch_id(temp_db):
     _seed_task_and_steps(
         temp_db,
@@ -235,6 +276,62 @@ def test_finalize_batch_statistics_is_idempotent_by_batch_id(temp_db):
     assert (
         temp_db.query(RegistrationBatchStat)
         .filter(RegistrationBatchStat.batch_id == "batch-idempotent")
+        .count()
+    ) == 1
+
+
+def test_finalize_batch_statistics_returns_existing_when_insert_hits_unique_conflict(temp_db, monkeypatch):
+    _seed_task_and_steps(
+        temp_db,
+        task_uuid="task-race-1",
+        status="completed",
+        total_duration_ms=1000,
+        step_rows=[
+            {"step_key": "create_email", "step_order": 1, "duration_ms": 120},
+        ],
+    )
+
+    existing = crud.create_registration_batch_stat(
+        temp_db,
+        batch_id="batch-race",
+        status="completed",
+        mode="pipeline",
+        pipeline_key="current_pipeline",
+        target_count=1,
+        finished_count=1,
+        success_count=1,
+        failed_count=0,
+        total_duration_ms=1000,
+        avg_duration_ms=1000.0,
+    )
+
+    real_get = crud.get_registration_batch_stat_by_batch_id
+    call_count = {"value": 0}
+
+    def fake_get(db, batch_id):
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            return None
+        return real_get(db, batch_id)
+
+    monkeypatch.setattr("src.core.registration_batch_stats.crud.get_registration_batch_stat_by_batch_id", fake_get)
+
+    stat = finalize_batch_statistics(
+        temp_db,
+        batch_context={
+            "batch_id": "batch-race",
+            "status": "completed",
+            "mode": "pipeline",
+            "pipeline_key": "current_pipeline",
+            "target_count": 1,
+            "task_uuids": ["task-race-1"],
+        },
+    )
+
+    assert stat.id == existing.id
+    assert (
+        temp_db.query(RegistrationBatchStat)
+        .filter(RegistrationBatchStat.batch_id == "batch-race")
         .count()
     ) == 1
 
