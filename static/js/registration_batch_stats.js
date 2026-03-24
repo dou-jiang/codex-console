@@ -5,6 +5,7 @@ const batchStatsElements = {
 };
 
 let selectedBatchIds = [];
+let selectionVersion = 0;
 
 document.addEventListener('DOMContentLoaded', () => {
     if (!batchStatsElements.listContainer) {
@@ -101,52 +102,73 @@ async function handleBatchSelectionChange(checkbox) {
         selectedBatchIds = selectedBatchIds.filter((value) => value !== id);
     }
 
-    await updateSelectionView();
+    const token = bumpSelectionVersion();
+    const snapshot = [...selectedBatchIds];
+    await updateSelectionView(token, snapshot);
 }
 
 function getSelectedBatchIds() {
     return [...selectedBatchIds];
 }
 
-async function updateSelectionView() {
-    if (selectedBatchIds.length === 0) {
+async function updateSelectionView(token, snapshot) {
+    const activeToken = typeof token === 'number' ? token : selectionVersion;
+    const activeSnapshot = Array.isArray(snapshot) ? snapshot : [...selectedBatchIds];
+
+    if (activeSnapshot.length === 0) {
         renderBatchStatsDetail(null);
         renderBatchStatsCompare(null);
         return;
     }
 
-    if (selectedBatchIds.length === 1) {
-        await loadBatchStatsDetail(selectedBatchIds[0]);
+    if (activeSnapshot.length === 1) {
         renderBatchStatsCompare(null);
+        await loadBatchStatsDetail(activeSnapshot[0], activeToken, activeSnapshot);
         return;
     }
 
-    if (selectedBatchIds.length === 2) {
+    if (activeSnapshot.length === 2) {
         renderBatchStatsDetailPlaceholder();
-        await loadBatchStatsCompare(selectedBatchIds[0], selectedBatchIds[1]);
+        await loadBatchStatsCompare(activeSnapshot[0], activeSnapshot[1], activeToken, activeSnapshot);
     }
 }
 
-async function loadBatchStatsDetail(statId) {
+async function loadBatchStatsDetail(statId, token, snapshot) {
     if (!batchStatsElements.detailContainer) return;
+    const requestToken = typeof token === 'number' ? token : selectionVersion;
+    const expectedIds = Array.isArray(snapshot) && snapshot.length ? snapshot : [statId];
     try {
         const payload = await api.get(`/registration/batch-stats/${statId}`);
+        if (!isSelectionCurrent(requestToken, expectedIds)) {
+            return;
+        }
         renderBatchStatsDetail(payload);
     } catch (error) {
+        if (!isSelectionCurrent(requestToken, expectedIds)) {
+            return;
+        }
         toast.error(error.message || '加载批次详情失败');
         renderBatchStatsDetail(null);
     }
 }
 
-async function loadBatchStatsCompare(leftId, rightId) {
+async function loadBatchStatsCompare(leftId, rightId, token, snapshot) {
     if (!batchStatsElements.compareContainer) return;
+    const requestToken = typeof token === 'number' ? token : selectionVersion;
+    const expectedIds = Array.isArray(snapshot) && snapshot.length ? snapshot : [leftId, rightId];
     try {
         const payload = await api.post('/registration/batch-stats/compare', {
             left_id: leftId,
             right_id: rightId,
         });
+        if (!isSelectionCurrent(requestToken, expectedIds)) {
+            return;
+        }
         renderBatchStatsCompare(payload);
     } catch (error) {
+        if (!isSelectionCurrent(requestToken, expectedIds)) {
+            return;
+        }
         toast.error(error.message || '加载批次对比失败');
         renderBatchStatsCompare(null);
     }
@@ -269,6 +291,24 @@ function renderBatchStatsCompare(compare) {
     );
 
     batchStatsElements.compareContainer.innerHTML = `${summary}${stepCompare}${stageCompare}`;
+}
+
+function bumpSelectionVersion() {
+    selectionVersion += 1;
+    return selectionVersion;
+}
+
+function isSelectionCurrent(token, expectedIds) {
+    if (token !== selectionVersion) {
+        return false;
+    }
+    if (!Array.isArray(expectedIds)) {
+        return true;
+    }
+    if (expectedIds.length !== selectedBatchIds.length) {
+        return false;
+    }
+    return expectedIds.every((id) => selectedBatchIds.includes(id));
 }
 
 function renderBatchStatsTable(title, rows, keys, headers) {
