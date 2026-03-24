@@ -2,7 +2,12 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from src.core.registration_batch_stats import STEP_STAGE_MAP, build_batch_stats_compare, finalize_batch_statistics
+from src.core.registration_batch_stats import (
+    EXCLUDED_STAGE_STEP_KEYS,
+    STEP_STAGE_MAP,
+    build_batch_stats_compare,
+    finalize_batch_statistics,
+)
 from src.database import crud
 from src.database.models import Base, RegistrationBatchStat
 from src.database.session import DatabaseSessionManager
@@ -54,12 +59,12 @@ def _seed_task_and_steps(
 
 
 def test_step_stage_map_contains_approved_stage_keys():
-    assert STEP_STAGE_MAP["create_email"] == "signup_prepare"
-    assert STEP_STAGE_MAP["validate_signup_otp"] == "signup_otp"
-    assert STEP_STAGE_MAP["create_account"] == "create_account"
-    assert STEP_STAGE_MAP["submit_login_password"] == "login_prepare"
+    assert STEP_STAGE_MAP["init_auth_session"] == "signup_prepare"
+    assert STEP_STAGE_MAP["send_signup_otp"] == "signup_otp"
+    assert STEP_STAGE_MAP["create_account_profile"] == "create_account"
+    assert STEP_STAGE_MAP["prepare_token_acquisition"] == "login_prepare"
     assert STEP_STAGE_MAP["validate_login_otp"] == "login_otp"
-    assert STEP_STAGE_MAP["exchange_oauth_token"] == "token_exchange"
+    assert STEP_STAGE_MAP["resolve_consent_and_workspace"] == "token_exchange"
 
 
 def test_step_stage_map_includes_real_pipeline_step_keys():
@@ -70,6 +75,15 @@ def test_step_stage_map_includes_real_pipeline_step_keys():
     assert STEP_STAGE_MAP["create_account_profile"] == "create_account"
     assert STEP_STAGE_MAP["prepare_token_acquisition"] == "login_prepare"
     assert STEP_STAGE_MAP["resolve_consent_and_workspace"] == "token_exchange"
+
+
+def test_stage_mapping_explicitly_excludes_non_stage_live_steps():
+    assert EXCLUDED_STAGE_STEP_KEYS == {
+        "persist_account",
+        "schedule_survival_checks",
+    }
+    assert "persist_account" not in STEP_STAGE_MAP
+    assert "schedule_survival_checks" not in STEP_STAGE_MAP
 
 
 def test_finalize_batch_statistics_builds_snapshot_for_completed_batch(temp_db):
@@ -177,6 +191,40 @@ def test_finalize_batch_statistics_aggregates_real_pipeline_stage_mapping(temp_d
     assert stage_by_key["create_account"].avg_duration_ms == 200.0
     assert stage_by_key["login_prepare"].avg_duration_ms == 220.0
     assert stage_by_key["token_exchange"].avg_duration_ms == 300.0
+
+
+def test_finalize_batch_statistics_explicitly_ignores_excluded_live_steps_for_stage_stats(temp_db):
+    _seed_task_and_steps(
+        temp_db,
+        task_uuid="task-excluded-steps-1",
+        status="completed",
+        total_duration_ms=999,
+        step_rows=[
+            {"step_key": "init_auth_session", "step_order": 1, "duration_ms": 100},
+            {"step_key": "persist_account", "step_order": 99, "duration_ms": 200},
+            {"step_key": "schedule_survival_checks", "step_order": 100, "duration_ms": 300},
+        ],
+    )
+
+    stat = finalize_batch_statistics(
+        temp_db,
+        batch_context={
+            "batch_id": "batch-excluded-live-steps",
+            "status": "completed",
+            "mode": "pipeline",
+            "pipeline_key": "current_pipeline",
+            "target_count": 1,
+            "task_uuids": ["task-excluded-steps-1"],
+        },
+    )
+
+    stage_by_key = {row.stage_key: row for row in stat.stage_stats}
+    assert set(stage_by_key) == {"signup_prepare"}
+    assert stage_by_key["signup_prepare"].avg_duration_ms == 100.0
+
+    step_by_key = {row.step_key: row for row in stat.step_stats}
+    assert "persist_account" in step_by_key
+    assert "schedule_survival_checks" in step_by_key
 
 
 def test_finalize_batch_statistics_keeps_cancelled_batch_snapshot(temp_db):

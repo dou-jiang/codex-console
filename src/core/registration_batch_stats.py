@@ -40,6 +40,13 @@ STEP_STAGE_MAP: dict[str, str] = {
     "exchange_oauth_token": "token_exchange",
 }
 
+# live pipeline steps intentionally excluded from stage aggregation:
+# they are post-registration persistence/scheduling steps, not business stages.
+EXCLUDED_STAGE_STEP_KEYS: set[str] = {
+    "persist_account",
+    "schedule_survival_checks",
+}
+
 STAGE_ORDER: tuple[str, ...] = (
     "signup_prepare",
     "signup_otp",
@@ -147,7 +154,10 @@ def _build_step_stats(step_rows: list[PipelineStepRun]) -> list[dict[str, Any]]:
 def _build_stage_stats(step_rows: list[PipelineStepRun]) -> list[dict[str, Any]]:
     grouped_by_stage_task: dict[str, dict[str, list[PipelineStepRun]]] = defaultdict(lambda: defaultdict(list))
     for row in step_rows:
-        stage_key = STEP_STAGE_MAP.get(str(row.step_key))
+        step_key = str(row.step_key)
+        if step_key in EXCLUDED_STAGE_STEP_KEYS:
+            continue
+        stage_key = STEP_STAGE_MAP.get(step_key)
         if stage_key:
             grouped_by_stage_task[stage_key][str(row.task_uuid)].append(row)
 
