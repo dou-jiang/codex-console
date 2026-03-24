@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from .accounts import router as accounts_router
 from .account_survival import router as account_survival_router
 from .registration import router as registration_router
+from .registration_batch_stats import router as registration_batch_stats_router
 from .registration_experiments import router as registration_experiments_router
 from .settings import router as settings_router
 from .email import router as email_services_router
@@ -23,6 +24,11 @@ api_router = APIRouter()
 api_router.include_router(account_survival_router, prefix="/accounts", tags=["account-survival"])
 api_router.include_router(accounts_router, prefix="/accounts", tags=["accounts"])
 api_router.include_router(registration_router, prefix="/registration", tags=["registration"])
+api_router.include_router(
+    registration_batch_stats_router,
+    prefix="/registration/batch-stats",
+    tags=["registration-batch-stats"],
+)
 api_router.include_router(
     registration_experiments_router,
     prefix="/registration/experiments",

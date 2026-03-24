@@ -570,6 +570,55 @@ def get_registration_batch_stat_by_batch_id(
     )
 
 
+def get_registration_batch_stat_by_id(
+    db: Session,
+    stat_id: int,
+) -> Optional[RegistrationBatchStat]:
+    """根据 ID 获取统计快照。"""
+    return (
+        db.query(RegistrationBatchStat)
+        .filter(RegistrationBatchStat.id == stat_id)
+        .first()
+    )
+
+
+def list_registration_batch_stats(
+    db: Session,
+    *,
+    status: Optional[str] = None,
+    pipeline_key: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 100,
+) -> List[RegistrationBatchStat]:
+    """获取普通批量注册统计快照列表。"""
+    query = db.query(RegistrationBatchStat)
+    if status:
+        query = query.filter(RegistrationBatchStat.status == status)
+    if pipeline_key:
+        query = query.filter(RegistrationBatchStat.pipeline_key == pipeline_key)
+    return (
+        query.order_by(desc(RegistrationBatchStat.created_at), desc(RegistrationBatchStat.id))
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+
+def count_registration_batch_stats(
+    db: Session,
+    *,
+    status: Optional[str] = None,
+    pipeline_key: Optional[str] = None,
+) -> int:
+    """统计普通批量注册统计快照数量。"""
+    query = db.query(RegistrationBatchStat)
+    if status:
+        query = query.filter(RegistrationBatchStat.status == status)
+    if pipeline_key:
+        query = query.filter(RegistrationBatchStat.pipeline_key == pipeline_key)
+    return query.count()
+
+
 def create_registration_batch_step_stat(
     db: Session,
     *,
