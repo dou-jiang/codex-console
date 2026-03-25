@@ -1,53 +1,110 @@
-name: Docker Image CI
+name: Docker Publish (Multi-Arch)
 
 on:
   push:
-    branches: [ "master", "main" ]
-    # 当发布新版本时触发
-    tags: [ 'v*.*.*' ]
+    branches: ["master", "main"]
+    tags: ["v*.*.*"]
   pull_request:
-    branches: [ "master", "main" ]
+    branches: ["master", "main"]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
 
 env:
-  # GitHub Container Registry 的地址
-  REGISTRY: ghcr.io
-  # 镜像名称，默认为 GitHub 用户名/仓库名
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: lifj25/codex-console
+  UPSTREAM_IMAGE: steelydk/codex-console:latest
+  UPSTREAM_DIGEST_FILE: .github/upstream-steelydk.digest
 
 jobs:
-  build-and-push-image:
+  prepare:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
-      # 如果需要签名生成的镜像，可以使用 id-token: write
-
+      contents: write
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      upstream_digest: ${{ steps.digest.outputs.upstream_digest }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 设置 Docker Buildx 用于构建多平台镜像 (可选)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 登录到 Docker 镜像仓库
-      # 如果只是在 PR 中测试构建，则跳过登录
-      - name: Log in to the Container registry
+      - name: Read upstream image digest
+        id: digest
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${UPSTREAM_IMAGE}" | awk '/^Digest:/ {print $2; exit}')"
+          echo "upstream_digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to build
+        id: decide
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          last_digest=""
+          if [ -f "${UPSTREAM_DIGEST_FILE}" ]; then
+            last_digest="$(tr -d '\r\n' < "${UPSTREAM_DIGEST_FILE}")"
+          fi
+
+          if [ "${last_digest}" = "${{ steps.digest.outputs.upstream_digest }}" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update tracked upstream digest
+        if: github.event_name == 'schedule' && steps.decide.outputs.should_build == 'true'
+        run: |
+          set -euo pipefail
+          echo "${{ steps.digest.outputs.upstream_digest }}" > "${UPSTREAM_DIGEST_FILE}"
+
+      - name: Commit updated digest file
+        if: github.event_name == 'schedule' && steps.decide.outputs.should_build == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${UPSTREAM_DIGEST_FILE}"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore: update upstream digest [skip ci]"
+          git push
+
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 提取 Docker 镜像的元数据（标签、注释等）
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: docker.io/${{ env.IMAGE_NAME }}
           tags: |
-            type=schedule
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
@@ -56,12 +113,13 @@ jobs:
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
 
-      # 构建并推送 Docker 镜像
-      - name: Build and push Docker image
+      - name: Build and push Docker image (linux/amd64,linux/arm64)
         uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

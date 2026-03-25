@@ -141,7 +141,7 @@ docker run -d \
   -e WEBUI_ACCESS_PASSWORD=your_secure_password \
   -v $(pwd)/data:/app/data \
   --name codex-console \
-  ghcr.io/<yourname>/codex-console:latest
+  lifj25/codex-console:latest
 ```
 
 说明:
@@ -155,6 +155,24 @@ docker run -d \
 注意:
 
 `-v $(pwd)/data:/app/data` 很重要，这会把数据库和账号数据持久化到宿主机。否则容器一重启，数据也可能跟着表演消失术。
+
+### Docker 镜像自动发布（amd64 + arm64）
+
+仓库内置了 GitHub Actions 工作流，会在 `main/master` 推送时自动构建并发布多架构镜像到 Docker Hub:
+
+- `linux/amd64`
+- `linux/arm64`
+
+工作流文件:
+
+`/.github/workflows/docker-publish.yml`
+
+需要在 GitHub 仓库 Secrets 中配置:
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
+
+另外工作流每 6 小时会检查一次 `steelydk/codex-console:latest` 的 digest，检测到变更时自动触发重建并发布。
 
 ## 使用远程 PostgreSQL
 
