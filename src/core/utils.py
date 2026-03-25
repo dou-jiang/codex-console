@@ -14,12 +14,25 @@ import logging
 import base64
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, Callable
 from pathlib import Path
 
 from ..config.constants import PASSWORD_CHARSET, DEFAULT_PASSWORD_LENGTH
 from ..config.settings import get_settings
+from .timezone_utils import SHANGHAI_TZ
+
+
+class ShanghaiTimeFormatter(logging.Formatter):
+    """
+    强制日志 asctime 输出为上海时间，避免容器/服务器时区差异。
+    """
+
+    def formatTime(self, record, datefmt=None):  # noqa: N802
+        dt = datetime.fromtimestamp(record.created, tz=timezone.utc).astimezone(SHANGHAI_TZ)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def setup_logging(
@@ -51,7 +64,7 @@ def setup_logging(
     root_logger.handlers.clear()
 
     # 创建格式化器
-    formatter = logging.Formatter(log_format)
+    formatter = ShanghaiTimeFormatter(log_format)
 
     # 控制台处理器
     console_handler = logging.StreamHandler(sys.stdout)

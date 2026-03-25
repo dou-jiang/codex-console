@@ -3,11 +3,19 @@ version: '3.8'
 services:
   webui:
     build: .
+    shm_size: "1gb"
     ports:
       - "1455:1455"
+      - "6080:6080"
+      # 如需使用 VNC 客户端直连可打开：
+      # - "5900:5900"
     environment:
       - WEBUI_HOST=0.0.0.0
       - WEBUI_PORT=1455
+      - DISPLAY=:99
+      - ENABLE_VNC=1
+      - VNC_PORT=5900
+      - NOVNC_PORT=6080
       - DEBUG=0
       - LOG_LEVEL=info
       # 如果需要访问密码，可以在这里取消注释并设置

@@ -129,6 +129,7 @@ class EmailParser:
         target_email: Optional[str] = None,
         min_timestamp: int = 0,
         used_codes: Optional[set] = None,
+        used_fingerprints: Optional[set] = None,
     ) -> Optional[str]:
         """
         从邮件列表中查找验证码
@@ -137,12 +138,17 @@ class EmailParser:
             emails: 邮件列表
             target_email: 目标邮箱地址
             min_timestamp: 最小时间戳（用于过滤旧邮件）
-            used_codes: 已使用的验证码集合（用于去重）
+            used_codes: 兼容旧参数（仅在无邮件 ID/时间时兜底）
+            used_fingerprints: 已使用邮件指纹集合，指纹规则为 "时间戳|邮件ID|验证码"
 
         Returns:
             验证码字符串，如果未找到返回 None
         """
-        used_codes = used_codes or set()
+        # 注意：不能用 `or set()`，否则传入空集合时会被替换，导致跨轮询去重失效。
+        if used_codes is None:
+            used_codes = set()
+        if used_fingerprints is None:
+            used_fingerprints = set()
 
         for email in emails:
             # 时间戳过滤
@@ -158,11 +164,22 @@ class EmailParser:
             # 提取验证码
             code = self.extract_verification_code(email)
             if code:
-                # 去重检查
-                if code in used_codes:
-                    logger.debug(f"跳过已使用的验证码: {code}")
+                mail_ts = int(email.received_timestamp or 0)
+                mail_id = str(email.id or "").strip() or "-"
+                fingerprint = f"{mail_ts}|{mail_id}|{code}"
+
+                # 主去重：时间 + 邮件ID + 验证码
+                if fingerprint in used_fingerprints:
+                    logger.debug(f"跳过已使用验证码指纹: {fingerprint}")
                     continue
 
+                # 兜底去重：如果邮件没有 ID 且没有时间戳，才退回到纯验证码去重
+                if mail_id == "-" and mail_ts <= 0 and code in used_codes:
+                    logger.debug(f"跳过已使用的验证码(兜底): {code}")
+                    continue
+
+                used_fingerprints.add(fingerprint)
+                used_codes.add(code)
                 logger.info(
                     f"[{target_email or 'unknown'}] 找到验证码: {code}, "
                     f"邮件主题: {email.subject[:30]}"

@@ -345,7 +345,7 @@ async function loadCustomServices() {
                 <td><input type="checkbox" data-id="${service.id}" ${selectedCustom.has(service.id) ? 'checked' : ''}></td>
                 <td>${escapeHtml(service.name)}</td>
                 <td>${getCustomServiceTypeBadge(service._subType)}</td>
-                <td style="font-size: 0.75rem;">${getCustomServiceAddress(service)}</td>
+                <td style="font-size: 0.75rem; min-width: 400px;">${getCustomServiceAddress(service)}</td>
                 <td title="${service.enabled ? '已启用' : '已禁用'}">${service.enabled ? '✅' : '⭕'}</td>
                 <td>${service.priority}</td>
                 <td>${format.date(service.last_used)}</td>

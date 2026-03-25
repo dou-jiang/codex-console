@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>自动进team - OpenAI 注册系统</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
+    <style>
+        .feature-placeholder {
+            width: 100%;
+            min-height: 180px;
+            border: 2px dashed var(--border-color);
+            border-radius: var(--radius-lg);
+            background: var(--surface-hover);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--text-secondary);
+            letter-spacing: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar">
+            <div class="nav-brand">
+                <h1>OpenAI 注册系统</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/" class="nav-link">注册</a>
+                <a href="/accounts" class="nav-link">账号管理</a>
+                <a href="/accounts-overview" class="nav-link">账号总览</a>
+                <a href="/email-services" class="nav-link">邮箱服务</a>
+                <a href="/payment" class="nav-link">支付</a>
+                <a href="/card-pool" class="nav-link">卡池</a>
+                <a href="/auto-team" class="nav-link active">自动进team</a>
+                <a href="/logs" class="nav-link">后台日志</a>
+                <a href="/settings" class="nav-link">设置</a>
+                <a href="/logout" class="nav-link">退出</a>
+            </div>
+            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </nav>
+
+        <main class="main-content">
+            <div class="page-header">
+                <h2>自动进team</h2>
+                <p class="subtitle">页面占位</p>
+            </div>
+            <div class="feature-placeholder">功能未开发！</div>
+        </main>
+    </div>
+
+    <script src="/static/js/utils.js?v={{ static_version }}"></script>
+</body>
+</html>

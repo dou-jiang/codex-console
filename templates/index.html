@@ -10,20 +10,25 @@
         /* 两栏布局 */
         .two-column-layout {
             display: grid;
-            grid-template-columns: 30% 70%;
+            grid-template-columns: minmax(300px, 3fr) minmax(0, 7fr);
             gap: var(--spacing-lg);
             align-items: start;
+            width: 100%;
+            margin: 0;
+            box-sizing: border-box;
         }
 
         .left-panel {
             position: sticky;
             top: calc(60px + var(--spacing-lg));
+            min-width: 0;
         }
 
         .right-panel {
             display: flex;
             flex-direction: column;
             gap: var(--spacing-lg);
+            min-width: 0;
         }
 
         /* 任务状态行 */
@@ -83,6 +88,94 @@
             filter: blur(0);
         }
 
+        .today-stats-strip {
+            width: 100%;
+            margin-left: 0;
+            margin-right: 0;
+            margin-bottom: var(--spacing-lg);
+            box-sizing: border-box;
+        }
+
+        .today-stats-strip .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .today-stats-reset {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .today-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 14px;
+            margin-top: 4px;
+        }
+
+        .today-stat-item {
+            --stat-color: #60a5fa;
+            position: relative;
+            overflow: hidden;
+            border-radius: 14px;
+            background: #ffffff;
+            padding: 18px 24px;
+            text-align: center;
+            border: 1px solid #d7dde8;
+            min-height: 128px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+        }
+
+        .today-stat-item::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--stat-color, #60a5fa);
+        }
+
+        .today-stat-label {
+            order: 2;
+            color: #64748b;
+            margin-top: 6px;
+            line-height: 1.35;
+            font-size: 0.82rem;
+        }
+
+        .today-stat-value {
+            order: 1;
+            font-size: clamp(1.8rem, 2.4vw, 2.2rem);
+            line-height: 1.1;
+            font-weight: 700;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--stat-color, #60a5fa);
+        }
+
+        .today-stat-total { --stat-color: #60a5fa; }
+        .today-stat-success { --stat-color: #22c55e; }
+        .today-stat-failed { --stat-color: #ef4444; }
+        .today-stat-rate { --stat-color: #f59e0b; }
+
+        .today-stat-rate .today-stat-value {
+            font-size: clamp(1.7rem, 2.3vw, 2.05rem);
+        }
+        .today-stat-rate .today-stat-value.rate-high { color: #22c55e; }
+        .today-stat-rate .today-stat-value.rate-low { color: #ef4444; }
+        .today-stat-rate .today-stat-value.rate-mid { color: #f59e0b; }
+        .today-stat-rate.rate-high { --stat-color: #22c55e; }
+        .today-stat-rate.rate-low { --stat-color: #ef4444; }
+        .today-stat-rate.rate-mid { --stat-color: #f59e0b; }
+
         /* 自定义多选下拉 */
         .multi-select-dropdown {
             position: relative;
@@ -139,6 +232,10 @@
             .left-panel {
                 position: static;
             }
+
+            .today-stats-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
     </style>
 </head>
@@ -152,8 +249,12 @@
             <div class="nav-links">
                 <a href="/" class="nav-link active">注册</a>
                 <a href="/accounts" class="nav-link">账号管理</a>
+                <a href="/accounts-overview" class="nav-link">账号总览</a>
                 <a href="/email-services" class="nav-link">邮箱服务</a>
                 <a href="/payment" class="nav-link">支付</a>
+                <a href="/card-pool" class="nav-link">卡池</a>
+                <a href="/auto-team" class="nav-link">自动进team</a>
+                <a href="/logs" class="nav-link">后台日志</a>
                 <a href="/settings" class="nav-link">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
@@ -164,6 +265,33 @@
 
         <!-- 主内容区 - 两栏布局 -->
         <main class="main-content">
+            <div class="card today-stats-strip">
+                <div class="card-header">
+                    <h3>📊 今日统计</h3>
+                    <span class="today-stats-reset" id="today-stats-reset">重置剩余 --:--</span>
+                </div>
+                <div class="card-body">
+                    <div class="today-stats-grid">
+                        <div class="today-stat-item today-stat-total">
+                            <div class="today-stat-label">注册</div>
+                            <div class="today-stat-value" id="today-stats-total">0</div>
+                        </div>
+                        <div class="today-stat-item today-stat-success">
+                            <div class="today-stat-label">成功</div>
+                            <div class="today-stat-value" id="today-stats-success">0</div>
+                        </div>
+                        <div class="today-stat-item today-stat-failed">
+                            <div class="today-stat-label">失败</div>
+                            <div class="today-stat-value" id="today-stats-failed">0</div>
+                        </div>
+                        <div class="today-stat-item today-stat-rate">
+                            <div class="today-stat-label">成功率</div>
+                            <div class="today-stat-value" id="today-stats-rate">0%</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="two-column-layout">
                 <!-- 左侧面板 - 注册设置 -->
                 <div class="left-panel">

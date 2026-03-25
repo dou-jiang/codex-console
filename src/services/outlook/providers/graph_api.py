@@ -28,7 +28,13 @@ class GraphAPIProvider(OutlookProvider):
 
     # Graph API 端点
     GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
-    MESSAGES_ENDPOINT = "/me/mailFolders/inbox/messages"
+    # 验证邮件可能落在垃圾箱/已删除，需多文件夹轮询
+    MESSAGE_FOLDERS = [
+        "inbox",
+        "junkemail",
+        "deleteditems",
+        "archive",
+    ]
 
     @property
     def provider_type(self) -> ProviderType:
@@ -112,66 +118,66 @@ class GraphAPIProvider(OutlookProvider):
                 self.record_failure("无法获取 Access Token")
                 return []
 
-            # 构建 API 请求
-            url = f"{self.GRAPH_API_BASE}{self.MESSAGES_ENDPOINT}"
-
-            params = {
-                "$top": count,
-                "$select": "id,subject,from,toRecipients,receivedDateTime,isRead,hasAttachments,bodyPreview,body",
-                "$orderby": "receivedDateTime desc",
-            }
-
-            # 只获取未读邮件
-            if only_unseen:
-                params["$filter"] = "isRead eq false"
-
             # 构建代理配置
             proxies = None
             if self.config.proxy_url:
                 proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url}
-
-            # 发送请求（curl_cffi 自动对 params 进行 URL 编码）
-            resp = _requests.get(
-                url,
-                params=params,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
-                    "Prefer": "outlook.body-content-type='text'",
-                },
-                proxies=proxies,
-                timeout=self.config.timeout,
-                impersonate="chrome110",
-            )
-
-            if resp.status_code == 401:
-                # Token 无 Graph 权限（client_id 未授权），清除缓存但不记录健康失败
-                # 避免因权限不足导致健康检查器禁用该提供者，影响其他账户
-                if self._token_manager:
-                    self._token_manager.clear_cache()
-                self._connected = False
-                logger.warning(f"[{self.account.email}] Graph API 返回 401，client_id 可能无 Graph 权限，跳过")
-                return []
-
-            if resp.status_code != 200:
-                error_body = resp.text[:200]
-                self.record_failure(f"HTTP {resp.status_code}: {error_body}")
-                logger.error(f"[{self.account.email}] Graph API 请求失败: HTTP {resp.status_code}")
-                return []
-
-            data = resp.json()
-
-            # 解析邮件
-            messages = data.get("value", [])
             emails = []
+            seen_ids = set()
 
-            for msg in messages:
-                try:
-                    email_msg = self._parse_graph_message(msg)
-                    if email_msg:
+            for folder in self.MESSAGE_FOLDERS:
+                url = f"{self.GRAPH_API_BASE}/me/mailFolders/{folder}/messages"
+                params = {
+                    "$top": count,
+                    "$select": "id,subject,from,toRecipients,receivedDateTime,isRead,hasAttachments,bodyPreview,body",
+                    "$orderby": "receivedDateTime desc",
+                }
+                if only_unseen:
+                    params["$filter"] = "isRead eq false"
+
+                resp = _requests.get(
+                    url,
+                    params=params,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/json",
+                        "Prefer": "outlook.body-content-type='text'",
+                    },
+                    proxies=proxies,
+                    timeout=self.config.timeout,
+                    impersonate="chrome110",
+                )
+
+                if resp.status_code == 401:
+                    # Token 无 Graph 权限（client_id 未授权），清除缓存但不记录健康失败
+                    if self._token_manager:
+                        self._token_manager.clear_cache()
+                    self._connected = False
+                    logger.warning(f"[{self.account.email}] Graph API 返回 401，client_id 可能无 Graph 权限，跳过")
+                    return []
+
+                if resp.status_code != 200:
+                    logger.debug(f"[{self.account.email}] Graph API 跳过文件夹 {folder}: HTTP {resp.status_code}")
+                    continue
+
+                data = resp.json()
+                messages = data.get("value", [])
+                if not messages:
+                    continue
+
+                for msg in messages:
+                    try:
+                        email_msg = self._parse_graph_message(msg)
+                        if not email_msg:
+                            continue
+                        key = email_msg.id or ""
+                        if key and key in seen_ids:
+                            continue
+                        if key:
+                            seen_ids.add(key)
                         emails.append(email_msg)
-                except Exception as e:
-                    logger.warning(f"[{self.account.email}] 解析 Graph API 邮件失败: {e}")
+                    except Exception as e:
+                        logger.warning(f"[{self.account.email}] 解析 Graph API 邮件失败: {e}")
 
             self.record_success()
             return emails

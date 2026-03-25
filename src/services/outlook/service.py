@@ -33,6 +33,10 @@ DEFAULT_PROVIDER_PRIORITY = [
     ProviderType.GRAPH_API,
 ]
 
+# OTP 发送时间的容忍偏差（秒）
+# 与 clean 版本保持一致，避免把上一阶段验证码误判为当前验证码。
+OTP_TIME_SKEW_SECONDS = 5
+
 
 def get_email_code_settings() -> dict:
     """获取验证码等待配置"""
@@ -141,8 +145,10 @@ class OutlookService(BaseEmailService):
         # IMAP 连接限制（防止限流）
         self._imap_semaphore = threading.Semaphore(5)
 
-        # 验证码去重机制
+        # 验证码去重机制（按“时间戳+邮件ID+验证码”指纹）
         self._used_codes: Dict[str, set] = {}
+        # 验证码阶段标记（按 otp_sent_at 重置去重，避免“第二封验证码与第一封相同”被误判为旧码）
+        self._used_codes_stage_marker: Dict[str, int] = {}
 
     def _get_provider(
         self,
@@ -333,13 +339,29 @@ class OutlookService(BaseEmailService):
             f"提供者优先级: {[p.value for p in self.provider_priority]}"
         )
 
-        # 初始化验证码去重集合
-        if email not in self._used_codes:
-            self._used_codes[email] = set()
-        used_codes = self._used_codes[email]
+        # 初始化验证码指纹去重集合
+        email_key = str(email or "").strip().lower()
+        if email_key not in self._used_codes:
+            self._used_codes[email_key] = set()
+        used_fingerprints = self._used_codes[email_key]
 
-        # 计算最小时间戳（留出 60 秒时钟偏差）
-        min_timestamp = (otp_sent_at - 60) if otp_sent_at else 0
+        # 按 OTP 发送时间重置去重集合，避免不同阶段共用同一验证码时被误跳过
+        if otp_sent_at:
+            try:
+                stage_marker = int(float(otp_sent_at))
+                prev_marker = self._used_codes_stage_marker.get(email_key)
+                if prev_marker is None or abs(stage_marker - prev_marker) > 3:
+                    if used_fingerprints:
+                        logger.info(
+                            f"[{email}] 检测到新的验证码阶段，重置去重缓存（上一阶段已记 {len(used_fingerprints)} 条指纹）"
+                        )
+                    used_fingerprints.clear()
+                    self._used_codes_stage_marker[email_key] = stage_marker
+            except Exception:
+                pass
+
+        # 计算最小时间戳（仅容忍小时钟偏差，避免命中上一阶段旧验证码）
+        min_timestamp = (otp_sent_at - OTP_TIME_SKEW_SECONDS) if otp_sent_at else 0
 
         start_time = time.time()
         poll_count = 0
@@ -368,11 +390,10 @@ class OutlookService(BaseEmailService):
                         emails,
                         target_email=email,
                         min_timestamp=min_timestamp,
-                        used_codes=used_codes,
+                        used_fingerprints=used_fingerprints,
                     )
 
                     if code:
-                        used_codes.add(code)
                         elapsed = int(time.time() - start_time)
                         logger.info(
                             f"[{email}] 找到验证码: {code}，"

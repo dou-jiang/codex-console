@@ -113,6 +113,10 @@ class DatabaseSessionManager:
             ("accounts", "subscription_at", "DATETIME"),
             ("accounts", "cookies", "TEXT"),
             ("proxies", "is_default", "BOOLEAN DEFAULT 0"),
+            ("bind_card_tasks", "checkout_session_id", "VARCHAR(120)"),
+            ("bind_card_tasks", "publishable_key", "VARCHAR(255)"),
+            ("bind_card_tasks", "client_secret", "TEXT"),
+            ("bind_card_tasks", "bind_mode", "VARCHAR(30) DEFAULT 'semi_auto'"),
             ("accounts", "sync_uploaded", "BOOLEAN DEFAULT 0"),
             ("accounts", "sync_uploaded_at", "DATETIME"),
         ]

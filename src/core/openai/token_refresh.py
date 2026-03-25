@@ -6,6 +6,7 @@ Token 刷新模块
 import logging
 import json
 import time
+from http.cookies import SimpleCookie
 from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from datetime import datetime, timedelta
 from curl_cffi import requests as cffi_requests
 
 from ...config.settings import get_settings
+from ...config.constants import AccountStatus
 from ...database.session import get_db
 from ...database import crud
 from ...database.models import Account
@@ -57,6 +59,25 @@ class TokenRefreshManager:
         session = cffi_requests.Session(impersonate="chrome120", proxy=self.proxy_url)
         return session
 
+    @staticmethod
+    def _extract_session_token_from_cookies(cookies: Optional[str]) -> Optional[str]:
+        """从完整 Cookie 字符串中提取 __Secure-next-auth.session-token。"""
+        text = str(cookies or "").strip()
+        if not text:
+            return None
+        try:
+            jar = SimpleCookie()
+            jar.load(text)
+            token = jar.get("__Secure-next-auth.session-token")
+            value = token.value if token else None
+            return value or None
+        except Exception:
+            return None
+
+    def _create_direct_session(self) -> cffi_requests.Session:
+        """创建直连会话（不走代理）。"""
+        return cffi_requests.Session(impersonate="chrome120")
+
     def refresh_by_session_token(self, session_token: str) -> TokenRefreshResult:
         """
         使用 Session Token 刷新
@@ -70,25 +91,35 @@ class TokenRefreshManager:
         result = TokenRefreshResult(success=False)
 
         try:
+            def _request_once(session: cffi_requests.Session):
+                session.cookies.set(
+                    "__Secure-next-auth.session-token",
+                    session_token,
+                    domain=".chatgpt.com",
+                    path="/"
+                )
+                return session.get(
+                    self.SESSION_URL,
+                    headers={
+                        "accept": "application/json",
+                        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    },
+                    timeout=30
+                )
+
             session = self._create_session()
+            response = _request_once(session)
 
-            # 设置会话 Cookie
-            session.cookies.set(
-                "__Secure-next-auth.session-token",
-                session_token,
-                domain=".chatgpt.com",
-                path="/"
-            )
-
-            # 请求会话端点
-            response = session.get(
-                self.SESSION_URL,
-                headers={
-                    "accept": "application/json",
-                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                },
-                timeout=30
-            )
+            # 代理通道触发地区/风控时，自动回退直连重试一次
+            if (
+                response.status_code in (401, 403)
+                and self.proxy_url
+            ):
+                body = (response.text or "")[:500].lower()
+                if "unsupported_country_region_territory" in body or "request_forbidden" in body:
+                    logger.warning("Session token 刷新触发地区限制，尝试直连重试")
+                    direct_session = self._create_direct_session()
+                    response = _request_once(direct_session)
 
             if response.status_code != 200:
                 result.error_message = f"Session token 刷新失败: HTTP {response.status_code}"
@@ -143,8 +174,6 @@ class TokenRefreshManager:
         result = TokenRefreshResult(success=False)
 
         try:
-            session = self._create_session()
-
             # 使用配置的 client_id 或默认值
             client_id = client_id or self.settings.openai_client_id
 
@@ -156,15 +185,27 @@ class TokenRefreshManager:
                 "redirect_uri": self.settings.openai_redirect_uri
             }
 
-            response = session.post(
-                self.TOKEN_URL,
-                headers={
-                    "content-type": "application/x-www-form-urlencoded",
-                    "accept": "application/json"
-                },
-                data=token_data,
-                timeout=30
-            )
+            def _request_once(session: cffi_requests.Session):
+                return session.post(
+                    self.TOKEN_URL,
+                    headers={
+                        "content-type": "application/x-www-form-urlencoded",
+                        "accept": "application/json"
+                    },
+                    data=token_data,
+                    timeout=30
+                )
+
+            session = self._create_session()
+            response = _request_once(session)
+
+            # 典型场景：代理出口地区受限导致 403，改为直连再试一次
+            if response.status_code == 403 and self.proxy_url:
+                body = (response.text or "")[:500].lower()
+                if "unsupported_country_region_territory" in body:
+                    logger.warning("OAuth token 刷新触发地区限制，尝试直连重试")
+                    direct_session = self._create_direct_session()
+                    response = _request_once(direct_session)
 
             if response.status_code != 200:
                 result.error_message = f"OAuth token 刷新失败: HTTP {response.status_code}"
@@ -220,6 +261,15 @@ class TokenRefreshManager:
             if result.success:
                 return result
             logger.warning(f"Session Token 刷新失败，尝试 OAuth 刷新")
+
+        # 若 session_token 字段为空，但 cookies 里有 next-auth 会话，仍可尝试会话刷新
+        cookie_session_token = self._extract_session_token_from_cookies(getattr(account, "cookies", None))
+        if cookie_session_token:
+            logger.info(f"尝试使用 Cookies 中的 Session Token 刷新账号 {account.email}")
+            result = self.refresh_by_session_token(cookie_session_token)
+            if result.success:
+                return result
+            logger.warning("Cookies Session Token 刷新失败，尝试 OAuth 刷新")
 
         # 尝试 OAuth Refresh Token
         if account.refresh_token:
@@ -326,7 +376,36 @@ def validate_account_token(account_id: int, proxy_url: Optional[str] = None) -> 
             return False, "账号不存在"
 
         if not account.access_token:
+            # 无 Token 直接归类为 failed，便于账号管理按“失败”筛选定位问题账号。
+            if account.status != AccountStatus.FAILED.value:
+                crud.update_account(db, account_id, status=AccountStatus.FAILED.value)
             return False, "账号没有 access_token"
 
         manager = TokenRefreshManager(proxy_url=proxy_url)
-        return manager.validate_token(account.access_token)
+        is_valid, error = manager.validate_token(account.access_token)
+
+        # 验证后回写账号状态，确保前端筛选（active/expired/banned/failed）与验证结果一致。
+        error_text = str(error or "").lower()
+        if is_valid:
+            next_status = AccountStatus.ACTIVE.value
+        elif (
+            "过期" in error_text
+            or "expired" in error_text
+            or "401" in error_text
+            or "invalid" in error_text
+        ):
+            next_status = AccountStatus.EXPIRED.value
+        elif (
+            "封禁" in error_text
+            or "banned" in error_text
+            or "forbidden" in error_text
+            or "403" in error_text
+        ):
+            next_status = AccountStatus.BANNED.value
+        else:
+            next_status = AccountStatus.FAILED.value
+
+        if account.status != next_status:
+            crud.update_account(db, account_id, status=next_status)
+
+        return is_valid, error

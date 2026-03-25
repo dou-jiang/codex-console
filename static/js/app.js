@@ -9,6 +9,8 @@ let currentBatch = null;
 let logPollingInterval = null;
 let batchPollingInterval = null;
 let accountsPollingInterval = null;
+let todayStatsPollingInterval = null;
+let todayStatsResetInterval = null;
 let isBatchMode = false;
 let isOutlookBatchMode = false;
 let outlookAccounts = [];
@@ -69,6 +71,12 @@ const elements = {
     // 已注册账号
     recentAccountsTable: document.getElementById('recent-accounts-table'),
     refreshAccountsBtn: document.getElementById('refresh-accounts-btn'),
+    // 今日统计
+    todayStatsTotal: document.getElementById('today-stats-total'),
+    todayStatsSuccess: document.getElementById('today-stats-success'),
+    todayStatsFailed: document.getElementById('today-stats-failed'),
+    todayStatsRate: document.getElementById('today-stats-rate'),
+    todayStatsReset: document.getElementById('today-stats-reset'),
     // Outlook 批量注册
     outlookBatchSection: document.getElementById('outlook-batch-section'),
     outlookAccountsContainer: document.getElementById('outlook-accounts-container'),
@@ -102,6 +110,9 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAvailableServices();
     loadRecentAccounts();
     startAccountsPolling();
+    loadTodayStats(true);
+    startTodayStatsPolling();
+    startTodayStatsResetTicker();
     initVisibilityReconnect();
     restoreActiveTask();
     initAutoUploadOptions();
@@ -553,6 +564,12 @@ function connectWebSocket(taskUuid) {
                 addLog(logType, data.message);
             } else if (data.type === 'status') {
                 updateTaskStatus(data.status);
+                if (data.email) {
+                    elements.taskEmail.textContent = data.email;
+                }
+                if (data.email_service) {
+                    elements.taskService.textContent = getServiceTypeText(data.email_service);
+                }
 
                 // 检查是否完成
                 if (['completed', 'failed', 'cancelled', 'cancelling'].includes(data.status)) {
@@ -985,6 +1002,83 @@ function startAccountsPolling() {
     accountsPollingInterval = setInterval(() => {
         loadRecentAccounts();
     }, 30000);
+}
+
+function renderTodayStats(total, success, failed, rate) {
+    if (elements.todayStatsTotal) {
+        elements.todayStatsTotal.textContent = String(Math.max(0, total));
+    }
+    if (elements.todayStatsSuccess) {
+        elements.todayStatsSuccess.textContent = String(Math.max(0, success));
+    }
+    if (elements.todayStatsFailed) {
+        elements.todayStatsFailed.textContent = String(Math.max(0, failed));
+    }
+    if (elements.todayStatsRate) {
+        const safeRate = Math.max(0, rate);
+        const rateCard = elements.todayStatsRate.closest('.today-stat-rate');
+        elements.todayStatsRate.textContent = `${safeRate.toFixed(1)}%`;
+        elements.todayStatsRate.classList.remove('rate-high', 'rate-mid', 'rate-low');
+        if (rateCard) {
+            rateCard.classList.remove('rate-high', 'rate-mid', 'rate-low');
+        }
+        if (safeRate >= 70) {
+            elements.todayStatsRate.classList.add('rate-high');
+            if (rateCard) rateCard.classList.add('rate-high');
+        } else if (safeRate < 40) {
+            elements.todayStatsRate.classList.add('rate-low');
+            if (rateCard) rateCard.classList.add('rate-low');
+        } else {
+            elements.todayStatsRate.classList.add('rate-mid');
+            if (rateCard) rateCard.classList.add('rate-mid');
+        }
+    }
+}
+
+async function loadTodayStats(silent = true) {
+    try {
+        const data = await api.get('/registration/stats');
+        const byStatus = data?.by_status || {};
+        const total = Number(data?.today_total ?? data?.today_count ?? 0);
+        const success = Number(data?.today_success ?? byStatus.completed ?? 0);
+        const failed = Number(data?.today_failed ?? byStatus.failed ?? 0);
+        const fallbackRate = total > 0 ? (success / total) * 100 : 0;
+        const rate = Number(data?.today_success_rate ?? fallbackRate);
+        renderTodayStats(total, success, failed, Number.isFinite(rate) ? rate : 0);
+    } catch (error) {
+        console.error('加载今日统计失败:', error);
+        if (!silent) {
+            toast.error('加载今日统计失败');
+        }
+    }
+}
+
+function updateTodayStatsResetText() {
+    if (!elements.todayStatsReset) return;
+    const now = new Date();
+    const next = new Date();
+    next.setHours(24, 0, 0, 0);
+    const remain = Math.max(0, next.getTime() - now.getTime());
+    const hours = Math.floor(remain / 3600000);
+    const minutes = Math.floor((remain % 3600000) / 60000);
+    elements.todayStatsReset.textContent = `重置剩余 ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function startTodayStatsResetTicker() {
+    updateTodayStatsResetText();
+    if (todayStatsResetInterval) {
+        clearInterval(todayStatsResetInterval);
+    }
+    todayStatsResetInterval = setInterval(updateTodayStatsResetText, 60000);
+}
+
+function startTodayStatsPolling() {
+    if (todayStatsPollingInterval) {
+        clearInterval(todayStatsPollingInterval);
+    }
+    todayStatsPollingInterval = setInterval(() => {
+        loadTodayStats(true);
+    }, 60000);
 }
 
 // 添加日志
