@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from ...config.settings import get_settings, update_settings
@@ -49,6 +49,7 @@ class RegistrationSettings(BaseModel):
     default_password_length: int = 12
     sleep_min: int = 5
     sleep_max: int = 30
+    entry_flow: str = "native"
 
 
 class WebUISettings(BaseModel):
@@ -73,6 +74,9 @@ async def get_all_settings():
     """获取所有设置"""
     settings = get_settings()
 
+    entry_flow_raw = str(settings.registration_entry_flow or "native").strip().lower()
+    entry_flow = "abcard" if entry_flow_raw == "abcard" else "native"
+
     return {
         "proxy": {
             "enabled": settings.proxy_enabled,
@@ -93,6 +97,7 @@ async def get_all_settings():
             "default_password_length": settings.registration_default_password_length,
             "sleep_min": settings.registration_sleep_min,
             "sleep_max": settings.registration_sleep_max,
+            "entry_flow": entry_flow,
         },
         "webui": {
             "host": settings.webui_host,
@@ -202,24 +207,35 @@ async def get_registration_settings():
     """获取注册设置"""
     settings = get_settings()
 
+    entry_flow_raw = str(settings.registration_entry_flow or "native").strip().lower()
+    entry_flow = "abcard" if entry_flow_raw == "abcard" else "native"
+
     return {
         "max_retries": settings.registration_max_retries,
         "timeout": settings.registration_timeout,
         "default_password_length": settings.registration_default_password_length,
         "sleep_min": settings.registration_sleep_min,
         "sleep_max": settings.registration_sleep_max,
+        "entry_flow": entry_flow,
     }
 
 
 @router.post("/registration")
 async def update_registration_settings(request: RegistrationSettings):
     """更新注册设置"""
+    flow_raw = (request.entry_flow or "native").strip().lower()
+    # 兼容旧前端历史值：outlook -> native（Outlook 邮箱会在运行时自动走 outlook 链路）。
+    flow = "native" if flow_raw == "outlook" else flow_raw
+    if flow not in {"native", "abcard"}:
+        raise HTTPException(status_code=400, detail="entry_flow 仅支持 native / abcard")
+
     update_settings(
         registration_max_retries=request.max_retries,
         registration_timeout=request.timeout,
         registration_default_password_length=request.default_password_length,
         registration_sleep_min=request.sleep_min,
         registration_sleep_max=request.sleep_max,
+        registration_entry_flow=flow,
     )
 
     return {"success": True, "message": "注册设置已更新"}
@@ -306,6 +322,97 @@ async def backup_database():
         "message": "数据库备份成功",
         "backup_path": str(backup_path)
     }
+
+
+@router.post("/database/import")
+async def import_database(file: UploadFile = File(...)):
+    """导入数据库（自动备份后覆盖当前 SQLite 文件）"""
+    import shutil
+    import tempfile
+    from datetime import datetime
+    from pathlib import Path as FilePath
+    from ...database.session import get_session_manager
+
+    settings = get_settings()
+
+    db_path = settings.database_url
+    if not db_path.startswith("sqlite:///"):
+        raise HTTPException(status_code=400, detail="当前仅支持 SQLite 数据库导入")
+
+    db_path = db_path[10:]
+    db_file = FilePath(db_path)
+
+    # 校验上传扩展名
+    filename = (file.filename or "").lower()
+    allowed_ext = (".db", ".sqlite", ".sqlite3")
+    if filename and not filename.endswith(allowed_ext):
+        raise HTTPException(status_code=400, detail="仅支持 .db / .sqlite / .sqlite3 文件")
+
+    if not db_file.exists():
+        raise HTTPException(status_code=404, detail="数据库文件不存在")
+
+    # 先落地到临时文件，再校验头，避免脏写
+    temp_path = None
+    try:
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix="db_import_",
+            suffix=".db",
+            dir=str(db_file.parent),
+            delete=False
+        ) as tmp:
+            temp_path = FilePath(tmp.name)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+
+        if not temp_path.exists() or temp_path.stat().st_size < 100:
+            raise HTTPException(status_code=400, detail="导入文件无效或为空")
+
+        # SQLite 文件头校验
+        with temp_path.open("rb") as f:
+            header = f.read(16)
+        if not header.startswith(b"SQLite format 3\x00"):
+            raise HTTPException(status_code=400, detail="文件不是有效的 SQLite 数据库")
+
+        # 先释放数据库连接，避免 Windows 下文件被占用
+        session_manager = get_session_manager()
+        session_manager.engine.dispose()
+
+        # 导入前自动备份
+        backup_dir = db_file.parent / "backups"
+        backup_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"database_backup_before_import_{timestamp}.db"
+        shutil.copy2(db_file, backup_path)
+
+        # 清理 WAL/SHM，避免替换后出现旧事务残留
+        wal_file = FilePath(f"{db_file}-wal")
+        shm_file = FilePath(f"{db_file}-shm")
+        for sidecar in (wal_file, shm_file):
+            try:
+                if sidecar.exists():
+                    sidecar.unlink()
+            except Exception:
+                logger.warning("清理 SQLite 附属文件失败: %s", sidecar)
+
+        os.replace(str(temp_path), str(db_file))
+
+        logger.info("数据库导入成功: file=%s backup=%s", file.filename, backup_path)
+        return {
+            "success": True,
+            "message": "数据库导入成功",
+            "backup_path": str(backup_path),
+        }
+    finally:
+        await file.close()
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
 
 
 @router.post("/database/cleanup")

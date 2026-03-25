@@ -44,6 +44,64 @@
         }
         .cpa-status .badge.uploaded { background: var(--success-color); color: white; }
         .cpa-status .badge.pending { background: var(--border-color); color: var(--text-secondary); }
+        .account-status-cell {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+        }
+        .account-status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            border: 1px solid rgba(0, 0, 0, 0.12);
+        }
+        .account-status-dot.active {
+            background: var(--success-color);
+        }
+        .account-status-dot.expired {
+            background: var(--warning-color);
+        }
+        .account-status-dot.banned,
+        .account-status-dot.failed {
+            background: var(--danger-color);
+        }
+        .account-status-dot.unknown {
+            background: var(--border-color);
+        }
+        .subscription-status {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            min-width: 70px;
+        }
+        .subscription-status .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            border: 1px solid rgba(0, 0, 0, 0.12);
+        }
+        .subscription-status .dot.subscribed {
+            background: var(--success-color);
+        }
+        .subscription-status .dot.unsubscribed {
+            background: var(--danger-color);
+        }
+        .subscription-status .label {
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            letter-spacing: 0.2px;
+        }
+        .subscription-status.subscribed .label {
+            color: var(--success-color);
+        }
+        .subscription-status.unsubscribed .label {
+            color: var(--danger-color);
+        }
     </style>
 </head>
 <body>
@@ -56,8 +114,12 @@
             <div class="nav-links">
                 <a href="/" class="nav-link">注册</a>
                 <a href="/accounts" class="nav-link active">账号管理</a>
+                <a href="/accounts-overview" class="nav-link">账号总览</a>
                 <a href="/email-services" class="nav-link">邮箱服务</a>
                 <a href="/payment" class="nav-link">支付</a>
+                <a href="/card-pool" class="nav-link">卡池</a>
+                <a href="/auto-team" class="nav-link">自动进team</a>
+                <a href="/logs" class="nav-link">后台日志</a>
                 <a href="/settings" class="nav-link">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
@@ -173,7 +235,7 @@
                                     <th style="width: 80px;">CPA</th>
                                     <th style="width: 80px;">订阅</th>
                                     <th style="width: 140px;">最后刷新</th>
-                                    <th style="width: 160px;">操作</th>
+                                    <th style="width: 220px;">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="accounts-table">

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后台日志 - OpenAI 注册系统</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
+    <style>
+        .logs-layout {
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-lg);
+        }
+        .filters-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: var(--spacing-md);
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(120px, 1fr));
+            gap: var(--spacing-sm);
+        }
+        .stat-box {
+            background: var(--surface-hover);
+            border: 1px solid var(--border-light);
+            border-radius: var(--radius);
+            padding: var(--spacing-sm) var(--spacing-md);
+        }
+        .stat-box .label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .stat-box .value {
+            margin-top: 4px;
+            font-size: 1rem;
+            font-weight: 700;
+        }
+        .log-console {
+            max-height: 560px;
+            overflow-y: auto;
+            border-top: 1px solid var(--border-light);
+            background: var(--bg-secondary);
+            font-family: var(--font-mono);
+        }
+        .log-line {
+            display: grid;
+            grid-template-columns: 160px 84px 220px 1fr;
+            gap: var(--spacing-sm);
+            padding: 8px var(--spacing-md);
+            border-bottom: 1px solid var(--border-light);
+            font-size: 0.8125rem;
+            line-height: 1.5;
+        }
+        .log-time { color: var(--text-muted); }
+        .log-level { font-weight: 700; }
+        .log-level.INFO { color: var(--primary-color); }
+        .log-level.WARNING { color: #d97706; }
+        .log-level.ERROR, .log-level.CRITICAL { color: var(--danger-color); }
+        .log-logger {
+            color: var(--text-secondary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .log-message {
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: var(--text-primary);
+        }
+        .logs-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--spacing-sm);
+            flex-wrap: wrap;
+        }
+        .logs-toolbar-actions {
+            display: flex;
+            gap: var(--spacing-sm);
+            flex-wrap: wrap;
+        }
+        .cleanup-inline {
+            display: flex;
+            gap: var(--spacing-sm);
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .cleanup-inline input {
+            width: 120px;
+        }
+        .hint-inline {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .logs-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: var(--spacing-sm);
+            padding-top: var(--spacing-sm);
+            border-top: 1px solid var(--border-light);
+        }
+        @media (max-width: 1100px) {
+            .stats-grid { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+            .log-line { grid-template-columns: 150px 72px 1fr; }
+            .log-message { grid-column: 1 / -1; }
+        }
+        @media (max-width: 768px) {
+            .stats-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+            .log-line { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar">
+            <div class="nav-brand">
+                <h1>OpenAI 注册系统</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/" class="nav-link">注册</a>
+                <a href="/accounts" class="nav-link">账号管理</a>
+                <a href="/accounts-overview" class="nav-link">账号总览</a>
+                <a href="/email-services" class="nav-link">邮箱服务</a>
+                <a href="/payment" class="nav-link">支付</a>
+                <a href="/card-pool" class="nav-link">卡池</a>
+                <a href="/auto-team" class="nav-link">自动进team</a>
+                <a href="/logs" class="nav-link active">后台日志</a>
+                <a href="/settings" class="nav-link">设置</a>
+                <a href="/logout" class="nav-link">退出</a>
+            </div>
+            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </nav>
+
+        <main class="main-content logs-layout">
+            <div class="page-header">
+                <h2>后台日志监控台</h2>
+                <p class="subtitle">统一查看后端运行日志，支持筛选、自动刷新、定时清理</p>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3>筛选与控制</h3>
+                    <div class="logs-toolbar-actions">
+                        <button id="refresh-logs-btn" class="btn btn-success">刷新</button>
+                        <button id="clear-filters-btn" class="btn btn-ghost">重置筛选</button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="filters-grid">
+                        <div class="form-group">
+                            <label for="filter-level">级别</label>
+                            <select id="filter-level">
+                                <option value="">全部</option>
+                                <option value="INFO">INFO</option>
+                                <option value="WARNING">WARNING</option>
+                                <option value="ERROR">ERROR</option>
+                                <option value="CRITICAL">CRITICAL</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-logger">Logger</label>
+                            <input id="filter-logger" type="text" placeholder="例如 src.web.routes.payment">
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-keyword">关键词</label>
+                            <input id="filter-keyword" type="text" placeholder="错误关键字 / task id">
+                        </div>
+                        <div class="form-group">
+                            <label for="filter-since-minutes">最近时间（分钟）</label>
+                            <input id="filter-since-minutes" type="number" min="1" max="10080" placeholder="留空=全部">
+                        </div>
+                        <div class="form-group">
+                            <label for="auto-refresh-seconds">自动刷新</label>
+                            <select id="auto-refresh-seconds">
+                                <option value="0">关闭</option>
+                                <option value="5">5 秒</option>
+                                <option value="10" selected>10 秒</option>
+                                <option value="30">30 秒</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="page-size-select">每页条数</label>
+                            <select id="page-size-select">
+                                <option value="50">50</option>
+                                <option value="100" selected>100</option>
+                                <option value="200">200</option>
+                                <option value="500">500</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="cleanup-inline">
+                        <span class="hint-inline">清理策略：</span>
+                        <input id="cleanup-retention-days" type="number" min="1" max="3650" value="30" placeholder="保留天数">
+                        <input id="cleanup-max-rows" type="number" min="1000" max="5000000" value="50000" placeholder="最大保留条数">
+                        <button id="cleanup-logs-btn" class="btn btn-danger">立即清理</button>
+                        <button id="clear-logs-btn" class="btn btn-danger">清空日志</button>
+                        <span class="hint-inline">系统也会每小时自动清理一次</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3>统计</h3>
+                    <span id="latest-log-time" class="hint-inline">最新日志: -</span>
+                </div>
+                <div class="card-body">
+                    <div class="stats-grid">
+                        <div class="stat-box"><div class="label">总量</div><div id="stat-total" class="value">0</div></div>
+                        <div class="stat-box"><div class="label">INFO</div><div id="stat-info" class="value">0</div></div>
+                        <div class="stat-box"><div class="label">WARNING</div><div id="stat-warning" class="value">0</div></div>
+                        <div class="stat-box"><div class="label">ERROR</div><div id="stat-error" class="value">0</div></div>
+                        <div class="stat-box"><div class="label">CRITICAL</div><div id="stat-critical" class="value">0</div></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header logs-toolbar">
+                    <h3>日志流</h3>
+                    <span id="logs-summary" class="hint-inline">-</span>
+                </div>
+                <div class="card-body" style="padding:0;">
+                    <div id="log-console" class="log-console">
+                        <div class="log-line">
+                            <span class="log-time">-</span>
+                            <span class="log-level">INFO</span>
+                            <span class="log-logger">system</span>
+                            <span class="log-message">加载中...</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body logs-footer">
+                    <button id="prev-page-btn" class="btn btn-ghost btn-sm">上一页</button>
+                    <span id="page-info" class="hint-inline">第 1 页</span>
+                    <button id="next-page-btn" class="btn btn-ghost btn-sm">下一页</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/static/js/logs.js?v={{ static_version }}"></script>
+</body>
+</html>

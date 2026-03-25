@@ -58,6 +58,7 @@ class Account(Base):
     cookies = Column(Text)  # 完整 cookie 字符串，用于支付请求
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    bind_card_tasks = relationship("BindCardTask", back_populates="account")
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -117,6 +118,64 @@ class RegistrationTask(Base):
 
     # 关系
     email_service = relationship('EmailService')
+
+
+class BindCardTask(Base):
+    """绑卡任务表"""
+    __tablename__ = "bind_card_tasks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    plan_type = Column(String(20), nullable=False)  # plus / team
+    workspace_name = Column(String(255))
+    price_interval = Column(String(20))
+    seat_quantity = Column(Integer)
+    country = Column(String(10), default="US")
+    currency = Column(String(10), default="USD")
+    checkout_url = Column(Text, nullable=False)
+    checkout_session_id = Column(String(120))
+    publishable_key = Column(String(255))
+    client_secret = Column(Text)
+    checkout_source = Column(String(50))  # openai_checkout / aimizy_fallback
+    bind_mode = Column(String(30), default="semi_auto")  # semi_auto / third_party / local_auto
+    status = Column(String(20), default="link_ready")  # link_ready / opened / waiting_user_action / verifying / completed / failed
+    last_error = Column(Text)
+    opened_at = Column(DateTime)
+    last_checked_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # 关系
+    account = relationship("Account", back_populates="bind_card_tasks")
+
+
+class AppLog(Base):
+    """应用日志表（后台日志监控）"""
+    __tablename__ = "app_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    level = Column(String(20), nullable=False, index=True)
+    logger = Column(String(255), nullable=False, index=True)
+    module = Column(String(255))
+    pathname = Column(String(500))
+    lineno = Column(Integer)
+    message = Column(Text, nullable=False)
+    exception = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "level": self.level,
+            "logger": self.logger,
+            "module": self.module,
+            "pathname": self.pathname,
+            "lineno": self.lineno,
+            "message": self.message,
+            "exception": self.exception,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 class Setting(Base):

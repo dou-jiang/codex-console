@@ -304,7 +304,7 @@ function renderAccounts(accounts) {
                     : '-'}
             </td>
             <td>${getServiceTypeText(account.email_service)}</td>
-            <td>${getStatusIcon(account.status)}</td>
+            <td>${renderAccountStatusDot(account.status)}</td>
             <td>
                 <div class="cpa-status">
                     ${account.cpa_uploaded
@@ -313,23 +313,19 @@ function renderAccounts(accounts) {
                 </div>
             </td>
             <td>
-                <div class="cpa-status">
-                    ${account.subscription_type
-                        ? `<span class="badge uploaded" title="${account.subscription_type}">${account.subscription_type}</span>`
-                        : `<span class="badge pending">-</span>`}
-                </div>
+                ${renderSubscriptionStatus(account.subscription_type)}
             </td>
             <td>${format.date(account.last_refresh) || '-'}</td>
             <td>
                 <div style="display:flex;gap:4px;align-items:center;white-space:nowrap;">
                     <button class="btn btn-secondary btn-sm" onclick="viewAccount(${account.id})">详情</button>
+                    <button class="btn btn-secondary btn-sm" onclick="checkInboxCode(${account.id})">收件箱</button>
                     <div class="dropdown" style="position:relative;">
                         <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();toggleMoreMenu(this)">更多</button>
                         <div class="dropdown-menu" style="min-width:100px;">
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);refreshToken(${account.id})">刷新</a>
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);uploadAccount(${account.id})">上传</a>
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);markSubscription(${account.id})">标记</a>
-                            <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);checkInboxCode(${account.id})">收件箱</a>
                         </div>
                     </div>
                     <button class="btn btn-danger btn-sm" onclick="deleteAccount(${account.id}, '${escapeHtml(account.email)}')">删除</button>
@@ -380,6 +376,49 @@ function renderAccounts(accounts) {
     elements.selectAll.checked = allCbs.length > 0 && checkedCbs.length === allCbs.length;
     elements.selectAll.indeterminate = checkedCbs.length > 0 && checkedCbs.length < allCbs.length;
     renderSelectAllBanner();
+}
+
+function normalizeSubscriptionType(subscriptionType) {
+    const raw = String(subscriptionType || '').trim().toLowerCase();
+    if (!raw) return '';
+    if (raw.includes('team') || raw.includes('enterprise')) return 'team';
+    if (raw.includes('plus') || raw.includes('pro')) return 'plus';
+    if (raw.includes('free') || raw.includes('basic')) return 'free';
+    return raw;
+}
+
+function hasActiveSubscription(subscriptionType) {
+    const normalized = normalizeSubscriptionType(subscriptionType);
+    return normalized === 'plus' || normalized === 'team';
+}
+
+function renderAccountStatusDot(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    const dotClass = ['active', 'expired', 'banned', 'failed'].includes(normalized)
+        ? normalized
+        : 'unknown';
+    const title = getStatusText('account', normalized) || normalized || '-';
+    return `
+        <div class="account-status-cell" title="${escapeHtml(title)}">
+            <span class="account-status-dot ${dotClass}"></span>
+        </div>
+    `;
+}
+
+function renderSubscriptionStatus(subscriptionType) {
+    const normalized = normalizeSubscriptionType(subscriptionType);
+    const subscribed = hasActiveSubscription(normalized);
+    const dotClass = subscribed ? 'subscribed' : 'unsubscribed';
+    const label = subscribed ? normalized.toUpperCase() : 'FREE';
+    const title = subscribed
+        ? `已订阅: ${normalized}`
+        : '未检测到 Plus/Team 订阅';
+    return `
+        <div class="subscription-status ${dotClass}" title="${escapeHtml(title)}">
+            <span class="dot ${dotClass}"></span>
+            <span class="label">${escapeHtml(label)}</span>
+        </div>
+    `;
 }
 
 // 切换密码显示
@@ -622,6 +661,25 @@ async function viewAccount(id) {
                     </div>
                 </div>
                 <div class="info-item" style="grid-column: span 2;">
+                    <span class="label">Session Token</span>
+                    <div class="value" style="font-size: 0.7rem; word-break: break-all; font-family: var(--font-mono); background: var(--surface-hover); padding: 8px; border-radius: 4px;">
+                        ${escapeHtml(tokens.session_token || account.session_token || '-')}
+                        ${(tokens.session_token || account.session_token)
+                            ? `<button class="btn btn-ghost btn-sm" onclick="copyToClipboard('${escapeHtml(tokens.session_token || account.session_token)}')" style="margin-left: 8px;">📋</button>`
+                            : ''
+                        }
+                        <button class="btn btn-ghost btn-sm" onclick="editSessionToken(${id}, '${escapeHtml(tokens.session_token || account.session_token || '')}')" style="margin-left: 8px;" title="修改 Session Token">✏️</button>
+                        ${tokens.session_token_source ? `<span style="margin-left:8px;color:var(--text-muted);font-size:0.72rem;">来源: ${escapeHtml(tokens.session_token_source)}</span>` : ''}
+                    </div>
+                </div>
+                <div class="info-item" style="grid-column: span 2;">
+                    <span class="label">Device ID</span>
+                    <div class="value" style="font-size: 0.75rem; word-break: break-all; font-family: var(--font-mono); background: var(--surface-hover); padding: 8px; border-radius: 4px;">
+                        ${escapeHtml(tokens.device_id || account.device_id || '-')}
+                        ${(tokens.device_id || account.device_id) ? `<button class="btn btn-ghost btn-sm" onclick="copyToClipboard('${escapeHtml(tokens.device_id || account.device_id)}')" style="margin-left: 8px;">📋</button>` : ''}
+                    </div>
+                </div>
+                <div class="info-item" style="grid-column: span 2;">
                     <span class="label">Cookies（支付用）</span>
                     <div class="value">
                         <textarea id="cookies-input-${id}" rows="3"
@@ -643,6 +701,37 @@ async function viewAccount(id) {
         elements.detailModal.classList.add('active');
     } catch (error) {
         toast.error('加载账号详情失败: ' + error.message);
+    }
+}
+
+async function bootstrapSessionToken(id) {
+    try {
+        const result = await api.post(`/payment/accounts/${id}/session-bootstrap`, {});
+        if (result && result.success) {
+            toast.success('Session Token 补全成功');
+        } else {
+            toast.warning(result?.message || '未补全到 Session Token');
+        }
+    } catch (error) {
+        toast.error('补全 Session Token 失败: ' + error.message);
+    } finally {
+        await viewAccount(id);
+        loadAccounts();
+    }
+}
+
+async function editSessionToken(id, currentToken = '') {
+    const current = String(currentToken || '');
+    const nextToken = window.prompt('请输入新的 Session Token（留空将清空）', current);
+    if (nextToken === null) return;
+    try {
+        await api.patch(`/accounts/${id}`, { session_token: String(nextToken).trim() });
+        toast.success('Session Token 已更新');
+    } catch (error) {
+        toast.error('更新 Session Token 失败: ' + error.message);
+    } finally {
+        await viewAccount(id);
+        loadAccounts();
     }
 }
 

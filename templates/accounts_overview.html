@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>账号总览 - OpenAI 注册系统</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
+    <style>
+        .overview-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: var(--spacing-lg);
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .distribution-list {
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-sm);
+        }
+
+        .distribution-row {
+            display: grid;
+            grid-template-columns: 120px 1fr 56px;
+            gap: var(--spacing-sm);
+            align-items: center;
+            font-size: 0.875rem;
+        }
+
+        .distribution-label {
+            color: var(--text-secondary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .distribution-bar-wrap {
+            height: 10px;
+            background: var(--border-light);
+            border-radius: var(--radius-full);
+            overflow: hidden;
+        }
+
+        .distribution-bar {
+            height: 100%;
+            background: var(--primary-color);
+            border-radius: var(--radius-full);
+            min-width: 2px;
+        }
+
+        .distribution-value {
+            text-align: right;
+            color: var(--text-secondary);
+        }
+
+        .cards-main-title {
+            margin: 6px 0 10px;
+            font-size: 1.8rem;
+            line-height: 1.15;
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+
+        .cards-block {
+            margin-top: 0;
+            background: linear-gradient(130deg, #edf1ff 0%, #eef6f2 55%, #f8fafc 100%);
+            border: 1px solid #d8e2f2;
+            border-radius: 22px;
+            padding: 16px;
+        }
+
+        .cards-panel {
+            background: rgba(255, 255, 255, 0.88);
+            border: 1px solid #d8e2f2;
+            border-radius: 18px;
+            padding: 14px;
+            margin-bottom: 16px;
+            box-shadow: 0 8px 22px rgba(28, 49, 78, 0.08);
+        }
+
+        .cards-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .cards-toolbar-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            flex: 1;
+        }
+
+        .cards-toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .cards-search-wrap {
+            flex: 0 1 340px;
+            position: relative;
+        }
+
+        .cards-search {
+            width: 100%;
+            height: 44px;
+            border: 1px solid #cfdbee;
+            border-radius: 12px;
+            padding: 0 14px;
+            background: #f6f9ff;
+            color: #32486d;
+            font-size: 0.95rem;
+        }
+
+        .cards-select {
+            height: 42px;
+            min-width: 140px;
+            border: 1px solid #cfdbee;
+            border-radius: 12px;
+            padding: 0 12px;
+            background: #f6f9ff;
+            color: #32486d;
+            font-size: 0.92rem;
+        }
+
+        .view-toggle {
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid #cfdbee;
+            border-radius: 12px;
+            padding: 4px;
+            background: #f6f9ff;
+            gap: 4px;
+        }
+
+        .view-toggle-btn {
+            width: 34px;
+            height: 32px;
+            border: 0;
+            border-radius: 8px;
+            background: transparent;
+            color: #6a7a95;
+            cursor: pointer;
+            font-size: 0.95rem;
+            line-height: 1;
+        }
+
+        .view-toggle-btn#view-grid-btn {
+            color: #7c3aed;
+        }
+
+        .view-toggle-btn#view-grid-btn.active,
+        .view-toggle-btn#view-list-btn.active {
+            color: #fff;
+        }
+
+        .view-toggle-btn.active {
+            background: linear-gradient(120deg, #6d28d9, #8b5cf6);
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(109, 40, 217, 0.35);
+        }
+
+        .cards-icon-btn {
+            width: 38px;
+            height: 38px;
+            border: 1px solid #cfdbee;
+            border-radius: 12px;
+            background: #fff;
+            color: #4f607d;
+            font-size: 1rem;
+            cursor: pointer;
+            line-height: 1;
+        }
+
+        .cards-icon-btn.primary {
+            border: 0;
+            color: #fff;
+            background: linear-gradient(120deg, #6d28d9, #8b5cf6);
+            box-shadow: 0 6px 14px rgba(109, 40, 217, 0.38);
+        }
+
+        .cards-status-line {
+            margin-top: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            font-size: 0.84rem;
+            color: #607390;
+        }
+
+        .cards-selection-info {
+            color: #4f607d;
+            font-weight: 600;
+        }
+
+        .cards-sep {
+            color: #a3afc2;
+            margin: 0 6px;
+        }
+
+        .cards-next-refresh {
+            white-space: nowrap;
+        }
+
+        .cards-auto-refresh {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .cards-refresh-select {
+            height: 32px;
+            border: 1px solid #cfdbee;
+            border-radius: 8px;
+            padding: 0 8px;
+            background: #f6f9ff;
+            color: #32486d;
+            font-size: 0.84rem;
+        }
+
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+            gap: 16px;
+        }
+
+        .cards-grid.view-list {
+            grid-template-columns: 1fr;
+        }
+
+        .quota-card {
+            background: #fff;
+            border: 1px solid #d4dff1;
+            border-radius: 16px;
+            padding: 14px;
+            box-shadow: 0 8px 18px rgba(16, 40, 80, 0.07);
+            min-height: 290px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .quota-card.is-current {
+            border: 2px solid #4d76f6;
+            box-shadow: 0 10px 24px rgba(59, 96, 212, 0.2);
+        }
+
+        .quota-card-head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .card-check {
+            width: 22px;
+            height: 22px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .card-check input {
+            width: 20px;
+            height: 20px;
+            margin: 0;
+            cursor: pointer;
+            accent-color: #3a6cf4;
+        }
+
+        .quota-card-email {
+            flex: 1;
+            font-size: 1.04rem;
+            font-weight: 700;
+            color: #27344b;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 64%;
+        }
+
+        .quota-badges {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-pill {
+            border-radius: 999px;
+            height: 30px;
+            padding: 0 10px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.84rem;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: 0.02em;
+        }
+
+        .status-pill.current {
+            background: #22c55e;
+        }
+
+        .plan-badge {
+            border-radius: 999px;
+            height: 30px;
+            padding: 0 12px;
+            display: inline-flex;
+            align-items: center;
+            font-size: 0.84rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            color: #fff;
+        }
+
+        .plan-badge.plus {
+            background: #10b981;
+        }
+
+        .plan-badge.team {
+            background: linear-gradient(120deg, #6d28d9, #8b5cf6);
+        }
+
+        .plan-badge.free {
+            background: #94a3b8;
+        }
+
+        .quota-item {
+            margin-bottom: 14px;
+        }
+
+        .quota-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            color: #4c5f80;
+            font-weight: 700;
+        }
+
+        .quota-row span:first-child {
+            color: #5f708d;
+            font-weight: 600;
+        }
+
+        .quota-value {
+            font-size: 1rem;
+            line-height: 1;
+            font-weight: 800;
+        }
+
+        .quota-bar {
+            height: 9px;
+            border-radius: 999px;
+            background: #e7edf8;
+            overflow: hidden;
+        }
+
+        .quota-bar > span {
+            display: block;
+            height: 100%;
+            border-radius: 999px;
+            width: 0;
+            transition: width .2s ease;
+        }
+
+        .tone-green { color: #22c55e; }
+        .tone-green-bar { background: #22c55e; }
+        .tone-orange { color: #f59e0b; }
+        .tone-orange-bar { background: #f59e0b; }
+        .tone-red { color: #ef4444; }
+        .tone-red-bar { background: #ef4444; }
+        .tone-gray { color: #64748b; }
+        .tone-gray-bar { background: #94a3b8; }
+
+        .quota-reset {
+            margin-top: 6px;
+            font-size: 0.82rem;
+            color: #8594ad;
+        }
+
+        .quota-divider {
+            margin-top: auto;
+            border-top: 1px solid #e5ecf8;
+        }
+
+        .quota-card-foot {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 10px;
+        }
+
+        .quota-time {
+            font-size: 0.8rem;
+            color: #8ca0be;
+        }
+
+        .card-actions {
+            display: inline-flex;
+            gap: 8px;
+        }
+
+        .card-action-btn {
+            width: 36px;
+            height: 36px;
+            border: 1px solid #d7e2f2;
+            border-radius: 10px;
+            background: #eef3fb;
+            color: #4f607d;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: transform .15s ease, background-color .2s ease, box-shadow .2s ease, border-color .2s ease, color .2s ease;
+        }
+
+        .card-action-btn:hover {
+            background: #e4edf9;
+            border-color: #c6d6ed;
+            box-shadow: 0 4px 10px rgba(66, 94, 146, 0.16);
+        }
+
+        .card-action-btn:active {
+            transform: scale(0.92);
+            background: #ddf3eb;
+            border-color: #86cfb8;
+            color: #0f8f70;
+        }
+
+        .card-action-btn:focus {
+            outline: none;
+        }
+
+        .card-action-btn:focus-visible {
+            outline: none;
+            border-color: #10a37f;
+            box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.2);
+        }
+
+        .card-action-btn.danger {
+            color: #da4d4d;
+        }
+
+        .card-action-btn.is-loading {
+            color: transparent;
+            pointer-events: none;
+            background: #e7f7f2;
+            border-color: #86cfb8;
+            box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.16);
+        }
+
+        .card-action-btn.is-loading::after {
+            content: "⟳";
+            display: inline-block;
+            color: #0f8f70;
+            animation: cardRefreshSpin .75s linear infinite;
+        }
+
+        @keyframes cardRefreshSpin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .cards-empty {
+            text-align: center;
+            color: #667995;
+            padding: 26px 8px;
+            border: 1px dashed #cdd8eb;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.7);
+        }
+
+        @media (max-width: 1024px) {
+            .overview-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .cards-main-title {
+                font-size: 1.55rem;
+            }
+
+            .cards-toolbar-left,
+            .cards-toolbar-right {
+                width: 100%;
+            }
+
+            .cards-search-wrap {
+                flex-basis: 100%;
+            }
+
+            .cards-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <nav class="navbar">
+        <div class="nav-brand">
+            <h1>OpenAI 注册系统</h1>
+        </div>
+        <div class="nav-links">
+            <a href="/" class="nav-link">注册</a>
+            <a href="/accounts" class="nav-link">账号管理</a>
+            <a href="/accounts-overview" class="nav-link active">账号总览</a>
+            <a href="/email-services" class="nav-link">邮箱服务</a>
+            <a href="/payment" class="nav-link">支付</a>
+            <a href="/card-pool" class="nav-link">卡池</a>
+            <a href="/auto-team" class="nav-link">自动进team</a>
+            <a href="/logs" class="nav-link">后台日志</a>
+            <a href="/settings" class="nav-link">设置</a>
+            <a href="/logout" class="nav-link">退出</a>
+        </div>
+        <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+    </nav>
+
+    <main class="main-content">
+        <div class="page-header">
+            <h2>账号总览</h2>
+            <p class="subtitle">账号总体状态、分布和订阅账号卡片视图</p>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="ov-total">0</div>
+                <div class="stat-label">总账号数</div>
+            </div>
+            <div class="stat-card success">
+                <div class="stat-value" id="ov-active">0</div>
+                <div class="stat-label">活跃账号</div>
+            </div>
+            <div class="stat-card info">
+                <div class="stat-value" id="ov-access-token">0</div>
+                <div class="stat-label">有 Access Token</div>
+            </div>
+            <div class="stat-card warning">
+                <div class="stat-value" id="ov-cpa-uploaded">0</div>
+                <div class="stat-label">已上传 CPA</div>
+            </div>
+        </div>
+
+        <div class="overview-grid">
+            <div class="card">
+                <div class="card-header"><h3>状态分布</h3></div>
+                <div class="card-body"><div class="distribution-list" id="dist-status"></div></div>
+            </div>
+            <div class="card">
+                <div class="card-header"><h3>邮箱服务分布</h3></div>
+                <div class="card-body"><div class="distribution-list" id="dist-service"></div></div>
+            </div>
+            <div class="card">
+                <div class="card-header"><h3>订阅分布</h3></div>
+                <div class="card-body"><div class="distribution-list" id="dist-subscription"></div></div>
+            </div>
+            <div class="card">
+                <div class="card-header"><h3>来源分布</h3></div>
+                <div class="card-body"><div class="distribution-list" id="dist-source"></div></div>
+            </div>
+        </div>
+
+        <h2 class="cards-main-title">Codex 账号管理</h2>
+        <section class="cards-block">
+
+            <div class="cards-panel">
+                <div class="cards-toolbar">
+                    <div class="cards-toolbar-left">
+                        <div class="cards-search-wrap">
+                            <input id="card-search-input" class="cards-search" type="text" placeholder="搜索账号...">
+                        </div>
+
+                        <div class="view-toggle">
+                            <button id="view-list-btn" class="view-toggle-btn" title="列表视图">☰</button>
+                            <button id="view-grid-btn" class="view-toggle-btn active" title="卡片视图">▦</button>
+                        </div>
+
+                        <select id="card-plan-filter" class="cards-select" title="计划筛选">
+                            <option value="all">全部 (0)</option>
+                            <option value="free">Free</option>
+                            <option value="plus">Plus</option>
+                            <option value="team">Team</option>
+                            <option value="current">当前账号</option>
+                        </select>
+
+                        <select id="card-sort-mode" class="cards-select" title="排序方式">
+                            <option value="created_desc">按创建时间</option>
+                            <option value="created_asc">按创建时间（旧→新）</option>
+                            <option value="hourly_desc">按 5 小时额度</option>
+                            <option value="weekly_desc">按周额度</option>
+                            <option value="email_asc">按邮箱排序</option>
+                        </select>
+                    </div>
+
+                    <div class="cards-toolbar-right">
+                        <button id="card-add-btn" class="cards-icon-btn primary" title="添加账号">+</button>
+                        <button id="card-refresh-btn" class="cards-icon-btn" title="一键刷新">⟳</button>
+                        <button id="card-import-btn" class="cards-icon-btn" title="一键导入">⇩</button>
+                        <button id="card-delete-btn" class="cards-icon-btn" title="一键删除">🗑</button>
+                        <button id="card-export-all-btn" class="cards-icon-btn" title="一键导出">⇪</button>
+                    </div>
+                </div>
+
+                <div class="cards-status-line">
+                    <div>
+                        <span id="card-selection-info" class="cards-selection-info">已选择 0 个账号</span>
+                        <span class="cards-sep">|</span>
+                        <span id="card-next-refresh" class="cards-next-refresh">下次刷新 --</span>
+                    </div>
+                    <div class="cards-auto-refresh">
+                        <span>自动刷新</span>
+                        <select id="card-refresh-interval" class="cards-refresh-select" title="自动刷新间隔">
+                            <option value="5">5 分钟</option>
+                            <option value="7" selected>7 分钟</option>
+                            <option value="10">10 分钟</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div id="plan-cards-container" class="cards-grid view-grid"></div>
+            <div id="plan-cards-empty" class="cards-empty" style="display:none;">没有匹配的账号</div>
+        </section>
+
+        <div class="modal" id="overview-add-modal">
+            <div class="modal-content" style="max-width:680px;">
+                <div class="modal-header">
+                    <h3>添加账号</h3>
+                    <button class="modal-close" id="overview-add-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="overview-add-email">邮箱 *</label>
+                            <input id="overview-add-email" type="text" placeholder="name@example.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="overview-add-password">密码 *</label>
+                            <input id="overview-add-password" type="text" placeholder="必填">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="overview-add-email-service">邮箱服务</label>
+                            <input id="overview-add-email-service" type="text" value="manual">
+                        </div>
+                        <div class="form-group">
+                            <label for="overview-add-subscription">订阅</label>
+                            <select id="overview-add-subscription">
+                                <option value="">无</option>
+                                <option value="free">Free</option>
+                                <option value="plus">Plus</option>
+                                <option value="team">Team</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="overview-add-client-id">Client ID</label>
+                            <input id="overview-add-client-id" type="text">
+                        </div>
+                        <div class="form-group">
+                            <label for="overview-add-account-id">Account ID</label>
+                            <input id="overview-add-account-id" type="text">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="overview-add-workspace-id">Workspace ID</label>
+                            <input id="overview-add-workspace-id" type="text">
+                        </div>
+                        <div class="form-group">
+                            <label for="overview-add-status">状态</label>
+                            <select id="overview-add-status">
+                                <option value="active">active</option>
+                                <option value="expired">expired</option>
+                                <option value="failed">failed</option>
+                                <option value="banned">banned</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="overview-add-existing-select">从账号管理选择账号（仅显示当前未在卡片中的账号）</label>
+                            <select id="overview-add-existing-select">
+                                <option value="">请选择账号</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body" style="padding-top:0;">
+                    <div class="form-actions" style="border-top:none;padding-top:0;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                        <div style="display:flex;gap:8px;">
+                            <button class="btn btn-secondary" id="overview-add-existing-refresh">刷新账号列表</button>
+                            <button class="btn btn-primary" id="overview-add-existing-submit">按所选账号添加</button>
+                        </div>
+                        <div style="display:flex;gap:8px;">
+                        <button class="btn btn-secondary" id="overview-add-cancel">取消</button>
+                        <button class="btn btn-primary" id="overview-add-submit">添加</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="modal" id="overview-import-modal">
+            <div class="modal-content" style="max-width:760px;">
+                <div class="modal-header">
+                    <h3>一键导入账号</h3>
+                    <button class="modal-close" id="overview-import-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="overview-import-json">粘贴 JSON（支持账号详情字段）</label>
+                        <textarea id="overview-import-json" style="width:100%;min-height:220px;font-family:var(--font-mono);" placeholder='[{"email":"a@example.com","password":"123456","subscription_type":"plus"}]'></textarea>
+                    </div>
+                    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+                        <input id="overview-import-overwrite" type="checkbox"> 覆盖同邮箱已有账号
+                    </label>
+                </div>
+                <div class="card-body" style="padding-top:0;">
+                    <div class="form-actions" style="border-top:none;padding-top:0;">
+                        <button class="btn btn-secondary" id="overview-import-cancel">取消</button>
+                        <button class="btn btn-primary" id="overview-import-submit">导入</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script src="/static/js/utils.js?v={{ static_version }}"></script>
+<script src="/static/js/accounts_overview.js?v={{ static_version }}"></script>
+</body>
+</html>

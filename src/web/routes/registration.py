@@ -1012,9 +1012,14 @@ async def get_task_logs(task_uuid: str):
             raise HTTPException(status_code=404, detail="任务不存在")
 
         logs = task.logs or ""
+        result = task.result if isinstance(task.result, dict) else {}
+        email = result.get("email")
+        service_type = task.email_service.service_type if task.email_service else None
         return {
             "task_uuid": task_uuid,
             "status": task.status,
+            "email": email,
+            "email_service": service_type,
             "logs": logs.split("\n") if logs else []
         }
 
@@ -1063,15 +1068,33 @@ async def get_registration_stats():
             func.count(RegistrationTask.id)
         ).group_by(RegistrationTask.status).all()
 
-        # 今日注册数
+        # 今日统计
         today = datetime.utcnow().date()
+        today_status_stats = db.query(
+            RegistrationTask.status,
+            func.count(RegistrationTask.id)
+        ).filter(
+            func.date(RegistrationTask.created_at) == today
+        ).group_by(RegistrationTask.status).all()
+
         today_count = db.query(func.count(RegistrationTask.id)).filter(
             func.date(RegistrationTask.created_at) == today
         ).scalar()
 
+        today_by_status = {status: count for status, count in today_status_stats}
+        today_success = int(today_by_status.get("completed", 0))
+        today_failed = int(today_by_status.get("failed", 0))
+        today_total = int(today_count or 0)
+        today_success_rate = round((today_success / today_total) * 100, 1) if today_total > 0 else 0.0
+
         return {
             "by_status": {status: count for status, count in status_stats},
-            "today_count": today_count
+            "today_count": today_total,
+            "today_total": today_total,
+            "today_success": today_success,
+            "today_failed": today_failed,
+            "today_success_rate": today_success_rate,
+            "today_by_status": today_by_status,
         }
 
 

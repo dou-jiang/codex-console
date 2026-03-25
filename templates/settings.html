@@ -6,6 +6,13 @@
     <title>系统设置 - OpenAI 注册系统</title>
     <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚙️</text></svg>">
+    <style>
+        #proxy-tab .proxy-table-container {
+            max-height: 640px;
+            min-height: 320px;
+            overflow-y: auto;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -17,8 +24,12 @@
             <div class="nav-links">
                 <a href="/" class="nav-link">注册</a>
                 <a href="/accounts" class="nav-link">账号管理</a>
+                <a href="/accounts-overview" class="nav-link">账号总览</a>
                 <a href="/email-services" class="nav-link">邮箱服务</a>
                 <a href="/payment" class="nav-link">支付</a>
+                <a href="/card-pool" class="nav-link">卡池</a>
+                <a href="/auto-team" class="nav-link">自动进team</a>
+                <a href="/logs" class="nav-link">后台日志</a>
                 <a href="/settings" class="nav-link active">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
@@ -99,7 +110,7 @@
                         </div>
                     </div>
                     <div class="card-body" style="padding: 0;">
-                        <div class="table-container">
+                        <div class="table-container proxy-table-container">
                             <table class="data-table">
                                 <thead>
                                     <tr>
@@ -469,6 +480,17 @@
 
                             <div class="form-row">
                                 <div class="form-group">
+                                    <label for="registration-entry-flow">注册入口链路</label>
+                                    <select id="registration-entry-flow" name="entry_flow">
+                                        <option value="native">原本注册入口链路（当前默认）</option>
+                                        <option value="abcard">ABCard 入口链路</option>
+                                    </select>
+                                    <span class="hint">切换后将影响后续新建注册任务的入口流程；Outlook 邮箱会自动使用 Outlook 链路，无需手动设置</span>
+                                </div>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group">
                                     <label for="sleep-min">最小等待时间 (秒)</label>
                                     <input type="number" id="sleep-min" name="sleep_min" value="5" min="1" max="60">
                                 </div>
@@ -561,7 +583,9 @@
 
                         <div class="form-actions">
                             <button class="btn btn-secondary" id="backup-btn">💾 备份数据库</button>
+                            <button class="btn btn-primary" id="import-db-btn">📥 导入数据</button>
                             <button class="btn btn-warning" id="cleanup-btn">🧹 清理过期数据</button>
+                            <input type="file" id="db-import-file" accept=".db,.sqlite,.sqlite3" style="display: none;">
                         </div>
                     </div>
                 </div>

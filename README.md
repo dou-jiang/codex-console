@@ -126,13 +126,21 @@ codex-console.exe --access-password mypassword
 docker-compose up -d
 ```
 
-你可以在 `docker-compose.yml` 中修改环境变量，比如端口和访问密码。
+你可以在 `docker-compose.yml` 中修改环境变量，比如端口和访问密码。  
+如果需要看“全自动绑卡”的可视化浏览器，打开：
+
+- noVNC: `http://127.0.0.1:6080`
 
 ### 使用 docker run
 
 ```bash
 docker run -d \
   -p 1455:1455 \
+  -p 6080:6080 \
+  -e DISPLAY=:99 \
+  -e ENABLE_VNC=1 \
+  -e VNC_PORT=5900 \
+  -e NOVNC_PORT=6080 \
   -e WEBUI_HOST=0.0.0.0 \
   -e WEBUI_PORT=1455 \
   -e WEBUI_ACCESS_PASSWORD=your_secure_password \

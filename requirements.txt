@@ -11,5 +11,5 @@ python-multipart>=0.0.6
 sqlalchemy>=2.0.0
 aiosqlite>=0.19.0
 psycopg[binary]>=3.1.18
-# 可选：无痕打开支付页需要 playwright（pip install playwright && playwright install chromium）
-# playwright>=1.40.0
+# 自动绑卡（local_auto）依赖
+playwright>=1.40.0

@@ -248,6 +248,12 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.REGISTRATION,
         description="注册间隔最大值（秒）"
     ),
+    "registration_entry_flow": SettingDefinition(
+        db_key="registration.entry_flow",
+        default_value="native",
+        category=SettingCategory.REGISTRATION,
+        description="注册入口链路（native=原本链路, abcard=ABCard入口链路；Outlook 邮箱会自动走 Outlook 链路）"
+    ),
 
     # 邮箱服务配置
     "email_service_priority": SettingDefinition(
@@ -400,6 +406,7 @@ SETTING_TYPES: Dict[str, Type] = {
     "registration_default_password_length": int,
     "registration_sleep_min": int,
     "registration_sleep_max": int,
+    "registration_entry_flow": str,
     "email_service_priority": dict,
     "tempmail_timeout": int,
     "tempmail_max_retries": int,
@@ -663,6 +670,7 @@ class Settings(BaseModel):
     registration_default_password_length: int = 12
     registration_sleep_min: int = 5
     registration_sleep_max: int = 30
+    registration_entry_flow: str = "native"
 
     # 邮箱服务配置
     email_service_priority: Dict[str, int] = {"tempmail": 0, "outlook": 1, "moe_mail": 2}

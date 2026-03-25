@@ -425,6 +425,17 @@ body {
     transform: translateY(-1px);
 }
 
+.btn-success {
+    background: #10a37f;
+    color: #fff;
+}
+
+.btn-success:hover:not(:disabled) {
+    background: #0f8f70;
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
 .btn-warning {
     background: var(--warning-color);
     color: white;
@@ -689,6 +700,11 @@ body {
 .table-container {
     overflow-x: auto;
     border-radius: var(--radius);
+}
+
+/* 邮箱服务页：仅拉高“自定义邮箱服务”模块 */
+.custom-email-services-card .table-container {
+    min-height: 320px;
 }
 
 .data-table {
@@ -1290,6 +1306,11 @@ body {
         margin: var(--spacing-md);
         max-height: 90vh;
     }
+
+    .custom-email-services-card .table-container {
+        min-height: 220px;
+    }
+
 }
 
 @media (max-width: 480px) {
