@@ -37,6 +37,7 @@ class EmailServiceType(str, Enum):
     TEMP_MAIL = "temp_mail"
     DUCK_MAIL = "duck_mail"
     FREEMAIL = "freemail"
+    CLOUDMAIL = "cloudmail"
     IMAP_MAIL = "imap_mail"
 
 
@@ -129,6 +130,16 @@ EMAIL_SERVICE_DEFAULTS = {
         "base_url": "",
         "admin_token": "",
         "domain": "",
+        "timeout": 30,
+        "max_retries": 3,
+    },
+    "cloudmail": {
+        "base_url": "",
+        "login_email": "",
+        "login_password": "",
+        "default_domain": "",
+        "proxy_url": None,
+        "poll_interval": 3,
         "timeout": 30,
         "max_retries": 3,
     },
