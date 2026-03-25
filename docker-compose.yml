@@ -10,6 +10,7 @@ services:
       - WEBUI_PORT=1455
       - DEBUG=0
       - LOG_LEVEL=info
+      - TZ=${TZ:-Asia/Shanghai}
       # 如果需要访问密码，可以在这里取消注释并设置
       - WEBUI_ACCESS_PASSWORD=admin123
     volumes:

@@ -6,7 +6,7 @@
 import os
 from typing import Optional, Dict, Any, Type, List
 from enum import Enum
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from pydantic.types import SecretStr
 from dataclasses import dataclass
 
@@ -248,6 +248,30 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.REGISTRATION,
         description="注册间隔最大值（秒）"
     ),
+    "registration_schedule_enabled": SettingDefinition(
+        db_key="registration.schedule_enabled",
+        default_value=False,
+        category=SettingCategory.REGISTRATION,
+        description="是否启用定时注册"
+    ),
+    "registration_schedule_interval_minutes": SettingDefinition(
+        db_key="registration.schedule_interval_minutes",
+        default_value=30,
+        category=SettingCategory.REGISTRATION,
+        description="定时注册触发间隔（分钟）"
+    ),
+    "registration_schedule_cron": SettingDefinition(
+        db_key="registration.schedule_cron",
+        default_value="*/30 * * * *",
+        category=SettingCategory.REGISTRATION,
+        description="定时注册 Cron（5位）"
+    ),
+    "registration_schedule_payload": SettingDefinition(
+        db_key="registration.schedule_payload",
+        default_value={},
+        category=SettingCategory.REGISTRATION,
+        description="定时注册请求参数快照"
+    ),
 
     # 邮箱服务配置
     "email_service_priority": SettingDefinition(
@@ -400,6 +424,10 @@ SETTING_TYPES: Dict[str, Type] = {
     "registration_default_password_length": int,
     "registration_sleep_min": int,
     "registration_sleep_max": int,
+    "registration_schedule_enabled": bool,
+    "registration_schedule_interval_minutes": int,
+    "registration_schedule_cron": str,
+    "registration_schedule_payload": dict,
     "email_service_priority": dict,
     "tempmail_timeout": int,
     "tempmail_max_retries": int,
@@ -663,6 +691,10 @@ class Settings(BaseModel):
     registration_default_password_length: int = 12
     registration_sleep_min: int = 5
     registration_sleep_max: int = 30
+    registration_schedule_enabled: bool = False
+    registration_schedule_interval_minutes: int = 30
+    registration_schedule_cron: str = "*/30 * * * *"
+    registration_schedule_payload: Dict[str, Any] = Field(default_factory=dict)
 
     # 邮箱服务配置
     email_service_priority: Dict[str, int] = {"tempmail": 0, "outlook": 1, "moe_mail": 2}

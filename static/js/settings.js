@@ -71,16 +71,42 @@ const elements = {
     // Outlook 设置
     outlookSettingsForm: document.getElementById('outlook-settings-form'),
     // Web UI 访问控制
-    webuiSettingsForm: document.getElementById('webui-settings-form')
+    webuiSettingsForm: document.getElementById('webui-settings-form'),
+    // 定时任务
+    scheduleSettingsForm: document.getElementById('schedule-settings-form'),
+    scheduleEnabled: document.getElementById('schedule-enabled'),
+    scheduleCronExpression: document.getElementById('schedule-cron-expression-settings'),
+    scheduleRunImmediately: document.getElementById('schedule-run-immediately'),
+    scheduleRegistrationMode: document.getElementById('schedule-registration-mode'),
+    scheduleEmailServiceType: document.getElementById('schedule-email-service-type'),
+    scheduleEmailServiceId: document.getElementById('schedule-email-service-id'),
+    scheduleBatchOptions: document.getElementById('schedule-batch-options'),
+    scheduleCount: document.getElementById('schedule-count'),
+    scheduleConcurrency: document.getElementById('schedule-concurrency'),
+    scheduleConcurrencyMode: document.getElementById('schedule-concurrency-mode'),
+    scheduleIntervalMin: document.getElementById('schedule-interval-min'),
+    scheduleIntervalMax: document.getElementById('schedule-interval-max'),
+    scheduleAutoUploadCpa: document.getElementById('schedule-auto-upload-cpa'),
+    scheduleCpaServiceIds: document.getElementById('schedule-cpa-service-ids'),
+    scheduleAutoUploadSub2api: document.getElementById('schedule-auto-upload-sub2api'),
+    scheduleSub2apiServiceIds: document.getElementById('schedule-sub2api-service-ids'),
+    scheduleAutoUploadTm: document.getElementById('schedule-auto-upload-tm'),
+    scheduleTmServiceIds: document.getElementById('schedule-tm-service-ids'),
+    scheduleStopBtn: document.getElementById('schedule-stop-btn-settings'),
+    scheduleRefreshBtn: document.getElementById('schedule-refresh-btn-settings'),
+    scheduleStatusText: document.getElementById('schedule-settings-status'),
+    scheduleTimezoneText: document.getElementById('schedule-settings-timezone'),
 };
 
 // 选中的服务 ID
 let selectedServiceIds = new Set();
+let scheduleDefaultCpaEnabled = null;
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
     loadSettings();
+    loadScheduleSettings();
     loadEmailServices();
     loadDatabaseInfo();
     loadProxies();
@@ -247,6 +273,20 @@ function initEventListeners() {
     if (elements.webuiSettingsForm) {
         elements.webuiSettingsForm.addEventListener('submit', handleSaveWebuiSettings);
     }
+
+    // 定时任务设置
+    if (elements.scheduleSettingsForm) {
+        elements.scheduleSettingsForm.addEventListener('submit', handleSaveScheduleSettings);
+    }
+    if (elements.scheduleStopBtn) {
+        elements.scheduleStopBtn.addEventListener('click', handleStopScheduleSettings);
+    }
+    if (elements.scheduleRefreshBtn) {
+        elements.scheduleRefreshBtn.addEventListener('click', () => loadScheduleSettings(true));
+    }
+    if (elements.scheduleRegistrationMode) {
+        elements.scheduleRegistrationMode.addEventListener('change', updateScheduleModeVisibility);
+    }
     // Team Manager 服务管理
     if (elements.addTmServiceBtn) {
         elements.addTmServiceBtn.addEventListener('click', () => openTmServiceModal());
@@ -353,6 +393,194 @@ async function loadSettings() {
     } catch (error) {
         console.error('加载设置失败:', error);
         toast.error('加载设置失败');
+    }
+}
+
+function parseServiceIdList(raw) {
+    if (!raw || !raw.trim()) return [];
+    return raw
+        .split(/[,\s]+/)
+        .map(v => parseInt(v.trim(), 10))
+        .filter(v => Number.isInteger(v) && v > 0);
+}
+
+function stringifyServiceIdList(list) {
+    if (!Array.isArray(list) || list.length === 0) return '';
+    return list.join(',');
+}
+
+async function hasEnabledCpaServicesForScheduleDefault() {
+    if (scheduleDefaultCpaEnabled !== null) {
+        return scheduleDefaultCpaEnabled;
+    }
+
+    try {
+        const services = await api.get('/cpa-services?enabled=true');
+        scheduleDefaultCpaEnabled = Array.isArray(services) && services.length > 0;
+    } catch (error) {
+        scheduleDefaultCpaEnabled = false;
+    }
+
+    return scheduleDefaultCpaEnabled;
+}
+
+function updateScheduleModeVisibility() {
+    if (!elements.scheduleRegistrationMode || !elements.scheduleBatchOptions) return;
+    const isBatch = elements.scheduleRegistrationMode.value === 'batch';
+    elements.scheduleBatchOptions.style.display = isBatch ? 'block' : 'none';
+}
+
+function formatScheduleStatusTime(iso) {
+    if (!iso) return '-';
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return iso;
+    return dt.toLocaleString('zh-CN', { hour12: false });
+}
+
+function updateScheduleStatusText(status) {
+    if (!elements.scheduleStatusText) return;
+    const modeText = status.registration_mode === 'single' ? '单次' : '批量';
+    const cronText = status.schedule_cron || '*/30 * * * *';
+    const timezoneText = status.timezone || 'Asia/Shanghai';
+
+    if (status.enabled) {
+        const nextRun = formatScheduleStatusTime(status.next_run_at);
+        const lastRun = status.last_run_at ? `，上次触发: ${formatScheduleStatusTime(status.last_run_at)}` : '';
+        const active = status.active_batch_id
+            ? `，运行中批量任务: ${status.active_batch_id.slice(0, 8)}...`
+            : (status.active_task_uuid ? `，运行中单任务: ${status.active_task_uuid.slice(0, 8)}...` : '');
+        const err = status.last_error ? `，最近错误: ${status.last_error}` : '';
+        elements.scheduleStatusText.textContent = `状态: 已启用 | 模式: ${modeText} | Cron: ${cronText} | 下次触发: ${nextRun}${lastRun}${active}${err}`;
+    } else {
+        elements.scheduleStatusText.textContent = `状态: 未启用 | Cron: ${cronText}`;
+    }
+
+    if (elements.scheduleTimezoneText) {
+        elements.scheduleTimezoneText.textContent = `时区: ${timezoneText}（容器可通过 TZ 传入）`;
+    }
+
+    if (elements.scheduleStopBtn) {
+        elements.scheduleStopBtn.disabled = !status.enabled;
+    }
+}
+
+function applySchedulePayloadToForm(payload = {}) {
+    if (!elements.scheduleRegistrationMode) return;
+
+    if (elements.scheduleCronExpression && payload.schedule_cron) {
+        elements.scheduleCronExpression.value = payload.schedule_cron;
+    }
+    elements.scheduleRegistrationMode.value = payload.registration_mode || 'batch';
+    elements.scheduleEmailServiceType.value = payload.email_service_type || 'tempmail';
+    elements.scheduleEmailServiceId.value = payload.email_service_id ?? '';
+
+    elements.scheduleRunImmediately.checked = payload.run_immediately !== false;
+
+    elements.scheduleCount.value = payload.count ?? 100;
+    elements.scheduleIntervalMin.value = payload.interval_min ?? 5;
+    elements.scheduleIntervalMax.value = payload.interval_max ?? 30;
+    elements.scheduleConcurrency.value = payload.concurrency ?? 1;
+    elements.scheduleConcurrencyMode.value = payload.mode || 'pipeline';
+
+    elements.scheduleAutoUploadCpa.checked = Boolean(payload.auto_upload_cpa);
+    elements.scheduleCpaServiceIds.value = stringifyServiceIdList(payload.cpa_service_ids || []);
+    elements.scheduleAutoUploadSub2api.checked = Boolean(payload.auto_upload_sub2api);
+    elements.scheduleSub2apiServiceIds.value = stringifyServiceIdList(payload.sub2api_service_ids || []);
+    elements.scheduleAutoUploadTm.checked = Boolean(payload.auto_upload_tm);
+    elements.scheduleTmServiceIds.value = stringifyServiceIdList(payload.tm_service_ids || []);
+
+    updateScheduleModeVisibility();
+}
+
+async function loadScheduleSettings(showToast = false) {
+    if (!elements.scheduleSettingsForm) return;
+
+    try {
+        const status = await api.get('/registration/schedule/status');
+        const payload = { ...(status.payload || {}) };
+        if (payload.auto_upload_cpa === undefined) {
+            payload.auto_upload_cpa = await hasEnabledCpaServicesForScheduleDefault();
+        }
+        elements.scheduleEnabled.checked = Boolean(status.enabled);
+        if (elements.scheduleCronExpression) {
+            elements.scheduleCronExpression.value = status.schedule_cron || '*/30 * * * *';
+        }
+        applySchedulePayloadToForm(payload);
+        updateScheduleStatusText(status);
+    } catch (error) {
+        if (showToast) {
+            toast.error('加载定时任务配置失败: ' + error.message);
+        }
+    }
+}
+
+function buildScheduleRequestPayload() {
+    const payload = {
+        schedule_cron: (elements.scheduleCronExpression.value || '').trim() || '*/30 * * * *',
+        run_immediately: elements.scheduleRunImmediately.checked,
+        registration_mode: elements.scheduleRegistrationMode.value || 'batch',
+        email_service_type: elements.scheduleEmailServiceType.value || 'tempmail',
+        auto_upload_cpa: elements.scheduleAutoUploadCpa.checked,
+        cpa_service_ids: parseServiceIdList(elements.scheduleCpaServiceIds.value),
+        auto_upload_sub2api: elements.scheduleAutoUploadSub2api.checked,
+        sub2api_service_ids: parseServiceIdList(elements.scheduleSub2apiServiceIds.value),
+        auto_upload_tm: elements.scheduleAutoUploadTm.checked,
+        tm_service_ids: parseServiceIdList(elements.scheduleTmServiceIds.value),
+    };
+
+    const emailServiceId = (elements.scheduleEmailServiceId.value || '').trim();
+    if (emailServiceId) {
+        payload.email_service_id = parseInt(emailServiceId, 10);
+    }
+
+    if (payload.registration_mode === 'batch') {
+        payload.count = parseInt(elements.scheduleCount.value, 10) || 100;
+        payload.interval_min = parseInt(elements.scheduleIntervalMin.value, 10) || 5;
+        payload.interval_max = parseInt(elements.scheduleIntervalMax.value, 10) || 30;
+        payload.concurrency = parseInt(elements.scheduleConcurrency.value, 10) || 1;
+        payload.mode = elements.scheduleConcurrencyMode.value || 'pipeline';
+    }
+
+    return payload;
+}
+
+async function handleSaveScheduleSettings(e) {
+    e.preventDefault();
+
+    if (!elements.scheduleEnabled.checked) {
+        await handleStopScheduleSettings(null, false);
+        toast.success('定时任务已禁用');
+        return;
+    }
+
+    try {
+        const payload = buildScheduleRequestPayload();
+        const status = await api.post('/registration/schedule/start', payload);
+        elements.scheduleEnabled.checked = true;
+        if (elements.scheduleCronExpression) {
+            elements.scheduleCronExpression.value = status.schedule_cron || payload.schedule_cron;
+        }
+        applySchedulePayloadToForm(status.payload || payload);
+        updateScheduleStatusText(status);
+        toast.success('定时任务已保存并启用');
+    } catch (error) {
+        toast.error('保存定时任务失败: ' + error.message);
+    }
+}
+
+async function handleStopScheduleSettings(_evt = null, showToast = true) {
+    if (!elements.scheduleSettingsForm) return;
+    try {
+        const status = await api.post('/registration/schedule/stop', {});
+        elements.scheduleEnabled.checked = false;
+        updateScheduleStatusText(status);
+        if (showToast) {
+            toast.info('定时任务已停止');
+        }
+    } catch (error) {
+        if (showToast) {
+            toast.error('停止定时任务失败: ' + error.message);
+        }
     }
 }
 

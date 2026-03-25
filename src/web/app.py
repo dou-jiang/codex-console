@@ -4,10 +4,12 @@ FastAPI 应用主文件
 """
 
 import logging
+import os
 import sys
 import secrets
 import hmac
 import hashlib
+import time
 from typing import Optional
 from pathlib import Path
 
@@ -44,6 +46,18 @@ def _build_static_asset_version(static_dir: Path) -> str:
             if path.is_file():
                 latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
     return str(latest_mtime or 1)
+
+
+def _ensure_process_timezone() -> str:
+    """统一进程时区：支持传入 TZ，未传默认 Asia/Shanghai。"""
+    tz_name = (os.environ.get("TZ") or "Asia/Shanghai").strip() or "Asia/Shanghai"
+    os.environ["TZ"] = tz_name
+    if hasattr(time, "tzset"):
+        try:
+            time.tzset()
+        except Exception as e:
+            logger.warning(f"设置时区失败(TZ={tz_name}): {e}")
+    return tz_name
 
 
 def create_app() -> FastAPI:
@@ -174,6 +188,10 @@ def create_app() -> FastAPI:
         """应用启动事件"""
         import asyncio
         from ..database.init_db import initialize_database
+        from .routes.registration import restore_scheduled_registration_from_settings
+
+        # 统一时区（容器可通过 TZ 传入，不传默认 Asia/Shanghai）
+        tz_name = _ensure_process_timezone()
 
         # 确保数据库已初始化（reload 模式下子进程也需要初始化）
         try:
@@ -185,9 +203,16 @@ def create_app() -> FastAPI:
         loop = asyncio.get_event_loop()
         task_manager.set_loop(loop)
 
+        # 从持久化设置恢复定时注册任务
+        try:
+            await restore_scheduled_registration_from_settings()
+        except Exception as e:
+            logger.warning(f"恢复定时注册失败: {e}")
+
         logger.info("=" * 50)
         logger.info(f"{settings.app_name} v{settings.app_version} 启动中，程序正在伸懒腰...")
         logger.info(f"调试模式: {settings.debug}")
+        logger.info(f"运行时区: {tz_name}")
         logger.info(f"数据库连接已接好线: {settings.database_url}")
         logger.info("=" * 50)
 

@@ -41,6 +41,7 @@
                 <button class="tab-btn" data-tab="upload">☁️ 上传</button>
                 <button class="tab-btn" data-tab="outlook">📮 Outlook配置</button>
                 <button class="tab-btn" data-tab="registration">⚙️ 注册配置</button>
+                <button class="tab-btn" data-tab="schedule">⏰ 定时任务</button>
                 <button class="tab-btn" data-tab="email-code">📧 验证码配置</button>
                 <button class="tab-btn" data-tab="database">💾 数据库</button>
             </div>
@@ -481,6 +482,124 @@
 
                             <div class="form-actions">
                                 <button type="submit" class="btn btn-primary">💾 保存设置</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 定时任务 -->
+            <div class="tab-content" id="schedule-tab">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>定时注册任务</h3>
+                        <span class="hint">配置后会永久保存，服务重启后自动恢复</span>
+                    </div>
+                    <div class="card-body">
+                        <form id="schedule-settings-form">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label style="display:flex;align-items:center;gap:8px;margin-top:28px;">
+                                        <input type="checkbox" id="schedule-enabled"> 启用定时注册
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label for="schedule-cron-expression-settings">Cron 表达式 (5位)</label>
+                                    <input type="text" id="schedule-cron-expression-settings" value="*/30 * * * *" placeholder="例如: */30 * * * *">
+                                    <p class="hint">格式: 分 时 日 月 周</p>
+                                </div>
+                                <div class="form-group">
+                                    <label style="display:flex;align-items:center;gap:8px;margin-top:28px;">
+                                        <input type="checkbox" id="schedule-run-immediately" checked> 启动后立即执行一次
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="schedule-registration-mode">注册模式</label>
+                                    <select id="schedule-registration-mode">
+                                        <option value="batch" selected>批量注册</option>
+                                        <option value="single">单次注册</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="schedule-email-service-type">邮箱服务类型</label>
+                                    <select id="schedule-email-service-type">
+                                        <option value="tempmail">Tempmail.lol</option>
+                                        <option value="outlook">Outlook</option>
+                                        <option value="moe_mail">MoeMail</option>
+                                        <option value="temp_mail">Temp-Mail</option>
+                                        <option value="duck_mail">DuckMail</option>
+                                        <option value="freemail">Freemail</option>
+                                        <option value="imap_mail">IMAP 邮箱</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="schedule-email-service-id">邮箱服务 ID (可选)</label>
+                                    <input type="number" id="schedule-email-service-id" min="1" placeholder="留空自动选择">
+                                </div>
+                            </div>
+
+                            <div id="schedule-batch-options">
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="schedule-count">注册数量 (1-100)</label>
+                                        <input type="number" id="schedule-count" min="1" max="100" value="100">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="schedule-concurrency">并发数 (1-50)</label>
+                                        <input type="number" id="schedule-concurrency" min="1" max="50" value="1">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="schedule-concurrency-mode">并发模式</label>
+                                        <select id="schedule-concurrency-mode">
+                                            <option value="pipeline">流水线（Pipeline）</option>
+                                            <option value="parallel">并行（Parallel）</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="schedule-interval-min">最小间隔 (秒)</label>
+                                        <input type="number" id="schedule-interval-min" min="0" max="300" value="5">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="schedule-interval-max">最大间隔 (秒)</label>
+                                        <input type="number" id="schedule-interval-max" min="1" max="600" value="30">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label style="display:flex;align-items:center;gap:8px;">
+                                        <input type="checkbox" id="schedule-auto-upload-cpa"> 上传到 CPA
+                                    </label>
+                                    <input type="text" id="schedule-cpa-service-ids" placeholder="CPA 服务ID，逗号分隔，留空=全部启用">
+                                </div>
+                                <div class="form-group">
+                                    <label style="display:flex;align-items:center;gap:8px;">
+                                        <input type="checkbox" id="schedule-auto-upload-sub2api"> 上传到 Sub2API
+                                    </label>
+                                    <input type="text" id="schedule-sub2api-service-ids" placeholder="Sub2API 服务ID，逗号分隔，留空=全部启用">
+                                </div>
+                                <div class="form-group">
+                                    <label style="display:flex;align-items:center;gap:8px;">
+                                        <input type="checkbox" id="schedule-auto-upload-tm"> 上传到 Team Manager
+                                    </label>
+                                    <input type="text" id="schedule-tm-service-ids" placeholder="Team Manager 服务ID，逗号分隔，留空=全部启用">
+                                </div>
+                            </div>
+
+                            <p class="hint" id="schedule-settings-status">状态: 未启用</p>
+                            <p class="hint" id="schedule-settings-timezone">时区: Asia/Shanghai（可通过容器 TZ 覆盖）</p>
+
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">💾 保存并应用</button>
+                                <button type="button" class="btn btn-secondary" id="schedule-stop-btn-settings">⏹ 停止定时任务</button>
+                                <button type="button" class="btn btn-ghost" id="schedule-refresh-btn-settings">🔄 刷新状态</button>
                             </div>
                         </form>
                     </div>
