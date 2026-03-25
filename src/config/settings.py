@@ -352,9 +352,16 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     ),
     "sync_api_url": SettingDefinition(
         db_key="sync.api_url",
-        default_value="http://localhost:48760/api/rpc",
+        default_value="http://localhost:48760/rpc",
         category=SettingCategory.GENERAL,
         description="本地同步 API 地址"
+    ),
+    "sync_api_token": SettingDefinition(
+        db_key="sync.api_token",
+        default_value="",
+        category=SettingCategory.GENERAL,
+        description="本地同步 API Token (X-CodexManager-Rpc-Token)",
+        is_secret=True
     ),
     "sync_addr": SettingDefinition(
         db_key="sync.addr",
@@ -712,7 +719,8 @@ class Settings(BaseModel):
 
     # 本地同步配置
     sync_enabled: bool = False
-    sync_api_url: str = "http://localhost:48760/api/rpc"
+    sync_api_url: str = "http://localhost:48760/rpc"
+    sync_api_token: SecretStr = SecretStr("")
     sync_addr: str = "localhost:48760"
 
     # 验证码配置

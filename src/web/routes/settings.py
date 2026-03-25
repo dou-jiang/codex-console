@@ -113,6 +113,7 @@ async def get_all_settings():
             "enabled": settings.sync_enabled,
             "api_url": settings.sync_api_url,
             "addr": settings.sync_addr,
+            "has_api_token": bool(settings.sync_api_token and settings.sync_api_token.get_secret_value()),
         },
     }
 
@@ -282,18 +283,23 @@ async def get_database_info():
 class SyncSettings(BaseModel):
     """同步设置"""
     enabled: bool = False
-    api_url: str = "http://localhost:48760/api/rpc"
+    api_url: str = "http://localhost:48760/rpc"
+    api_token: Optional[str] = None
     addr: str = "localhost:48760"
 
 
 @router.post("/sync")
 async def update_sync_settings(request: SyncSettings):
     """更新同步设置"""
-    update_settings(
-        sync_enabled=request.enabled,
-        sync_api_url=request.api_url,
-        sync_addr=request.addr
-    )
+    update_dict = {
+        "sync_enabled": request.enabled,
+        "sync_api_url": request.api_url,
+        "sync_addr": request.addr
+    }
+    if request.api_token is not None:
+        update_dict["sync_api_token"] = request.api_token
+        
+    update_settings(**update_dict)
     return {"success": True, "message": "同步设置已更新"}
 
 

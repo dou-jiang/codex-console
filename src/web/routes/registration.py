@@ -502,7 +502,8 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                             _ok, _msg = upload_to_sync_manager(
                                 [saved_account], 
                                 api_url=settings.sync_api_url, 
-                                addr=settings.sync_addr
+                                addr=settings.sync_addr,
+                                api_token=settings.sync_api_token.get_secret_value() if settings.sync_api_token else ""
                             )
                             if _ok:
                                 saved_account.sync_uploaded = True

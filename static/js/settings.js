@@ -350,6 +350,15 @@ async function loadSettings() {
             document.getElementById('sync-enabled').checked = data.sync.enabled || false;
             document.getElementById('sync-api-url').value = data.sync.api_url || '';
             document.getElementById('sync-addr').value = data.sync.addr || '';
+            
+            const tokenInput = document.getElementById('sync-api-token');
+            if (tokenInput) {
+                if (data.sync.has_api_token) {
+                    tokenInput.placeholder = '已配置，留空保持不变';
+                } else {
+                    tokenInput.placeholder = '如果需要 X-CodexManager-Rpc-Token 请填写，留空表示不修改';
+                }
+            }
         }
 
         // 加载 Outlook 设置
@@ -534,13 +543,20 @@ async function handleSaveSyncSettings(e) {
     const formData = new FormData(e.target);
     const data = {
         enabled: document.getElementById('sync-enabled').checked,
-        api_url: formData.get('api_url') || 'http://localhost:48760/api/rpc',
+        api_url: formData.get('api_url') || 'http://localhost:48760/rpc',
         addr: formData.get('addr') || 'localhost:48760'
     };
+    
+    const token = formData.get('api_token');
+    if (token) {
+        data.api_token = token;
+    }
 
     try {
         await api.post('/settings/sync', data);
         toast.success('同步配置已保存');
+        const tokenInput = document.getElementById('sync-api-token');
+        if (tokenInput) tokenInput.value = '';
     } catch (error) {
         toast.error('保存失败: ' + error.message);
     }

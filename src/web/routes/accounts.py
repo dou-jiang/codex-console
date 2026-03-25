@@ -364,7 +364,8 @@ async def batch_sync_accounts(request: BatchSyncRequest):
         success, msg = upload_to_sync_manager(
             accounts, 
             api_url=settings.sync_api_url, 
-            addr=settings.sync_addr
+            addr=settings.sync_addr,
+            api_token=settings.sync_api_token.get_secret_value() if settings.sync_api_token else ""
         )
         
         if success:
@@ -374,7 +375,7 @@ async def batch_sync_accounts(request: BatchSyncRequest):
             db.commit()
             return {"success": True, "sync_count": len(accounts), "message": "同步成功"}
         else:
-            raise HTTPException(status_code=500, detail=f"同步失败: {msg}")
+            return {"success": False, "sync_count": 0, "message": f"同步失败: {msg}"}
 
 
 @router.post("/export/json")
