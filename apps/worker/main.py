@@ -47,6 +47,8 @@ class WorkerRunner:
                     "request": request_payload,
                     "success": False,
                     "error_message": message,
+                    "source": "register",
+                    "logs": [],
                     "identity": {
                         "email": "",
                         "account_id": "",
@@ -58,6 +60,7 @@ class WorkerRunner:
 
         new_status = "completed" if result.success else "failed"
         identity = getattr(result, "identity", None)
+        logs = [str(getattr(entry, "message", entry)) for entry in list(getattr(result, "logs", []) or [])]
         self.store.tasks.update(
             task_uuid,
             status=new_status,
@@ -66,6 +69,8 @@ class WorkerRunner:
                 "request": request_payload,
                 "success": result.success,
                 "error_message": result.error_message,
+                "source": str(getattr(result, "source", "register") or "register"),
+                "logs": logs,
                 "identity": {
                     "email": getattr(identity, "email", ""),
                     "account_id": getattr(identity, "account_id", ""),

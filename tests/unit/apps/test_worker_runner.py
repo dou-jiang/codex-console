@@ -2,6 +2,7 @@ from pathlib import Path
 
 from apps.worker.main import WorkerRunner
 from packages.account_store.db import AccountStoreDB
+from packages.registration_core.models import AccountIdentity, ExecutionLog
 
 
 def test_worker_marks_task_completed(monkeypatch, tmp_path: Path):
@@ -21,8 +22,13 @@ def test_worker_marks_task_completed(monkeypatch, tmp_path: Path):
     class FakeResult:
         success = True
         error_message = ""
-        identity = None
-        logs = []
+        identity = AccountIdentity(
+            email="tester@example.com",
+            account_id="acct-1",
+            workspace_id="ws-1",
+        )
+        logs = [ExecutionLog(message="step one"), ExecutionLog(message="step two")]
+        source = "register"
 
     class FakeEngine:
         def __init__(self, email_service, callback_logger=None, task_uuid=None):
@@ -47,6 +53,11 @@ def test_worker_marks_task_completed(monkeypatch, tmp_path: Path):
     refreshed = store.tasks.get("t-1")
     assert outcome["success"] is True
     assert refreshed.status == "completed"
+    assert refreshed.result["identity"]["email"] == "tester@example.com"
+    assert refreshed.result["identity"]["account_id"] == "acct-1"
+    assert refreshed.result["identity"]["workspace_id"] == "ws-1"
+    assert refreshed.result["source"] == "register"
+    assert refreshed.result["logs"] == ["step one", "step two"]
 
 
 def test_worker_marks_task_failed_when_request_missing(tmp_path: Path):
@@ -77,8 +88,13 @@ def test_worker_process_next_pending(monkeypatch, tmp_path: Path):
     class FakeResult:
         success = True
         error_message = ""
-        identity = None
-        logs = []
+        identity = AccountIdentity(
+            email="tester@example.com",
+            account_id="acct-1",
+            workspace_id="ws-1",
+        )
+        logs = [ExecutionLog(message="step one"), ExecutionLog(message="step two")]
+        source = "register"
 
     class FakeEngine:
         def __init__(self, email_service, callback_logger=None, task_uuid=None):
@@ -167,3 +183,5 @@ def test_worker_captures_engine_exception(tmp_path: Path, monkeypatch):
     assert outcome["success"] is False
     assert refreshed.status == "failed"
     assert refreshed.error_message == "boom"
+    assert refreshed.result["error_message"] == "boom"
+    assert refreshed.result["logs"] == []

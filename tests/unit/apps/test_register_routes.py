@@ -73,7 +73,22 @@ def test_run_register_task(monkeypatch, tmp_path: Path):
             self.store = store
 
         def process_task(self, task_uuid: str):
-            self.store.tasks.update(task_uuid, status="completed")
+            self.store.tasks.update(
+                task_uuid,
+                status="completed",
+                result={
+                    "request": {"email_service_type": "duck_mail"},
+                    "success": True,
+                    "error_message": "",
+                    "source": "register",
+                    "logs": ["step one"],
+                    "identity": {
+                        "email": "tester@example.com",
+                        "account_id": "acct-1",
+                        "workspace_id": "ws-1",
+                    },
+                },
+            )
             return {"success": True, "status": "completed"}
 
     monkeypatch.setattr("apps.api.routes.tasks.WorkerRunner", FakeRunner)
@@ -84,6 +99,11 @@ def test_run_register_task(monkeypatch, tmp_path: Path):
     payload = response.json()
     assert payload["success"] is True
     assert payload["status"] == "completed"
+
+    detail = client.get(f"/tasks/{created['task_uuid']}").json()
+    assert detail["result"]["source"] == "register"
+    assert detail["result"]["logs"] == ["step one"]
+    assert detail["result"]["identity"]["email"] == "tester@example.com"
 
 
 def test_run_next_pending_task(monkeypatch, tmp_path: Path):
