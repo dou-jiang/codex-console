@@ -18,6 +18,8 @@ def test_create_register_task(tmp_path: Path):
     payload = response.json()
     assert payload["status"] == "pending"
     assert payload["task_uuid"]
+    assert payload["task"]["task_uuid"] == payload["task_uuid"]
+    assert payload["task"]["status"] == "pending"
 
 
 def test_create_register_task_with_proxy_and_email_config(tmp_path: Path):
@@ -57,6 +59,8 @@ def test_get_register_task(tmp_path: Path):
     assert payload["task_uuid"] == created["task_uuid"]
     assert payload["status"] == "pending"
     assert payload["error_message"] == ""
+    assert payload["task"]["task_uuid"] == created["task_uuid"]
+    assert payload["task"]["status"] == "pending"
 
 
 def test_run_register_task(monkeypatch, tmp_path: Path):
@@ -99,6 +103,9 @@ def test_run_register_task(monkeypatch, tmp_path: Path):
     payload = response.json()
     assert payload["success"] is True
     assert payload["status"] == "completed"
+    assert payload["task"]["task_uuid"] == created["task_uuid"]
+    assert payload["task"]["status"] == "completed"
+    assert payload["outcome"]["success"] is True
 
     detail = client.get(f"/tasks/{created['task_uuid']}").json()
     assert detail["result"]["source"] == "register"
@@ -131,6 +138,9 @@ def test_run_next_pending_task(monkeypatch, tmp_path: Path):
     assert payload["success"] is True
     assert payload["status"] == "completed"
     assert payload["task_uuid"]
+    assert payload["task"]["task_uuid"] == payload["task_uuid"]
+    assert payload["task"]["status"] == "completed"
+    assert payload["outcome"]["success"] is True
 
 
 def test_list_register_tasks(tmp_path: Path):
