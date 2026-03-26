@@ -17,7 +17,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 from curl_cffi import requests as cffi_requests
 
-from ...database.session import get_db
+from ...database.session import get_db, get_session_manager
 from ...database.models import Account, BindCardTask, EmailService as EmailServiceModel
 from ...config.settings import get_settings
 from ...config.constants import OPENAI_PAGE_TYPES
@@ -35,9 +35,15 @@ from ...core.openai.browser_bind import auto_bind_checkout_with_playwright
 from ...core.openai.random_billing import generate_random_billing_profile
 from ...core.openai.token_refresh import TokenRefreshManager
 from ...core.dynamic_proxy import get_proxy_url_for_task
+from apps.api.payment_task_service import PaymentTaskService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _create_phase2_payment_service() -> PaymentTaskService:
+    session_manager = get_session_manager()
+    return PaymentTaskService(session_manager.database_url)
 CHECKOUT_SESSION_REGEX = re.compile(r"\bcs_[A-Za-z0-9_-]+\b", re.IGNORECASE)
 THIRD_PARTY_BIND_API_URL_ENV = "BIND_CARD_API_URL"
 THIRD_PARTY_BIND_API_KEY_ENV = "BIND_CARD_API_KEY"
@@ -2302,84 +2308,24 @@ def open_browser_incognito(request: OpenIncognitoRequest):
 @router.post("/bind-card/tasks")
 def create_bind_card_task(request: CreateBindCardTaskRequest):
     """创建绑卡任务（从账号管理中选择账号）"""
-    bind_mode = str(request.bind_mode or "semi_auto").strip().lower()
-    if bind_mode not in ("semi_auto", "third_party", "local_auto"):
-        raise HTTPException(status_code=400, detail="bind_mode 必须为 semi_auto / third_party / local_auto")
-
-    with get_db() as db:
-        account = db.query(Account).filter(Account.id == request.account_id).first()
-        if not account:
-            raise HTTPException(status_code=404, detail="账号不存在")
-
-        logger.info(
-            "创建绑卡任务: account_id=%s email=%s plan=%s country=%s mode=%s auto_open=%s",
-            account.id, account.email, request.plan_type, request.country, bind_mode, request.auto_open
+    service = _create_phase2_payment_service()
+    try:
+        return service.create_task(
+            request,
+            resolve_proxy_fn=_resolve_runtime_proxy,
+            generate_checkout_link_fn=_generate_checkout_link_for_account,
+            open_url_fn=open_url_incognito,
+            serialize_task_fn=_serialize_bind_card_task,
+            normalize_country_fn=_normalize_checkout_country,
+            normalize_currency_fn=_normalize_checkout_currency,
+            official_checkout_check_fn=_is_official_checkout_link,
         )
-
-        proxy = _resolve_runtime_proxy(request.proxy, account)
-        try:
-            link, source, fallback_reason, checkout_session_id, publishable_key, client_secret = _generate_checkout_link_for_account(
-                account=account,
-                request=request,
-                proxy=proxy,
-            )
-        except HTTPException:
-            raise
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.error(f"创建绑卡任务失败: {e}")
-            raise HTTPException(status_code=500, detail=f"创建绑卡任务失败: {str(e)}")
-
-        task = BindCardTask(
-            account_id=account.id,
-            plan_type=request.plan_type,
-            workspace_name=request.workspace_name if request.plan_type == "team" else None,
-            price_interval=request.price_interval if request.plan_type == "team" else None,
-            seat_quantity=request.seat_quantity if request.plan_type == "team" else None,
-            country=_normalize_checkout_country(request.country),
-            currency=_normalize_checkout_currency(_normalize_checkout_country(request.country), request.currency),
-            checkout_url=link,
-            checkout_session_id=checkout_session_id,
-            publishable_key=publishable_key,
-            client_secret=client_secret,
-            checkout_source=source,
-            bind_mode=bind_mode,
-            status="link_ready",
-        )
-        db.add(task)
-        db.commit()
-        db.refresh(task)
-
-        logger.info(
-            "绑卡任务已创建: task_id=%s account_id=%s plan=%s source=%s status=%s",
-            task.id, task.account_id, task.plan_type, source, task.status
-        )
-
-        opened = False
-        if request.auto_open and bind_mode == "semi_auto" and link:
-            opened = open_url_incognito(link, account.cookies if account else None)
-            if opened:
-                task.status = "opened"
-                task.opened_at = datetime.utcnow()
-                db.commit()
-                db.refresh(task)
-                logger.info("绑卡任务自动打开成功: task_id=%s mode=%s", task.id, bind_mode)
-            else:
-                logger.warning("绑卡任务自动打开失败: task_id=%s mode=%s", task.id, bind_mode)
-
-        return {
-            "success": True,
-            "task": _serialize_bind_card_task(task),
-            "link": link,
-            "is_official_checkout": _is_official_checkout_link(link),
-            "source": source,
-            "fallback_reason": fallback_reason,
-            "auto_opened": opened,
-            "checkout_session_id": checkout_session_id,
-            "publishable_key": publishable_key,
-            "has_client_secret": bool(client_secret),
-        }
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/bind-card/tasks")
@@ -2390,72 +2336,32 @@ def list_bind_card_tasks(
     search: Optional[str] = Query(None, description="按邮箱搜索"),
 ):
     """绑卡任务列表"""
-    with get_db() as db:
-        query = db.query(BindCardTask).options(joinedload(BindCardTask.account))
-        if status:
-            query = query.filter(BindCardTask.status == status)
-        if search:
-            pattern = f"%{search}%"
-            query = query.join(Account, BindCardTask.account_id == Account.id).filter(
-                or_(Account.email.ilike(pattern), Account.account_id.ilike(pattern))
-            )
-
-        total = query.count()
-        offset = (page - 1) * page_size
-        tasks = query.order_by(BindCardTask.created_at.desc()).offset(offset).limit(page_size).all()
-
-        # 自动收敛任务状态：如果账号已是 plus/team，任务自动标记完成。
-        now = datetime.utcnow()
-        changed = False
-        changed_count = 0
-        for task in tasks:
-            account = task.account
-            sub_type = str(getattr(account, "subscription_type", "") or "").lower()
-            if sub_type in ("plus", "team") and task.status != "completed":
-                task.status = "completed"
-                task.completed_at = task.completed_at or getattr(account, "subscription_at", None) or now
-                task.last_error = None
-                task.last_checked_at = now
-                changed = True
-                changed_count += 1
-
-        if changed:
-            db.commit()
-            logger.info("绑卡任务状态自动收敛完成: updated_count=%s", changed_count)
-
-        return {
-            "total": total,
-            "tasks": [_serialize_bind_card_task(task) for task in tasks],
-        }
+    service = _create_phase2_payment_service()
+    return service.list_tasks(
+        page=page,
+        page_size=page_size,
+        status=status,
+        search=search,
+        serialize_task_fn=_serialize_bind_card_task,
+    )
 
 
 @router.post("/bind-card/tasks/{task_id}/open")
 def open_bind_card_task(task_id: int):
     """打开绑卡任务对应的 checkout 链接"""
-    with get_db() as db:
-        task = db.query(BindCardTask).options(joinedload(BindCardTask.account)).filter(BindCardTask.id == task_id).first()
-        if not task:
-            raise HTTPException(status_code=404, detail="绑卡任务不存在")
-        if not task.checkout_url:
-            raise HTTPException(status_code=400, detail="任务缺少 checkout 链接")
-
-        cookies_str = task.account.cookies if task.account else None
-        logger.info("打开绑卡任务: task_id=%s account_id=%s", task.id, task.account_id)
-        opened = open_url_incognito(task.checkout_url, cookies_str)
-        if opened:
-            if str(task.status or "") not in ("paid_pending_sync", "completed"):
-                task.status = "opened"
-            task.opened_at = datetime.utcnow()
-            task.last_error = None
-            db.commit()
-            db.refresh(task)
-            logger.info("绑卡任务打开成功: task_id=%s", task.id)
-            return {"success": True, "task": _serialize_bind_card_task(task)}
-
-        task.last_error = "未找到可用的浏览器"
-        db.commit()
-        logger.warning("绑卡任务打开失败: task_id=%s reason=%s", task.id, task.last_error)
-        raise HTTPException(status_code=500, detail="未找到可用的浏览器，请手动复制链接")
+    service = _create_phase2_payment_service()
+    try:
+        return service.open_task(
+            task_id,
+            open_url_fn=open_url_incognito,
+            serialize_task_fn=_serialize_bind_card_task,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/bind-card/tasks/{task_id}/auto-bind-third-party")
@@ -3207,14 +3113,11 @@ def mark_bind_card_task_user_action(task_id: int, request: MarkUserActionRequest
 @router.delete("/bind-card/tasks/{task_id}")
 def delete_bind_card_task(task_id: int):
     """删除绑卡任务"""
-    with get_db() as db:
-        task = db.query(BindCardTask).filter(BindCardTask.id == task_id).first()
-        if not task:
-            raise HTTPException(status_code=404, detail="绑卡任务不存在")
-        logger.info("删除绑卡任务: task_id=%s account_id=%s", task.id, task.account_id)
-        db.delete(task)
-        db.commit()
-    return {"success": True, "task_id": task_id}
+    service = _create_phase2_payment_service()
+    try:
+        return service.delete_task(task_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ============== 订阅状态 ==============
