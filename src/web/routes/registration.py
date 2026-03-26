@@ -13,12 +13,14 @@ from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
 
 from ...database import crud
-from ...database.session import get_db
+from ...database.session import get_db, get_session_manager
 from ...database.models import RegistrationTask, Proxy
 from ...core.register import RegistrationEngine, RegistrationResult
 from ...services import EmailServiceFactory, EmailServiceType
 from ...config.settings import get_settings
 from ..task_manager import task_manager
+from apps.api.task_service import create_register_task_record, run_task_once
+from packages.account_store.db import AccountStoreDB
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -192,6 +194,11 @@ def task_to_response(task: RegistrationTask) -> RegistrationTaskResponse:
         started_at=task.started_at.isoformat() if task.started_at else None,
         completed_at=task.completed_at.isoformat() if task.completed_at else None,
     )
+
+
+def _create_phase2_store(database_url: str) -> AccountStoreDB:
+    """Create the migrated store used by the legacy single-task bridge."""
+    return AccountStoreDB(database_url=database_url)
 
 
 def _normalize_email_service_config(
@@ -823,32 +830,19 @@ async def start_registration(
             detail=f"无效的邮箱服务类型: {request.email_service_type}"
         )
 
-    # 创建任务
-    task_uuid = str(uuid.uuid4())
+    session_manager = get_session_manager()
+    store = _create_phase2_store(session_manager.database_url)
+    task = create_register_task_record(
+        store,
+        email_service_type=request.email_service_type,
+        proxy_url=request.proxy,
+        email_service_config=request.email_service_config,
+    )
 
-    with get_db() as db:
-        task = crud.create_registration_task(
-            db,
-            task_uuid=task_uuid,
-            proxy=request.proxy
-        )
-
-    # 在后台运行注册任务
     background_tasks.add_task(
-        run_registration_task,
-        task_uuid,
-        request.email_service_type,
-        request.proxy,
-        request.email_service_config,
-        request.email_service_id,
-        "",
-        "",
-        request.auto_upload_cpa,
-        request.cpa_service_ids,
-        request.auto_upload_sub2api,
-        request.sub2api_service_ids,
-        request.auto_upload_tm,
-        request.tm_service_ids,
+        run_task_once,
+        session_manager.database_url,
+        task.task_uuid,
     )
 
     return task_to_response(task)

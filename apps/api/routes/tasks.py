@@ -1,11 +1,10 @@
 """Minimal task routes for phase 2 API skeleton."""
 
-from uuid import uuid4
-
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from apps.api.serializers import serialize_outcome, serialize_task
+from apps.api.task_service import create_register_task_record
 from apps.worker.main import WorkerRunner
 
 router = APIRouter()
@@ -19,18 +18,12 @@ class RegisterTaskCreate(BaseModel):
 
 @router.post("/tasks/register", status_code=202)
 def create_register_task(payload: RegisterTaskCreate, request: Request):
-    task_uuid = str(uuid4())
-    task = request.app.state.store.tasks.create(
-        task_uuid=task_uuid,
-        status="pending",
-        proxy=payload.proxy_url,
+    task = create_register_task_record(
+        request.app.state.store,
+        email_service_type=payload.email_service_type,
+        proxy_url=payload.proxy_url,
+        email_service_config=payload.email_service_config,
     )
-    request_payload = {
-        "email_service_type": payload.email_service_type,
-        "proxy_url": payload.proxy_url,
-        "email_service_config": payload.email_service_config,
-    }
-    task = request.app.state.store.tasks.update(task_uuid, result={"request": request_payload})
     serialized = serialize_task(task, include_result=True)
     return {
         **serialized,
