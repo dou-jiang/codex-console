@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import inspect
 import logging
 import uuid
 import random
@@ -561,24 +562,23 @@ async def run_registration_task(task_uuid: str, email_service_type: str, proxy: 
     task_manager.add_log(task_uuid, f"{log_prefix} [系统] 任务 {task_uuid[:8]} 已加入队列" if log_prefix else f"[系统] 任务 {task_uuid[:8]} 已加入队列")
 
     try:
-        # 在线程池中执行同步任务（传入 log_prefix 和 batch_id 供回调使用）
-        await loop.run_in_executor(
+        session_manager = get_session_manager()
+        execution = loop.run_in_executor(
             task_manager.executor,
-            _run_sync_registration_task,
+            run_task_once,
+            session_manager.database_url,
             task_uuid,
-            email_service_type,
-            proxy,
-            email_service_config,
-            email_service_id,
-            log_prefix,
-            batch_id,
-            auto_upload_cpa,
-            cpa_service_ids or [],
-            auto_upload_sub2api,
-            sub2api_service_ids or [],
-            auto_upload_tm,
-            tm_service_ids or [],
         )
+        outcome = await execution if inspect.isawaitable(execution) else execution
+        status = str((outcome or {}).get("status") or "")
+        error = str((outcome or {}).get("error") or "")
+        if status:
+            if status == "completed":
+                task_manager.add_log(task_uuid, f"{log_prefix} [系统] 新执行链路已完成任务" if log_prefix else "[系统] 新执行链路已完成任务")
+                task_manager.update_status(task_uuid, "completed")
+            elif status == "failed":
+                task_manager.add_log(task_uuid, f"{log_prefix} [错误] 新执行链路失败: {error}" if log_prefix else f"[错误] 新执行链路失败: {error}")
+                task_manager.update_status(task_uuid, "failed", error=error)
     except Exception as e:
         logger.error(f"线程池执行异常: {task_uuid}, 错误: {e}")
         task_manager.add_log(task_uuid, f"[错误] 线程池执行异常: {str(e)}")
