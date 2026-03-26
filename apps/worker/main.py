@@ -2,6 +2,7 @@
 
 import time
 
+from packages.account_store.db import AccountStoreDB
 from packages.email_providers.factory import EmailProviderFactory
 from packages.registration_core.engine import RegistrationEngine
 from packages.registration_core.models import RegistrationInput
@@ -126,3 +127,16 @@ def create_worker(store=None):
     if store is None:
         return {"status": "idle"}
     return WorkerService(store)
+
+
+def run_worker_loop(
+    database_url: str,
+    max_iterations: int = 1,
+    poll_interval_seconds: float = 1.0,
+):
+    store = AccountStoreDB(database_url=database_url)
+    service = WorkerService(store)
+    return service.run_loop(
+        max_iterations=max_iterations,
+        poll_interval_seconds=poll_interval_seconds,
+    )

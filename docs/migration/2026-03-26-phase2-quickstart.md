@@ -91,6 +91,20 @@ POST /tasks/{task_uuid}/run
 POST /tasks/run-next
 ```
 
+## Run the Worker Loop Directly
+
+You can also drive the new worker path directly from Python without the API:
+
+```python
+from apps.worker.main import run_worker_loop
+
+run_worker_loop(
+    database_url="sqlite:///./data/api.db",
+    max_iterations=1,
+    poll_interval_seconds=1.0,
+)
+```
+
 ## Current Limits
 
 - execution is still local and in-process
