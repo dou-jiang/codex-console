@@ -5,6 +5,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from apps.worker.main import WorkerRunner
 
 router = APIRouter()
 
@@ -46,3 +47,12 @@ def get_register_task(task_uuid: str, request: Request):
         "logs": [line for line in str(task.logs or "").splitlines() if line],
         "result": task.result,
     }
+
+
+@router.post("/tasks/{task_uuid}/run")
+def run_register_task(task_uuid: str, request: Request):
+    runner = WorkerRunner(request.app.state.store)
+    outcome = runner.process_task(task_uuid)
+    if outcome.get("error") == "task not found":
+        raise HTTPException(status_code=404, detail="task not found")
+    return outcome
