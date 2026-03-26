@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from apps.worker.main import WorkerRunner, WorkerService, run_worker_loop
+from apps.worker.main import WorkerRunner, WorkerService, WorkerLock, run_worker_loop
 from packages.account_store.db import AccountStoreDB
 from packages.registration_core.models import AccountIdentity, ExecutionLog
 
@@ -244,6 +244,24 @@ def test_worker_service_run_loop_calls_run_once(monkeypatch, tmp_path: Path):
     ]
 
 
+def test_worker_service_run_loop_honors_max_idle_cycles(monkeypatch, tmp_path: Path):
+    store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'worker-service-idle.db'}")
+    service = WorkerService(store)
+    calls = {"count": 0}
+
+    def fake_run_once():
+        calls["count"] += 1
+        return {"success": False, "error": "no pending tasks"}
+
+    monkeypatch.setattr(service, "run_once", fake_run_once)
+
+    result = service.run_loop(max_iterations=10, poll_interval_seconds=0, max_idle_cycles=3)
+
+    assert calls["count"] == 3
+    assert len(result) == 3
+    assert all(item["error"] == "no pending tasks" for item in result)
+
+
 def test_run_worker_loop_uses_service(monkeypatch, tmp_path: Path):
     outcomes = [{"success": True, "task_uuid": "t-1", "status": "completed"}]
 
@@ -251,9 +269,10 @@ def test_run_worker_loop_uses_service(monkeypatch, tmp_path: Path):
         def __init__(self, store):
             self.store = store
 
-        def run_loop(self, max_iterations: int, poll_interval_seconds: float):
+        def run_loop(self, max_iterations: int, poll_interval_seconds: float, max_idle_cycles=None):
             assert max_iterations == 1
             assert poll_interval_seconds == 0
+            assert max_idle_cycles is None
             return outcomes
 
     monkeypatch.setattr("apps.worker.main.WorkerService", FakeService)
@@ -265,3 +284,16 @@ def test_run_worker_loop_uses_service(monkeypatch, tmp_path: Path):
     )
 
     assert result == outcomes
+
+
+def test_worker_lock_prevents_double_start(tmp_path: Path):
+    lock_path = tmp_path / "worker.lock"
+    first = WorkerLock(lock_path)
+    second = WorkerLock(lock_path)
+
+    assert first.acquire() is True
+    assert second.acquire() is False
+
+    first.release()
+    assert second.acquire() is True
+    second.release()

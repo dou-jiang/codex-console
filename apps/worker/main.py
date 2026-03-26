@@ -1,6 +1,7 @@
 """Minimal worker entrypoint for the migrated architecture."""
 
 import argparse
+from pathlib import Path
 import time
 
 from packages.account_store.db import AccountStoreDB
@@ -115,13 +116,53 @@ class WorkerService:
     def run_once(self) -> dict:
         return self.runner.process_next_pending()
 
-    def run_loop(self, max_iterations: int = 1, poll_interval_seconds: float = 1.0) -> list[dict]:
+    def run_loop(
+        self,
+        max_iterations: int = 1,
+        poll_interval_seconds: float = 1.0,
+        max_idle_cycles: int | None = None,
+    ) -> list[dict]:
         outcomes: list[dict] = []
+        idle_cycles = 0
         for index in range(max_iterations):
-            outcomes.append(self.run_once())
+            outcome = self.run_once()
+            outcomes.append(outcome)
+            if outcome.get("error") == "no pending tasks":
+                idle_cycles += 1
+                if max_idle_cycles is not None and idle_cycles >= max_idle_cycles:
+                    break
+            else:
+                idle_cycles = 0
             if index < max_iterations - 1:
                 time.sleep(poll_interval_seconds)
         return outcomes
+
+
+class WorkerLock:
+    """Simple single-instance file lock for the worker loop."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self._fd: int | None = None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            import os
+
+            self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            return True
+        except FileExistsError:
+            return False
+
+    def release(self) -> None:
+        if self._fd is not None:
+            import os
+
+            os.close(self._fd)
+            self._fd = None
+        if self.path.exists():
+            self.path.unlink()
 
 
 def create_worker(store=None):
@@ -134,13 +175,24 @@ def run_worker_loop(
     database_url: str,
     max_iterations: int = 1,
     poll_interval_seconds: float = 1.0,
+    max_idle_cycles: int | None = None,
+    lock_path: str | None = None,
 ):
+    worker_lock = WorkerLock(lock_path) if lock_path else None
+    if worker_lock and not worker_lock.acquire():
+        return [{"success": False, "error": "worker already running"}]
+
     store = AccountStoreDB(database_url=database_url)
     service = WorkerService(store)
-    return service.run_loop(
-        max_iterations=max_iterations,
-        poll_interval_seconds=poll_interval_seconds,
-    )
+    try:
+        return service.run_loop(
+            max_iterations=max_iterations,
+            poll_interval_seconds=poll_interval_seconds,
+            max_idle_cycles=max_idle_cycles,
+        )
+    finally:
+        if worker_lock:
+            worker_lock.release()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,11 +200,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--database-url", required=True)
     parser.add_argument("--max-iterations", type=int, default=1)
     parser.add_argument("--poll-interval-seconds", type=float, default=1.0)
+    parser.add_argument("--max-idle-cycles", type=int, default=None)
+    parser.add_argument("--lock-path", default=None)
     args = parser.parse_args(argv)
 
     run_worker_loop(
         database_url=args.database_url,
         max_iterations=args.max_iterations,
         poll_interval_seconds=args.poll_interval_seconds,
+        max_idle_cycles=args.max_idle_cycles,
+        lock_path=args.lock_path,
     )
     return 0
