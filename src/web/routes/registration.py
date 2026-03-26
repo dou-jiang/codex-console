@@ -19,7 +19,7 @@ from ...core.register import RegistrationEngine, RegistrationResult
 from ...services import EmailServiceFactory, EmailServiceType
 from ...config.settings import get_settings
 from ..task_manager import task_manager
-from apps.api.task_service import create_register_task_record, run_task_once
+from apps.api.task_service import create_register_task_record, create_register_task_records, run_task_once
 from packages.account_store.db import AccountStoreDB
 
 logger = logging.getLogger(__name__)
@@ -885,21 +885,16 @@ async def start_batch_registration(
 
     # 创建批量任务
     batch_id = str(uuid.uuid4())
-    task_uuids = []
-
-    with get_db() as db:
-        for _ in range(request.count):
-            task_uuid = str(uuid.uuid4())
-            task = crud.create_registration_task(
-                db,
-                task_uuid=task_uuid,
-                proxy=request.proxy
-            )
-            task_uuids.append(task_uuid)
-
-    # 获取所有任务
-    with get_db() as db:
-        tasks = [crud.get_registration_task(db, uuid) for uuid in task_uuids]
+    session_manager = get_session_manager()
+    store = _create_phase2_store(session_manager.database_url)
+    tasks = create_register_task_records(
+        store,
+        count=request.count,
+        email_service_type=request.email_service_type,
+        proxy_url=request.proxy,
+        email_service_config=request.email_service_config,
+    )
+    task_uuids = [task.task_uuid for task in tasks]
 
     # 在后台运行批量注册
     background_tasks.add_task(
@@ -1330,67 +1325,6 @@ async def get_outlook_accounts_for_registration():
         )
 
 
-async def run_outlook_batch_registration(
-    batch_id: str,
-    service_ids: List[int],
-    skip_registered: bool,
-    proxy: Optional[str],
-    interval_min: int,
-    interval_max: int,
-    concurrency: int = 1,
-    mode: str = "pipeline",
-    auto_upload_cpa: bool = False,
-    cpa_service_ids: List[int] = None,
-    auto_upload_sub2api: bool = False,
-    sub2api_service_ids: List[int] = None,
-    auto_upload_tm: bool = False,
-    tm_service_ids: List[int] = None,
-):
-    """
-    异步执行 Outlook 批量注册任务，复用通用并发逻辑
-
-    将每个 service_id 映射为一个独立的 task_uuid，然后调用
-    run_batch_registration 的并发逻辑
-    """
-    loop = task_manager.get_loop()
-    if loop is None:
-        loop = asyncio.get_event_loop()
-        task_manager.set_loop(loop)
-
-    # 预先为每个 service_id 创建注册任务记录
-    task_uuids = []
-    with get_db() as db:
-        for service_id in service_ids:
-            task_uuid = str(uuid.uuid4())
-            crud.create_registration_task(
-                db,
-                task_uuid=task_uuid,
-                proxy=proxy,
-                email_service_id=service_id
-            )
-            task_uuids.append(task_uuid)
-
-    # 复用通用并发逻辑（outlook 服务类型，每个任务通过 email_service_id 定位账户）
-    await run_batch_registration(
-        batch_id=batch_id,
-        task_uuids=task_uuids,
-        email_service_type="outlook",
-        proxy=proxy,
-        email_service_config=None,
-        email_service_id=None,   # 每个任务已绑定了独立的 email_service_id
-        interval_min=interval_min,
-        interval_max=interval_max,
-        concurrency=concurrency,
-        mode=mode,
-        auto_upload_cpa=auto_upload_cpa,
-        cpa_service_ids=cpa_service_ids,
-        auto_upload_sub2api=auto_upload_sub2api,
-        sub2api_service_ids=sub2api_service_ids,
-        auto_upload_tm=auto_upload_tm,
-        tm_service_ids=tm_service_ids,
-    )
-
-
 @router.post("/outlook-batch", response_model=OutlookBatchRegistrationResponse)
 async def start_outlook_batch_registration(
     request: OutlookBatchRegistrationRequest,
@@ -1460,6 +1394,16 @@ async def start_outlook_batch_registration(
 
     # 创建批量任务
     batch_id = str(uuid.uuid4())
+    session_manager = get_session_manager()
+    store = _create_phase2_store(session_manager.database_url)
+    tasks = create_register_task_records(
+        store,
+        count=len(actual_service_ids),
+        email_service_type="outlook",
+        proxy_url=request.proxy,
+        email_service_ids=actual_service_ids,
+    )
+    task_uuids = [task.task_uuid for task in tasks]
 
     # 初始化批量任务状态
     batch_tasks[batch_id] = {
@@ -1470,6 +1414,7 @@ async def start_outlook_batch_registration(
         "skipped": 0,
         "cancelled": False,
         "service_ids": actual_service_ids,
+        "task_uuids": task_uuids,
         "current_index": 0,
         "logs": [],
         "finished": False
@@ -1477,11 +1422,13 @@ async def start_outlook_batch_registration(
 
     # 在后台运行批量注册
     background_tasks.add_task(
-        run_outlook_batch_registration,
+        run_batch_registration,
         batch_id,
-        actual_service_ids,
-        request.skip_registered,
+        task_uuids,
+        "outlook",
         request.proxy,
+        None,
+        None,
         request.interval_min,
         request.interval_max,
         request.concurrency,
