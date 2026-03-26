@@ -161,3 +161,21 @@ def test_list_register_tasks(tmp_path: Path):
     task_ids = {item["task_uuid"] for item in payload["items"]}
     assert first["task_uuid"] in task_ids
     assert second["task_uuid"] in task_ids
+
+
+def test_get_task_logs(tmp_path: Path):
+    app = create_app(database_url=f"sqlite:///{tmp_path / 'api.db'}")
+    client = TestClient(app)
+
+    created = client.post("/tasks/register", json={"email_service_type": "duck_mail"}).json()
+    task_uuid = created["task_uuid"]
+
+    app.state.store.logs.append(task_uuid, "line one")
+    app.state.store.logs.append(task_uuid, "line two")
+
+    response = client.get(f"/tasks/{task_uuid}/logs")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task_uuid"] == task_uuid
+    assert payload["logs"] == ["line one", "line two"]

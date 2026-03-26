@@ -52,6 +52,18 @@ def get_register_task(task_uuid: str, request: Request):
     }
 
 
+@router.get("/tasks/{task_uuid}/logs")
+def get_task_logs(task_uuid: str, request: Request):
+    task = request.app.state.store.tasks.get(task_uuid)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+
+    return {
+        "task_uuid": task.task_uuid,
+        "logs": request.app.state.store.logs.list(task_uuid),
+    }
+
+
 @router.get("/tasks")
 def list_register_tasks(request: Request):
     tasks = request.app.state.store.tasks.list(limit=100)
