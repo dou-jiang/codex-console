@@ -58,6 +58,9 @@ def test_worker_marks_task_completed(monkeypatch, tmp_path: Path):
     assert refreshed.result["identity"]["workspace_id"] == "ws-1"
     assert refreshed.result["source"] == "register"
     assert refreshed.result["logs"] == ["step one", "step two"]
+    log_lines = store.logs.list("t-1")
+    assert any("starting task execution" in line for line in log_lines)
+    assert any("task completed" in line for line in log_lines)
 
 
 def test_worker_marks_task_failed_when_request_missing(tmp_path: Path):
@@ -185,3 +188,6 @@ def test_worker_captures_engine_exception(tmp_path: Path, monkeypatch):
     assert refreshed.error_message == "boom"
     assert refreshed.result["error_message"] == "boom"
     assert refreshed.result["logs"] == []
+    log_lines = store.logs.list("t-1")
+    assert any("starting task execution" in line for line in log_lines)
+    assert any("task failed: boom" in line for line in log_lines)

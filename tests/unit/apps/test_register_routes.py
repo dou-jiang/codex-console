@@ -77,6 +77,8 @@ def test_run_register_task(monkeypatch, tmp_path: Path):
             self.store = store
 
         def process_task(self, task_uuid: str):
+            self.store.logs.append(task_uuid, "worker line one")
+            self.store.logs.append(task_uuid, "worker line two")
             self.store.tasks.update(
                 task_uuid,
                 status="completed",
@@ -111,6 +113,7 @@ def test_run_register_task(monkeypatch, tmp_path: Path):
     assert detail["result"]["source"] == "register"
     assert detail["result"]["logs"] == ["step one"]
     assert detail["result"]["identity"]["email"] == "tester@example.com"
+    assert detail["logs"] == ["worker line one", "worker line two"]
 
 
 def test_run_next_pending_task(monkeypatch, tmp_path: Path):

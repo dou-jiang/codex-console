@@ -12,6 +12,9 @@ class WorkerRunner:
         self.store = store
         self.email_provider_factory = EmailProviderFactory()
 
+    def _log_task(self, task_uuid: str, message: str) -> None:
+        self.store.logs.append(task_uuid, message)
+
     def process_task(self, task_uuid: str) -> dict:
         task = self.store.tasks.get(task_uuid)
         if not task:
@@ -23,12 +26,17 @@ class WorkerRunner:
             self.store.tasks.update(task_uuid, status="failed", error_message="missing request payload")
             return {"success": False, "error": "missing request payload"}
 
+        self._log_task(task_uuid, "starting task execution")
         self.store.tasks.update(task_uuid, status="running", error_message="")
         email_service = self.email_provider_factory.create(
             email_service_type,
             request_payload.get("email_service_config") or {},
         )
-        engine = RegistrationEngine(email_service, task_uuid=task_uuid)
+        engine = RegistrationEngine(
+            email_service,
+            callback_logger=lambda message: self._log_task(task_uuid, str(message)),
+            task_uuid=task_uuid,
+        )
         try:
             result = engine.run(
                 RegistrationInput(
@@ -39,6 +47,7 @@ class WorkerRunner:
             )
         except Exception as exc:
             message = str(exc) or exc.__class__.__name__
+            self._log_task(task_uuid, f"task failed: {message}")
             self.store.tasks.update(
                 task_uuid,
                 status="failed",
@@ -78,6 +87,7 @@ class WorkerRunner:
                 },
             },
         )
+        self._log_task(task_uuid, f"task {new_status}")
         return {"success": result.success, "status": new_status}
 
     def process_next_pending(self) -> dict:
