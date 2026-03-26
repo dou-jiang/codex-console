@@ -1,5 +1,6 @@
 """Minimal worker entrypoint for the migrated architecture."""
 
+import argparse
 import time
 
 from packages.account_store.db import AccountStoreDB
@@ -140,3 +141,18 @@ def run_worker_loop(
         max_iterations=max_iterations,
         poll_interval_seconds=poll_interval_seconds,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the migrated worker loop.")
+    parser.add_argument("--database-url", required=True)
+    parser.add_argument("--max-iterations", type=int, default=1)
+    parser.add_argument("--poll-interval-seconds", type=float, default=1.0)
+    args = parser.parse_args(argv)
+
+    run_worker_loop(
+        database_url=args.database_url,
+        max_iterations=args.max_iterations,
+        poll_interval_seconds=args.poll_interval_seconds,
+    )
+    return 0

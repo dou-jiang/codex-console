@@ -24,7 +24,7 @@ Example:
 
 ```bash
 set PYTHONPATH=C:\path\to\repo
-uvicorn apps.api.main:app --reload
+python -m apps.api.main --host 127.0.0.1 --port 8000 --database-url sqlite:///./data/api.db
 ```
 
 ## Create a Task
@@ -94,6 +94,13 @@ POST /tasks/run-next
 ## Run the Worker Loop Directly
 
 You can also drive the new worker path directly from Python without the API:
+
+```bash
+set PYTHONPATH=C:\path\to\repo
+python -m apps.worker.main --database-url sqlite:///./data/api.db --max-iterations 1 --poll-interval-seconds 1
+```
+
+Or from Python:
 
 ```python
 from apps.worker.main import run_worker_loop
