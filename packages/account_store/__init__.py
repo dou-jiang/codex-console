@@ -1,1 +1,5 @@
-"""Persistence boundary package placeholder for phase 1 migration."""
+"""Persistence boundary exports for the phase 1 migration."""
+
+from .db import AccountStoreDB
+
+__all__ = ["AccountStoreDB"]
