@@ -971,51 +971,49 @@ async def list_tasks(
     status: Optional[str] = Query(None),
 ):
     """获取任务列表"""
-    with get_db() as db:
-        query = db.query(RegistrationTask)
+    session_manager = get_session_manager()
+    store = _create_phase2_store(session_manager.database_url)
+    all_tasks = store.tasks.list(status=status, limit=page_size * max(page, 1))
+    total = len(all_tasks)
+    offset = (page - 1) * page_size
+    tasks = all_tasks[offset: offset + page_size]
 
-        if status:
-            query = query.filter(RegistrationTask.status == status)
-
-        total = query.count()
-        offset = (page - 1) * page_size
-        tasks = query.order_by(RegistrationTask.created_at.desc()).offset(offset).limit(page_size).all()
-
-        return TaskListResponse(
-            total=total,
-            tasks=[task_to_response(t) for t in tasks]
-        )
+    return TaskListResponse(
+        total=total,
+        tasks=[task_to_response(t) for t in tasks]
+    )
 
 
 @router.get("/tasks/{task_uuid}", response_model=RegistrationTaskResponse)
 async def get_task(task_uuid: str):
     """获取任务详情"""
-    with get_db() as db:
-        task = crud.get_registration_task(db, task_uuid)
-        if not task:
-            raise HTTPException(status_code=404, detail="任务不存在")
-        return task_to_response(task)
+    session_manager = get_session_manager()
+    store = _create_phase2_store(session_manager.database_url)
+    task = store.tasks.get(task_uuid)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task_to_response(task)
 
 
 @router.get("/tasks/{task_uuid}/logs")
 async def get_task_logs(task_uuid: str):
     """获取任务日志"""
-    with get_db() as db:
-        task = crud.get_registration_task(db, task_uuid)
-        if not task:
-            raise HTTPException(status_code=404, detail="任务不存在")
+    session_manager = get_session_manager()
+    store = _create_phase2_store(session_manager.database_url)
+    task = store.tasks.get(task_uuid)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
 
-        logs = task.logs or ""
-        result = task.result if isinstance(task.result, dict) else {}
-        email = result.get("email")
-        service_type = task.email_service.service_type if task.email_service else None
-        return {
-            "task_uuid": task_uuid,
-            "status": task.status,
-            "email": email,
-            "email_service": service_type,
-            "logs": logs.split("\n") if logs else []
-        }
+    result = task.result if isinstance(task.result, dict) else {}
+    identity = result.get("identity") if isinstance(result.get("identity"), dict) else {}
+    request_payload = result.get("request") if isinstance(result.get("request"), dict) else {}
+    return {
+        "task_uuid": task_uuid,
+        "status": task.status,
+        "email": identity.get("email"),
+        "email_service": request_payload.get("email_service_type"),
+        "logs": store.logs.list(task_uuid),
+    }
 
 
 @router.post("/tasks/{task_uuid}/cancel")
