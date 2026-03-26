@@ -2,6 +2,7 @@
 
 from packages.account_store.accounts import AccountStore
 from packages.account_store.logs import TaskLogStore
+from packages.account_store.services import EmailServiceStore
 from packages.account_store.tasks import TaskStore
 from src.database.session import DatabaseSessionManager
 
@@ -17,3 +18,4 @@ class AccountStoreDB:
         self.accounts = AccountStore(self.manager)
         self.tasks = TaskStore(self.manager)
         self.logs = TaskLogStore(self.manager)
+        self.services = EmailServiceStore(self.manager)

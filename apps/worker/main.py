@@ -31,11 +31,17 @@ class WorkerRunner:
             self.store.tasks.update(task_uuid, status="failed", error_message="missing request payload")
             return {"success": False, "error": "missing request payload"}
 
+        email_service_config = request_payload.get("email_service_config") or {}
+        if not email_service_config and getattr(task, "email_service_id", None):
+            service_config = self.store.services.get_config(task.email_service_id)
+            if service_config:
+                email_service_config = service_config
+
         self._log_task(task_uuid, "starting task execution")
         self.store.tasks.update(task_uuid, status="running", error_message="")
         email_service = self.email_provider_factory.create(
             email_service_type,
-            request_payload.get("email_service_config") or {},
+            email_service_config,
         )
         engine = RegistrationEngine(
             email_service,
@@ -47,7 +53,7 @@ class WorkerRunner:
                 RegistrationInput(
                     email_service_type=email_service_type,
                     proxy_url=request_payload.get("proxy_url"),
-                    email_service_config=request_payload.get("email_service_config"),
+                    email_service_config=email_service_config,
                 )
             )
         except Exception as exc:

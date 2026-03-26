@@ -63,6 +63,56 @@ def test_worker_marks_task_completed(monkeypatch, tmp_path: Path):
     assert any("task completed" in line for line in log_lines)
 
 
+def test_worker_resolves_outlook_config_from_service_id(monkeypatch, tmp_path: Path):
+    store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'worker-outlook.db'}")
+    task = store.tasks.create(task_uuid="t-1", status="pending", email_service_id=42)
+    store.tasks.update(
+        task.task_uuid,
+        result={"request": {"email_service_type": "outlook"}},
+    )
+
+    class FakeResult:
+        success = True
+        error_message = ""
+        identity = AccountIdentity(
+            email="outlook@example.com",
+            account_id="acct-42",
+            workspace_id="ws-42",
+        )
+        logs = []
+        source = "register"
+
+    class FakeEngine:
+        def __init__(self, email_service, callback_logger=None, task_uuid=None):
+            self.email_service = email_service
+
+        def run(self, registration_input):
+            assert registration_input.email_service_config == {"email": "outlook@example.com", "refresh_token": "refresh-42"}
+            return FakeResult()
+
+    class FakeFactory:
+        def create(self, service_type, config=None, name=None):
+            assert service_type == "outlook"
+            assert config == {"email": "outlook@example.com", "refresh_token": "refresh-42"}
+            return object()
+
+    class FakeServices:
+        def get_config(self, service_id: int):
+            assert service_id == 42
+            return {"email": "outlook@example.com", "refresh_token": "refresh-42"}
+
+    store.services = FakeServices()
+
+    monkeypatch.setattr("apps.worker.main.RegistrationEngine", FakeEngine)
+    monkeypatch.setattr("apps.worker.main.EmailProviderFactory", FakeFactory)
+
+    runner = WorkerRunner(store)
+    outcome = runner.process_task("t-1")
+
+    assert outcome["success"] is True
+    assert store.tasks.get("t-1").status == "completed"
+
+
 def test_worker_marks_task_failed_when_request_missing(tmp_path: Path):
     store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'worker-fail.db'}")
     store.tasks.create(task_uuid="t-1", status="pending")
