@@ -23,18 +23,39 @@ class WorkerRunner:
             self.store.tasks.update(task_uuid, status="failed", error_message="missing request payload")
             return {"success": False, "error": "missing request payload"}
 
+        self.store.tasks.update(task_uuid, status="running", error_message="")
         email_service = self.email_provider_factory.create(
             email_service_type,
             request_payload.get("email_service_config") or {},
         )
         engine = RegistrationEngine(email_service, task_uuid=task_uuid)
-        result = engine.run(
-            RegistrationInput(
-                email_service_type=email_service_type,
-                proxy_url=request_payload.get("proxy_url"),
-                email_service_config=request_payload.get("email_service_config"),
+        try:
+            result = engine.run(
+                RegistrationInput(
+                    email_service_type=email_service_type,
+                    proxy_url=request_payload.get("proxy_url"),
+                    email_service_config=request_payload.get("email_service_config"),
+                )
             )
-        )
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            self.store.tasks.update(
+                task_uuid,
+                status="failed",
+                error_message=message,
+                result={
+                    "request": request_payload,
+                    "success": False,
+                    "error_message": message,
+                    "identity": {
+                        "email": "",
+                        "account_id": "",
+                        "workspace_id": "",
+                    },
+                },
+            )
+            return {"success": False, "status": "failed", "error": message}
+
         new_status = "completed" if result.success else "failed"
         identity = getattr(result, "identity", None)
         self.store.tasks.update(
