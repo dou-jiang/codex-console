@@ -1189,86 +1189,175 @@ async def refresh_accounts_overview(request: OverviewRefreshRequest):
             ).order_by(Account.created_at.desc()).all()
             ids = [acc.id for acc in candidates if not _is_overview_card_removed(acc)]
 
-        logger.info(
-            "账号总览刷新开始: target_count=%s force=%s select_all=%s proxy=%s",
-            len(ids),
-            bool(request.force),
-            bool(request.select_all),
-            proxy or "-",
-        )
+    if not ids:
+        return result
 
-        for account_id in ids:
-            account = crud.get_account_by_id(db, account_id)
+    logger.info(
+        "账号总览刷新开始: target_count=%s force=%s select_all=%s proxy=%s",
+        len(ids),
+        bool(request.force),
+        bool(request.select_all),
+        proxy or "-",
+    )
+
+    import asyncio
+    import concurrent.futures
+
+    def _overview_refresh_worker(account_id):
+        # 阶段 1：获取账号和状态，释放数据库连接
+        with get_db() as local_db:
+            account = crud.get_account_by_id(local_db, account_id)
             if not account:
-                result["failed_count"] += 1
-                result["details"].append({"id": account_id, "success": False, "error": "账号不存在"})
-                logger.warning("账号总览刷新失败: account_id=%s error=账号不存在", account_id)
-                continue
+                return account_id, None, False, "账号不存在", None
+
             if (not _is_paid_subscription(account.subscription_type)) or _is_overview_card_removed(account):
-                result["details"].append(
-                    {
-                        "id": account.id,
-                        "email": account.email,
-                        "success": False,
-                        "error": "账号不在 Codex 卡片范围内，已跳过",
-                    }
-                )
-                continue
+                return account_id, account.email, False, "账号不在 Codex 卡片范围内，已跳过", None
 
             account_proxy = (account.proxy_used or "").strip() or proxy
-            overview, updated = _get_account_overview_data(
-                db,
-                account,
-                force_refresh=request.force,
-                proxy=account_proxy,
-                allow_network=True,
+            
+            # 判断是否可以直接返回缓存
+            extra_data = account.extra_data if isinstance(account.extra_data, dict) else {}
+            cached = extra_data.get(OVERVIEW_EXTRA_DATA_KEY) if isinstance(extra_data, dict) else None
+            cache_stale = _is_overview_cache_stale(cached)
+            
+            if not account.access_token:
+                if cached:
+                    stale_cached = dict(cached)
+                    stale_cached["stale"] = True
+                    stale_cached["error"] = "missing_access_token"
+                    return account_id, account.email, True, stale_cached, None
+                return account_id, account.email, True, _fallback_overview(account, error_message="missing_access_token"), None
+
+            if not request.force and cached and not cache_stale:
+                return account_id, account.email, True, cached, None
+
+            # 提取需要的数据供无会话网络调用
+            class MockAccount:
+                pass
+            mock_acc = MockAccount()
+            mock_acc.email = account.email
+            mock_acc.access_token = account.access_token
+            mock_acc.id_token = account.id_token
+            mock_acc.account_id = account.account_id
+            mock_acc.workspace_id = account.workspace_id
+            mock_acc.cookies = account.cookies
+            mock_acc.subscription_type = account.subscription_type
+            
+        # 阶段 2：发起网络请求（不占用数据库连接）
+        try:
+            overview = fetch_codex_overview(mock_acc, proxy=account_proxy)
+            error_message = None
+        except Exception as exc:
+            logger.warning(f"刷新账号[{mock_acc.email}]总览失败: {exc}")
+            overview = None
+            error_message = str(exc)
+
+        # 阶段 3：更新数据库
+        with get_db() as local_db:
+            account = crud.get_account_by_id(local_db, account_id)
+            if not account:
+                return account_id, None, False, "账号不存在", None
+            
+            extra_data = account.extra_data if isinstance(account.extra_data, dict) else {}
+            cached = extra_data.get(OVERVIEW_EXTRA_DATA_KEY) if isinstance(extra_data, dict) else None
+            
+            if error_message:
+                if cached:
+                    stale_cached = dict(cached)
+                    stale_cached["stale"] = True
+                    stale_cached["error"] = error_message
+                    return account_id, account.email, True, stale_cached, None
+                return account_id, account.email, True, _fallback_overview(account, error_message=error_message, stale=True), None
+                
+            # 合并缓存中的正常配额
+            if cached and not request.force:
+                for key in ("hourly_quota", "weekly_quota", "code_review_quota"):
+                    if (
+                        isinstance(cached.get(key), dict)
+                        and isinstance(overview.get(key), dict)
+                        and overview[key].get("status") == "unknown"
+                        and cached[key].get("status") == "ok"
+                    ):
+                        overview[key] = cached[key]
+                        
+            # 更新订阅
+            plan_source = str(overview.get("plan_source") or "")
+            trusted_plan_sources = (
+                "me.", "wham_usage.", "codex_usage.", "id_token.", "access_token."
             )
-            if updated:
-                db.commit()
+            if any(plan_source.startswith(prefix) for prefix in trusted_plan_sources):
+                current_sub = _normalize_subscription_input(account.subscription_type)
+                detected_sub = _plan_to_subscription_type(overview.get("plan_type"))
+                if detected_sub and current_sub != detected_sub:
+                    account.subscription_type = detected_sub
+                    account.subscription_at = datetime.utcnow() if detected_sub else None
+                elif not detected_sub and current_sub in PAID_SUBSCRIPTION_TYPES:
+                    pass # 跳过降级
+                    
+            merged_extra = dict(extra_data)
+            merged_extra[OVERVIEW_EXTRA_DATA_KEY] = overview
+            account.extra_data = merged_extra
+            local_db.commit()
+            
+            return account_id, account.email, True, overview, None
 
-            if overview.get("hourly_quota", {}).get("status") == "unknown" and overview.get("weekly_quota", {}).get("status") == "unknown":
-                result["failed_count"] += 1
-                result["details"].append(
-                    {
-                        "id": account.id,
-                        "email": account.email,
-                        "success": False,
-                        "error": overview.get("error") or "未获取到配额数据",
-                    }
-                )
-                logger.warning(
-                    "账号总览刷新失败: account_id=%s email=%s error=%s",
-                    account.id,
-                    account.email,
-                    overview.get("error") or "未获取到配额数据",
-                )
-            else:
-                result["success_count"] += 1
-                result["details"].append(
-                    {
-                        "id": account.id,
-                        "email": account.email,
-                        "success": True,
-                        "plan_type": overview.get("plan_type"),
-                    }
-                )
-                logger.info(
-                    "账号总览刷新成功: account_id=%s email=%s plan=%s hourly=%s weekly=%s code_review=%s hourly_source=%s weekly_source=%s",
-                    account.id,
-                    account.email,
-                    overview.get("plan_type") or "-",
-                    overview.get("hourly_quota", {}).get("percentage"),
-                    overview.get("weekly_quota", {}).get("percentage"),
-                    overview.get("code_review_quota", {}).get("percentage"),
-                    overview.get("hourly_quota", {}).get("source"),
-                    overview.get("weekly_quota", {}).get("source"),
-                )
+    # 使用自定义线程池和 asyncio.gather 来实现高并发且不阻塞主线程
+    max_workers = min(50, len(ids) if ids else 1)
+    loop = asyncio.get_running_loop()
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        tasks = [
+            loop.run_in_executor(executor, _overview_refresh_worker, acc_id)
+            for acc_id in ids
+        ]
+        
+        # 等待所有任务完成
+        if tasks:
+            completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for res in completed_results:
+                if isinstance(res, Exception):
+                    result["failed_count"] += 1
+                    logger.error(f"并发刷新总览发生异常: {res}")
+                    continue
+                    
+                acc_id, email, is_valid_target, overview_or_err, _ = res
+                
+                if not is_valid_target:
+                    if email:
+                        result["details"].append({"id": acc_id, "email": email, "success": False, "error": overview_or_err})
+                    else:
+                        result["failed_count"] += 1
+                        result["details"].append({"id": acc_id, "success": False, "error": overview_or_err})
+                    continue
 
-        logger.info(
-            "账号总览刷新完成: success=%s failed=%s",
-            result["success_count"],
-            result["failed_count"],
-        )
+                overview = overview_or_err
+                if overview.get("hourly_quota", {}).get("status") == "unknown" and overview.get("weekly_quota", {}).get("status") == "unknown":
+                    result["failed_count"] += 1
+                    result["details"].append(
+                        {
+                            "id": acc_id,
+                            "email": email,
+                            "success": False,
+                            "error": overview.get("error") or "未获取到配额数据",
+                        }
+                    )
+                else:
+                    result["success_count"] += 1
+                    result["details"].append(
+                        {
+                            "id": acc_id,
+                            "email": email,
+                            "success": True,
+                            "plan_type": overview.get("plan_type"),
+                        }
+                    )
+
+    logger.info(
+        "账号总览刷新完成: success=%s failed=%s",
+        result["success_count"],
+        result["failed_count"],
+    )
 
     return result
 
@@ -1497,25 +1586,42 @@ async def batch_sync_accounts(request: BatchSyncRequest):
             return {"success": True, "sync_count": 0, "message": "没有需要同步的账号"}
             
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
+        # 提取需要的数据，供脱离数据库会话使用
+        class MockAccount:
+            pass
+        accounts_data = []
+        for acc in accounts:
+            mock_acc = MockAccount()
+            mock_acc.id = acc.id
+            mock_acc.email = acc.email
+            mock_acc.password = acc.password
+            mock_acc.access_token = acc.access_token
+            mock_acc.refresh_token = acc.refresh_token
+            mock_acc.session_token = acc.session_token
+            accounts_data.append(mock_acc)
         
-        from ...core.upload.sync_upload import upload_to_sync_manager
-        from datetime import datetime
-        
-        success, msg = upload_to_sync_manager(
-            accounts, 
-            api_url=settings.sync_api_url, 
-            addr=settings.sync_addr,
-            api_token=settings.sync_api_token.get_secret_value() if settings.sync_api_token else ""
-        )
-        
-        if success:
-            for acc in accounts:
-                acc.sync_uploaded = True
-                acc.sync_uploaded_at = datetime.utcnow()
+    from ...core.upload.sync_upload import upload_to_sync_manager
+    from datetime import datetime
+    
+    # 不占用数据库连接发起网络请求
+    success, msg = await asyncio.to_thread(
+        upload_to_sync_manager,
+        accounts_data, 
+        api_url=settings.sync_api_url, 
+        addr=settings.sync_addr,
+        api_token=settings.sync_api_token.get_secret_value() if settings.sync_api_token else ""
+    )
+    
+    if success:
+        with get_db() as db:
+            db.query(Account).filter(Account.id.in_(ids)).update(
+                {"sync_uploaded": True, "sync_uploaded_at": datetime.utcnow()},
+                synchronize_session=False
+            )
             db.commit()
-            return {"success": True, "sync_count": len(accounts), "message": "同步成功"}
-        else:
-            return {"success": False, "sync_count": 0, "message": f"同步失败: {msg}"}
+        return {"success": True, "sync_count": len(accounts_data), "message": "同步成功"}
+    else:
+        return {"success": False, "sync_count": 0, "message": f"同步失败: {msg}"}
 
 
 @router.post("/export/json")
@@ -1690,36 +1796,35 @@ async def export_accounts_cpa(request: BatchExportRequest):
             request.status_filter, request.email_service_filter, request.search_filter
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
+        token_data_list = [(acc.email, generate_token_json(acc)) for acc in accounts]
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        if len(accounts) == 1:
-            # 单个账号直接返回 JSON 文件
-            acc = accounts[0]
-            token_data = generate_token_json(acc)
-            content = json.dumps(token_data, ensure_ascii=False, indent=2)
-            filename = f"{acc.email}.json"
-            return StreamingResponse(
-                iter([content]),
-                media_type="application/json",
-                headers={"Content-Disposition": f"attachment; filename={filename}"}
-            )
-
-        # 多个账号打包为 ZIP
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for acc in accounts:
-                token_data = generate_token_json(acc)
-                content = json.dumps(token_data, ensure_ascii=False, indent=2)
-                zf.writestr(f"{acc.email}.json", content)
-
-        zip_buffer.seek(0)
-        zip_filename = f"cpa_tokens_{timestamp}.zip"
+    if len(token_data_list) == 1:
+        # 单个账号直接返回 JSON 文件
+        email, token_data = token_data_list[0]
+        content = json.dumps(token_data, ensure_ascii=False, indent=2)
+        filename = f"{email}.json"
         return StreamingResponse(
-            zip_buffer,
-            media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename={zip_filename}"}
+            iter([content]),
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
+
+    # 多个账号打包为 ZIP
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for email, token_data in token_data_list:
+            content = json.dumps(token_data, ensure_ascii=False, indent=2)
+            zf.writestr(f"{email}.json", content)
+
+    zip_buffer.seek(0)
+    zip_filename = f"cpa_tokens_{timestamp}.zip"
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={zip_filename}"}
+    )
 
 
 @router.get("/stats/summary")
@@ -1875,17 +1980,44 @@ async def batch_refresh_tokens(request: BatchRefreshRequest, background_tasks: B
             request.status_filter, request.email_service_filter, request.search_filter
         )
 
-    for account_id in ids:
+    import asyncio
+    import concurrent.futures
+
+    def _refresh_worker(account_id):
         try:
-            result = do_refresh(account_id, proxy)
-            if result.success:
-                results["success_count"] += 1
+            res = do_refresh(account_id, proxy)
+            if res.success:
+                return True, account_id, None
             else:
-                results["failed_count"] += 1
-                results["errors"].append({"id": account_id, "error": result.error_message})
+                return False, account_id, res.error_message
         except Exception as e:
-            results["failed_count"] += 1
-            results["errors"].append({"id": account_id, "error": str(e)})
+            return False, account_id, str(e)
+
+    # 限制并发数以防请求过多被封，使用 asyncio.gather 避免阻塞事件循环
+    max_workers = min(30, len(ids) if ids else 1)
+    loop = asyncio.get_running_loop()
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        tasks = [
+            loop.run_in_executor(executor, _refresh_worker, acc_id)
+            for acc_id in ids
+        ]
+        
+        if tasks:
+            completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for res in completed_results:
+                if isinstance(res, Exception):
+                    results["failed_count"] += 1
+                    logger.error(f"并发刷新Token发生异常: {res}")
+                    continue
+                    
+                success, acc_id, err_msg = res
+                if success:
+                    results["success_count"] += 1
+                else:
+                    results["failed_count"] += 1
+                    results["errors"].append({"id": acc_id, "error": err_msg})
 
     return results
 
@@ -1926,20 +2058,23 @@ async def batch_validate_tokens(request: BatchValidateRequest):
             request.status_filter, request.email_service_filter, request.search_filter
         )
 
-    for account_id in ids:
+    import asyncio
+    import concurrent.futures
+
+    def _validate_worker(account_id):
         try:
             is_valid, error = do_validate(account_id, proxy)
-            results["details"].append({
-                "id": account_id,
-                "valid": is_valid,
-                "error": error
-            })
-            if is_valid:
-                results["valid_count"] += 1
-            else:
-                results["invalid_count"] += 1
+            if not is_valid:
+                # 异常账号兜底打标 failed，保证前端“失败”筛选可见。
+                try:
+                    with get_db() as db:
+                        account = crud.get_account_by_id(db, account_id)
+                        if account and account.status != AccountStatus.FAILED.value:
+                            crud.update_account(db, account_id, status=AccountStatus.FAILED.value)
+                except Exception:
+                    pass
+            return True, account_id, is_valid, error
         except Exception as e:
-            # 异常账号兜底打标 failed，保证前端“失败”筛选可见。
             try:
                 with get_db() as db:
                     account = crud.get_account_by_id(db, account_id)
@@ -1947,12 +2082,37 @@ async def batch_validate_tokens(request: BatchValidateRequest):
                         crud.update_account(db, account_id, status=AccountStatus.FAILED.value)
             except Exception:
                 pass
-            results["invalid_count"] += 1
-            results["details"].append({
-                "id": account_id,
-                "valid": False,
-                "error": str(e)
-            })
+            return False, account_id, False, str(e)
+
+    # 并发执行，避免阻塞事件循环
+    max_workers = min(50, len(ids) if ids else 1)
+    loop = asyncio.get_running_loop()
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        tasks = [
+            loop.run_in_executor(executor, _validate_worker, acc_id)
+            for acc_id in ids
+        ]
+        
+        if tasks:
+            completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for res in completed_results:
+                if isinstance(res, Exception):
+                    results["invalid_count"] += 1
+                    logger.error(f"并发验证Token发生异常: {res}")
+                    continue
+                    
+                _, acc_id, is_valid, error = res
+                results["details"].append({
+                    "id": acc_id,
+                    "valid": is_valid,
+                    "error": error
+                })
+                if is_valid:
+                    results["valid_count"] += 1
+                else:
+                    results["invalid_count"] += 1
 
     return results
 
@@ -2012,7 +2172,8 @@ async def batch_upload_accounts_to_cpa(request: BatchCPAUploadRequest):
             request.status_filter, request.email_service_filter, request.search_filter
         )
 
-    results = batch_upload_to_cpa(ids, proxy, api_url=cpa_api_url, api_token=cpa_api_token)
+    import asyncio
+    results = await asyncio.to_thread(batch_upload_to_cpa, ids, proxy, api_url=cpa_api_url, api_token=cpa_api_token)
     return results
 
 
@@ -2048,16 +2209,19 @@ async def upload_account_to_cpa(account_id: int, request: Optional[CPAUploadRequ
         # 生成 Token JSON
         token_data = generate_token_json(account)
 
-        # 上传
-        success, message = upload_to_cpa(token_data, proxy, api_url=cpa_api_url, api_token=cpa_api_token)
+    # 在不占用数据库连接的情况下上传
+    success, message = upload_to_cpa(token_data, proxy, api_url=cpa_api_url, api_token=cpa_api_token)
 
-        if success:
-            account.cpa_uploaded = True
-            account.cpa_uploaded_at = datetime.utcnow()
-            db.commit()
-            return {"success": True, "message": message}
-        else:
-            return {"success": False, "error": message}
+    if success:
+        with get_db() as db:
+            account = crud.get_account_by_id(db, account_id)
+            if account:
+                account.cpa_uploaded = True
+                account.cpa_uploaded_at = datetime.utcnow()
+                db.commit()
+        return {"success": True, "message": message}
+    else:
+        return {"success": False, "error": message}
 
 
 class Sub2ApiUploadRequest(BaseModel):
@@ -2109,7 +2273,9 @@ async def batch_upload_accounts_to_sub2api(request: BatchSub2ApiUploadRequest):
             request.status_filter, request.email_service_filter, request.search_filter
         )
 
-    results = batch_upload_to_sub2api(
+    import asyncio
+    results = await asyncio.to_thread(
+        batch_upload_to_sub2api,
         ids, api_url, api_key,
         concurrency=request.concurrency,
         priority=request.priority,
@@ -2151,14 +2317,26 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
         if not account.access_token:
             return {"success": False, "error": "账号缺少 Token，无法上传"}
 
-        success, message = upload_to_sub2api(
-            [account], api_url, api_key,
-            concurrency=concurrency, priority=priority
-        )
-        if success:
-            return {"success": True, "message": message}
-        else:
-            return {"success": False, "error": message}
+        class MockAccount:
+            pass
+        mock_acc = MockAccount()
+        mock_acc.id = account.id
+        mock_acc.email = account.email
+        mock_acc.access_token = account.access_token
+        mock_acc.account_id = account.account_id
+        mock_acc.client_id = account.client_id
+        mock_acc.expires_at = account.expires_at
+        mock_acc.workspace_id = account.workspace_id
+        mock_acc.refresh_token = account.refresh_token
+
+    success, message = upload_to_sub2api(
+        [mock_acc], api_url, api_key,
+        concurrency=concurrency, priority=priority
+    )
+    if success:
+        return {"success": True, "message": message}
+    else:
+        return {"success": False, "error": message}
 
 
 # ============== Team Manager 上传 ==============
@@ -2198,7 +2376,8 @@ async def batch_upload_accounts_to_tm(request: BatchUploadTMRequest):
             request.status_filter, request.email_service_filter, request.search_filter
         )
 
-    results = batch_upload_to_team_manager(ids, api_url, api_key)
+    import asyncio
+    results = await asyncio.to_thread(batch_upload_to_team_manager, ids, api_url, api_key)
     return results
 
 
@@ -2224,7 +2403,18 @@ async def upload_account_to_tm(account_id: int, request: Optional[UploadTMReques
         account = crud.get_account_by_id(db, account_id)
         if not account:
             raise HTTPException(status_code=404, detail="账号不存在")
-        success, message = upload_to_team_manager(account, api_url, api_key)
+            
+        class MockAccount:
+            pass
+        mock_acc = MockAccount()
+        mock_acc.email = account.email
+        mock_acc.access_token = account.access_token
+        mock_acc.session_token = account.session_token
+        mock_acc.refresh_token = account.refresh_token
+        mock_acc.client_id = account.client_id
+        mock_acc.account_id = account.account_id
+        
+    success, message = upload_to_team_manager(mock_acc, api_url, api_key)
 
     return {"success": success, "message": message}
 

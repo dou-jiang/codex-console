@@ -333,16 +333,27 @@ def refresh_account_token(account_id: int, proxy_url: Optional[str] = None) -> T
     Returns:
         TokenRefreshResult: 刷新结果
     """
+    class MockAccount:
+        pass
+        
+    mock_acc = MockAccount()
     with get_db() as db:
         account = crud.get_account_by_id(db, account_id)
         if not account:
             return TokenRefreshResult(success=False, error_message="账号不存在")
+        mock_acc.email = account.email
+        mock_acc.session_token = account.session_token
+        mock_acc.cookies = account.cookies
+        mock_acc.refresh_token = account.refresh_token
+        mock_acc.client_id = account.client_id
 
-        manager = TokenRefreshManager(proxy_url=proxy_url)
-        result = manager.refresh_account(account)
+    # 在不占用数据库连接的情况下执行网络请求
+    manager = TokenRefreshManager(proxy_url=proxy_url)
+    result = manager.refresh_account(mock_acc)
 
-        if result.success:
-            # 更新数据库
+    if result.success:
+        # 更新数据库
+        with get_db() as db:
             update_data = {
                 "access_token": result.access_token,
                 "last_refresh": datetime.utcnow()
@@ -356,7 +367,7 @@ def refresh_account_token(account_id: int, proxy_url: Optional[str] = None) -> T
 
             crud.update_account(db, account_id, **update_data)
 
-        return result
+    return result
 
 
 def validate_account_token(account_id: int, proxy_url: Optional[str] = None) -> Tuple[bool, Optional[str]]:
@@ -380,32 +391,37 @@ def validate_account_token(account_id: int, proxy_url: Optional[str] = None) -> 
             if account.status != AccountStatus.FAILED.value:
                 crud.update_account(db, account_id, status=AccountStatus.FAILED.value)
             return False, "账号没有 access_token"
+            
+        access_token = account.access_token
+        current_status = account.status
 
-        manager = TokenRefreshManager(proxy_url=proxy_url)
-        is_valid, error = manager.validate_token(account.access_token)
+    # 在不占用数据库连接的情况下执行网络请求
+    manager = TokenRefreshManager(proxy_url=proxy_url)
+    is_valid, error = manager.validate_token(access_token)
 
-        # 验证后回写账号状态，确保前端筛选（active/expired/banned/failed）与验证结果一致。
-        error_text = str(error or "").lower()
-        if is_valid:
-            next_status = AccountStatus.ACTIVE.value
-        elif (
-            "过期" in error_text
-            or "expired" in error_text
-            or "401" in error_text
-            or "invalid" in error_text
-        ):
-            next_status = AccountStatus.EXPIRED.value
-        elif (
-            "封禁" in error_text
-            or "banned" in error_text
-            or "forbidden" in error_text
-            or "403" in error_text
-        ):
-            next_status = AccountStatus.BANNED.value
-        else:
-            next_status = AccountStatus.FAILED.value
+    # 验证后回写账号状态，确保前端筛选（active/expired/banned/failed）与验证结果一致。
+    error_text = str(error or "").lower()
+    if is_valid:
+        next_status = AccountStatus.ACTIVE.value
+    elif (
+        "过期" in error_text
+        or "expired" in error_text
+        or "401" in error_text
+        or "invalid" in error_text
+    ):
+        next_status = AccountStatus.EXPIRED.value
+    elif (
+        "封禁" in error_text
+        or "banned" in error_text
+        or "forbidden" in error_text
+        or "403" in error_text
+    ):
+        next_status = AccountStatus.BANNED.value
+    else:
+        next_status = AccountStatus.FAILED.value
 
-        if account.status != next_status:
+    if current_status != next_status:
+        with get_db() as db:
             crud.update_account(db, account_id, status=next_status)
 
-        return is_valid, error
+    return is_valid, error

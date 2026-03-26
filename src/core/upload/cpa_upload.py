@@ -188,15 +188,6 @@ def batch_upload_to_cpa(
 ) -> dict:
     """
     批量上传账号到 CPA 管理平台
-
-    Args:
-        account_ids: 账号 ID 列表
-        proxy: 可选的代理 URL
-        api_url: 指定 CPA API URL（优先于全局配置）
-        api_token: 指定 CPA API Token（优先于全局配置）
-
-    Returns:
-        包含成功/失败统计和详情的字典
     """
     results = {
         "success_count": 0,
@@ -205,58 +196,54 @@ def batch_upload_to_cpa(
         "details": []
     }
 
-    with get_db() as db:
-        for account_id in account_ids:
+    import concurrent.futures
+    import threading
+
+    def _worker(account_id):
+        # 1. 查询所需数据并关闭数据库连接
+        with get_db() as db:
             account = db.query(Account).filter(Account.id == account_id).first()
-
             if not account:
-                results["failed_count"] += 1
-                results["details"].append({
-                    "id": account_id,
-                    "email": None,
-                    "success": False,
-                    "error": "账号不存在"
-                })
-                continue
+                return "failed", account_id, None, "账号不存在"
 
-            # 检查是否已有 Token
             if not account.access_token:
-                results["skipped_count"] += 1
-                results["details"].append({
-                    "id": account_id,
-                    "email": account.email,
-                    "success": False,
-                    "error": "缺少 Token"
-                })
-                continue
+                return "skipped", account_id, account.email, "缺少 Token"
 
-            # 生成 Token JSON
             token_data = generate_token_json(account)
+            email = account.email
 
-            # 上传
-            success, message = upload_to_cpa(token_data, proxy, api_url=api_url, api_token=api_token)
+        # 2. 在不占用数据库连接的情况下发起网络请求
+        success, message = upload_to_cpa(token_data, proxy, api_url=api_url, api_token=api_token)
 
-            if success:
-                # 更新数据库状态
-                account.cpa_uploaded = True
-                account.cpa_uploaded_at = datetime.utcnow()
-                db.commit()
+        # 3. 更新数据库
+        if success:
+            with get_db() as db:
+                account = db.query(Account).filter(Account.id == account_id).first()
+                if account:
+                    account.cpa_uploaded = True
+                    account.cpa_uploaded_at = datetime.utcnow()
+                    db.commit()
+            return "success", account_id, email, message
+        else:
+            return "failed", account_id, email, message
 
-                results["success_count"] += 1
-                results["details"].append({
-                    "id": account_id,
-                    "email": account.email,
-                    "success": True,
-                    "message": message
-                })
-            else:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, len(account_ids) if account_ids else 1)) as executor:
+        futures = [executor.submit(_worker, acc_id) for acc_id in account_ids]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                status, acc_id, email, msg = future.result()
+                if status == "success":
+                    results["success_count"] += 1
+                    results["details"].append({"id": acc_id, "email": email, "success": True, "message": msg})
+                elif status == "skipped":
+                    results["skipped_count"] += 1
+                    results["details"].append({"id": acc_id, "email": email, "success": False, "error": msg})
+                else:
+                    results["failed_count"] += 1
+                    results["details"].append({"id": acc_id, "email": email, "success": False, "error": msg})
+            except Exception as e:
                 results["failed_count"] += 1
-                results["details"].append({
-                    "id": account_id,
-                    "email": account.email,
-                    "success": False,
-                    "error": message
-                })
+                logger.error(f"批量上传 CPA 发生异常: {e}")
 
     return results
 

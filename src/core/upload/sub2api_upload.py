@@ -152,8 +152,10 @@ def batch_upload_to_sub2api(
         "details": []
     }
 
+    accounts_data = []
+
+    # 1. 获取账号数据
     with get_db() as db:
-        accounts = []
         for account_id in account_ids:
             acc = db.query(Account).filter(Account.id == account_id).first()
             if not acc:
@@ -164,21 +166,36 @@ def batch_upload_to_sub2api(
                 results["skipped_count"] += 1
                 results["details"].append({"id": account_id, "email": acc.email, "success": False, "error": "缺少 access_token"})
                 continue
-            accounts.append(acc)
+            
+            # 使用 DummyAccount 以便脱离数据库会话使用
+            class MockAccount:
+                pass
+            mock_acc = MockAccount()
+            mock_acc.id = acc.id
+            mock_acc.email = acc.email
+            mock_acc.access_token = acc.access_token
+            mock_acc.account_id = acc.account_id
+            mock_acc.client_id = acc.client_id
+            mock_acc.expires_at = acc.expires_at
+            mock_acc.workspace_id = acc.workspace_id
+            mock_acc.refresh_token = acc.refresh_token
+            
+            accounts_data.append(mock_acc)
 
-        if not accounts:
-            return results
+    if not accounts_data:
+        return results
 
-        success, message = upload_to_sub2api(accounts, api_url, api_key, concurrency, priority)
+    # 2. 发起网络请求（不占用数据库连接）
+    success, message = upload_to_sub2api(accounts_data, api_url, api_key, concurrency, priority)
 
-        if success:
-            for acc in accounts:
-                results["success_count"] += 1
-                results["details"].append({"id": acc.id, "email": acc.email, "success": True, "message": message})
-        else:
-            for acc in accounts:
-                results["failed_count"] += 1
-                results["details"].append({"id": acc.id, "email": acc.email, "success": False, "error": message})
+    if success:
+        for acc in accounts_data:
+            results["success_count"] += 1
+            results["details"].append({"id": acc.id, "email": acc.email, "success": True, "message": message})
+    else:
+        for acc in accounts_data:
+            results["failed_count"] += 1
+            results["details"].append({"id": acc.id, "email": acc.email, "success": False, "error": message})
 
     return results
 

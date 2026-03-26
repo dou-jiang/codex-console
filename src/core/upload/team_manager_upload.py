@@ -88,9 +88,11 @@ def batch_upload_to_team_manager(
         "details": [],
     }
 
+    lines = []
+    valid_accounts_info = []
+
+    # 1. 查询所需数据并关闭数据库连接
     with get_db() as db:
-        lines = []
-        valid_accounts = []
         for account_id in account_ids:
             account = db.query(Account).filter(Account.id == account_id).first()
             if not account:
@@ -113,57 +115,58 @@ def batch_upload_to_team_manager(
                 account.session_token or "",
                 account.client_id or "",
             ]))
-            valid_accounts.append(account)
+            valid_accounts_info.append({"id": account.id, "email": account.email})
 
-        if not valid_accounts:
-            return results
+    if not valid_accounts_info:
+        return results
 
-        url = api_url.rstrip("/") + "/admin/teams/import"
-        headers = {
-            "X-API-Key": api_key,
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "import_type": "batch",
-            "content": "\n".join(lines),
-        }
+    url = api_url.rstrip("/") + "/admin/teams/import"
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "import_type": "batch",
+        "content": "\n".join(lines),
+    }
 
-        try:
-            resp = cffi_requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                proxies=None,
-                timeout=60,
-                impersonate="chrome110",
-            )
-            if resp.status_code in (200, 201):
-                for account in valid_accounts:
-                    results["success_count"] += 1
-                    results["details"].append(
-                        {"id": account.id, "email": account.email, "success": True, "message": "批量上传成功"}
-                    )
-            else:
-                error_msg = f"批量上传失败: HTTP {resp.status_code}"
-                try:
-                    detail = resp.json()
-                    if isinstance(detail, dict):
-                        error_msg = detail.get("message", error_msg)
-                except Exception:
-                    error_msg = f"{error_msg} - {resp.text[:200]}"
-                for account in valid_accounts:
-                    results["failed_count"] += 1
-                    results["details"].append(
-                        {"id": account.id, "email": account.email, "success": False, "error": error_msg}
-                    )
-        except Exception as e:
-            logger.error(f"Team Manager 批量上传异常: {e}")
-            error_msg = f"上传异常: {str(e)}"
-            for account in valid_accounts:
+    # 2. 发起网络请求
+    try:
+        resp = cffi_requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            proxies=None,
+            timeout=60,
+            impersonate="chrome110",
+        )
+        if resp.status_code in (200, 201):
+            for info in valid_accounts_info:
+                results["success_count"] += 1
+                results["details"].append(
+                    {"id": info["id"], "email": info["email"], "success": True, "message": "批量上传成功"}
+                )
+        else:
+            error_msg = f"批量上传失败: HTTP {resp.status_code}"
+            try:
+                detail = resp.json()
+                if isinstance(detail, dict):
+                    error_msg = detail.get("message", error_msg)
+            except Exception:
+                error_msg = f"{error_msg} - {resp.text[:200]}"
+            for info in valid_accounts_info:
                 results["failed_count"] += 1
                 results["details"].append(
-                    {"id": account.id, "email": account.email, "success": False, "error": error_msg}
+                    {"id": info["id"], "email": info["email"], "success": False, "error": error_msg}
                 )
+    except Exception as e:
+        logger.error(f"Team Manager 批量上传异常: {e}")
+        error_msg = f"上传异常: {str(e)}"
+        for info in valid_accounts_info:
+            results["failed_count"] += 1
+            results["details"].append(
+                {"id": info["id"], "email": info["email"], "success": False, "error": error_msg}
+            )
 
     return results
 
