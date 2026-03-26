@@ -56,3 +56,4 @@ Thumbs.db
 # Project specific
 backups/
 /out/
+.worktrees/
