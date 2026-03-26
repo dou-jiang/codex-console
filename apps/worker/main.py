@@ -1,5 +1,7 @@
 """Minimal worker entrypoint for the migrated architecture."""
 
+import time
+
 from packages.email_providers.factory import EmailProviderFactory
 from packages.registration_core.engine import RegistrationEngine
 from packages.registration_core.models import RegistrationInput
@@ -101,5 +103,26 @@ class WorkerRunner:
         return outcome
 
 
-def create_worker():
-    return {"status": "idle"}
+class WorkerService:
+    """Very small service façade for polling and executing pending tasks."""
+
+    def __init__(self, store):
+        self.store = store
+        self.runner = WorkerRunner(store)
+
+    def run_once(self) -> dict:
+        return self.runner.process_next_pending()
+
+    def run_loop(self, max_iterations: int = 1, poll_interval_seconds: float = 1.0) -> list[dict]:
+        outcomes: list[dict] = []
+        for index in range(max_iterations):
+            outcomes.append(self.run_once())
+            if index < max_iterations - 1:
+                time.sleep(poll_interval_seconds)
+        return outcomes
+
+
+def create_worker(store=None):
+    if store is None:
+        return {"status": "idle"}
+    return WorkerService(store)

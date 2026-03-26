@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from apps.worker.main import WorkerRunner
+from apps.worker.main import WorkerRunner, WorkerService
 from packages.account_store.db import AccountStoreDB
 from packages.registration_core.models import AccountIdentity, ExecutionLog
 
@@ -191,3 +191,54 @@ def test_worker_captures_engine_exception(tmp_path: Path, monkeypatch):
     log_lines = store.logs.list("t-1")
     assert any("starting task execution" in line for line in log_lines)
     assert any("task failed: boom" in line for line in log_lines)
+
+
+def test_worker_service_run_once_returns_no_pending(tmp_path: Path):
+    store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'worker-service.db'}")
+    service = WorkerService(store)
+
+    outcome = service.run_once()
+
+    assert outcome["success"] is False
+    assert outcome["error"] == "no pending tasks"
+
+
+def test_worker_service_run_once_processes_pending(monkeypatch, tmp_path: Path):
+    store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'worker-service-next.db'}")
+    store.tasks.create(task_uuid="t-1", status="pending")
+
+    class FakeRunner:
+        def __init__(self, inner_store):
+            self.store = inner_store
+
+        def process_next_pending(self):
+            return {"success": True, "task_uuid": "t-1", "status": "completed"}
+
+    monkeypatch.setattr("apps.worker.main.WorkerRunner", FakeRunner)
+
+    service = WorkerService(store)
+    outcome = service.run_once()
+
+    assert outcome["success"] is True
+    assert outcome["task_uuid"] == "t-1"
+
+
+def test_worker_service_run_loop_calls_run_once(monkeypatch, tmp_path: Path):
+    store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'worker-service-loop.db'}")
+    service = WorkerService(store)
+    outcomes = [
+        {"success": False, "error": "no pending tasks"},
+        {"success": True, "task_uuid": "t-2", "status": "completed"},
+    ]
+
+    def fake_run_once():
+        return outcomes.pop(0)
+
+    monkeypatch.setattr(service, "run_once", fake_run_once)
+
+    result = service.run_loop(max_iterations=2, poll_interval_seconds=0)
+
+    assert result == [
+        {"success": False, "error": "no pending tasks"},
+        {"success": True, "task_uuid": "t-2", "status": "completed"},
+    ]
