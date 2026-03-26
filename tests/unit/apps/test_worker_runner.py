@@ -9,7 +9,13 @@ def test_worker_marks_task_completed(monkeypatch, tmp_path: Path):
     task = store.tasks.create(task_uuid="t-1", status="pending")
     store.tasks.update(
         task.task_uuid,
-        result={"request": {"email_service_type": "duck_mail"}},
+        result={
+            "request": {
+                "email_service_type": "duck_mail",
+                "proxy_url": "http://127.0.0.1:8080",
+                "email_service_config": {"base_url": "https://mail.example.test"},
+            }
+        },
     )
 
     class FakeResult:
@@ -23,10 +29,13 @@ def test_worker_marks_task_completed(monkeypatch, tmp_path: Path):
             self.email_service = email_service
 
         def run(self, registration_input):
+            assert registration_input.proxy_url == "http://127.0.0.1:8080"
+            assert registration_input.email_service_config == {"base_url": "https://mail.example.test"}
             return FakeResult()
 
     class FakeFactory:
         def create(self, service_type, config=None, name=None):
+            assert config == {"base_url": "https://mail.example.test"}
             return object()
 
     monkeypatch.setattr("apps.worker.main.RegistrationEngine", FakeEngine)

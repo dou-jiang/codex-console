@@ -13,6 +13,7 @@ router = APIRouter()
 class RegisterTaskCreate(BaseModel):
     email_service_type: str
     proxy_url: str | None = None
+    email_service_config: dict | None = None
 
 
 @router.post("/tasks/register", status_code=202)
@@ -26,6 +27,7 @@ def create_register_task(payload: RegisterTaskCreate, request: Request):
     request_payload = {
         "email_service_type": payload.email_service_type,
         "proxy_url": payload.proxy_url,
+        "email_service_config": payload.email_service_config,
     }
     task = request.app.state.store.tasks.update(task_uuid, result={"request": request_payload})
     return {

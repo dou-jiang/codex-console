@@ -20,6 +20,27 @@ def test_create_register_task(tmp_path: Path):
     assert payload["task_uuid"]
 
 
+def test_create_register_task_with_proxy_and_email_config(tmp_path: Path):
+    app = create_app(database_url=f"sqlite:///{tmp_path / 'api.db'}")
+    client = TestClient(app)
+
+    response = client.post(
+        "/tasks/register",
+        json={
+            "email_service_type": "duck_mail",
+            "proxy_url": "http://127.0.0.1:8080",
+            "email_service_config": {"base_url": "https://mail.example.test", "default_domain": "example.test"},
+        },
+    )
+
+    assert response.status_code == 202
+    created = response.json()
+
+    detail = client.get(f"/tasks/{created['task_uuid']}").json()
+    assert detail["proxy"] == "http://127.0.0.1:8080"
+    assert detail["result"]["request"]["email_service_config"]["default_domain"] == "example.test"
+
+
 def test_get_register_task(tmp_path: Path):
     app = create_app(database_url=f"sqlite:///{tmp_path / 'api.db'}")
     client = TestClient(app)
