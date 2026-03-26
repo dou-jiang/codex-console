@@ -10,7 +10,8 @@ from pathlib import Path
 # 添加项目根目录到 Python 路径
 # PyInstaller 打包后 __file__ 在临时解压目录，需要用 sys.executable 所在目录作为数据目录
 import os
-if getattr(sys, 'frozen', False):
+
+if getattr(sys, "frozen", False):
     # 打包后：使用可执行文件所在目录
     project_root = Path(sys.executable).parent
     _src_root = Path(sys._MEIPASS)
@@ -80,10 +81,7 @@ def setup_application():
 
     # 配置日志（日志文件写到实际 logs 目录）
     log_file = str(logs_dir / Path(settings.log_file).name)
-    setup_logging(
-        log_level=settings.log_level,
-        log_file=log_file
-    )
+    setup_logging(log_level=settings.log_level, log_file=log_file)
     install_database_log_handler()
 
     logger = logging.getLogger(__name__)
@@ -116,7 +114,9 @@ def start_webui():
     }
 
     logger = logging.getLogger(__name__)
-    logger.info(f"Web UI 已就位，请走这边: http://{settings.webui_host}:{settings.webui_port}")
+    logger.info(
+        f"Web UI 已就位，请走这边: http://{settings.webui_host}:{settings.webui_port}"
+    )
     logger.info(f"调试模式: {settings.debug}")
 
     # 启动服务器
@@ -130,35 +130,46 @@ def main():
 
     parser = argparse.ArgumentParser(description="OpenAI/Codex CLI 自动注册系统 Web UI")
     parser.add_argument("--host", help="监听主机 (也可通过 WEBUI_HOST 环境变量设置)")
-    parser.add_argument("--port", type=int, help="监听端口 (也可通过 WEBUI_PORT 环境变量设置)")
-    parser.add_argument("--debug", action="store_true", help="启用调试模式 (也可通过 DEBUG=1 环境变量设置)")
+    parser.add_argument(
+        "--port", type=int, help="监听端口 (也可通过 WEBUI_PORT 环境变量设置)"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="启用调试模式 (也可通过 DEBUG=1 环境变量设置)",
+    )
     parser.add_argument("--reload", action="store_true", help="启用热重载")
-    parser.add_argument("--log-level", help="日志级别 (也可通过 LOG_LEVEL 环境变量设置)")
-    parser.add_argument("--access-password", help="Web UI 访问密钥 (也可通过 WEBUI_ACCESS_PASSWORD 环境变量设置)")
+    parser.add_argument(
+        "--log-level", help="日志级别 (也可通过 LOG_LEVEL 环境变量设置)"
+    )
+    parser.add_argument(
+        "--access-password",
+        help="Web UI 访问密钥 (也可通过 WEBUI_ACCESS_PASSWORD 环境变量设置)",
+    )
     args = parser.parse_args()
 
     # 更新配置
     from src.config.settings import update_settings
 
     updates = {}
-    
+
     # 优先使用命令行参数，如果没有则尝试从环境变量获取
     host = args.host or os.environ.get("WEBUI_HOST")
     if host:
         updates["webui_host"] = host
-        
+
     port = args.port or os.environ.get("WEBUI_PORT")
     if port:
         updates["webui_port"] = int(port)
-        
+
     debug = args.debug or os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
     if debug:
         updates["debug"] = debug
-        
+
     log_level = args.log_level or os.environ.get("LOG_LEVEL")
     if log_level:
         updates["log_level"] = log_level
-        
+
     access_password = args.access_password or os.environ.get("WEBUI_ACCESS_PASSWORD")
     if access_password:
         updates["webui_access_password"] = access_password
@@ -171,4 +182,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # PyInstaller 打包后 Windows 上 uvicorn 会启动多进程，需此调用避免
+    # --multiprocessing-fork unrecognized arguments 错误
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     main()
