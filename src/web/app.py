@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..config.settings import get_settings
+from ..config.project_notice import PROJECT_NOTICE
 from .routes import api_router
 from .routes.websocket import router as ws_router
 from .task_manager import task_manager
@@ -91,6 +92,7 @@ def create_app() -> FastAPI:
     # 模板引擎
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.globals["static_version"] = _build_static_asset_version(STATIC_DIR)
+    templates.env.globals["project_notice"] = PROJECT_NOTICE
 
     def _render_template(
         request: Request,

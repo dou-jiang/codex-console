@@ -7,9 +7,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
+- GitHub Repo: [https://github.com/dou-jiang/codex-console](https://github.com/dou-jiang/codex-console)
+
 ## QQ群
 
-- 交流群: https://qm.qq.com/q/ZTCKxawxeo
+- 交流群: [291638849（点击加群）](https://qm.qq.com/q/4TETC3mWco)
+- Telegram 频道: [codex_console](https://t.me/codex_console)
 
 ## 致谢
 
@@ -17,9 +20,9 @@
 
 本仓库是在原项目思路和结构之上进行兼容性修复、流程调整和体验优化，适合作为一个“当前可用的修复维护版”继续使用。
 
-## 这个分支修了什么
+## 版本更新
 
-为适配当前注册链路，这个分支重点补了下面几个问题:
+### v1.0
 
 1. 新增 Sentinel POW 求解逻辑  
    OpenAI 现在会强制校验 Sentinel POW，原先直接传空值已经不行了，这里补上了实际求解流程。
@@ -37,6 +40,22 @@
 
 5. 优化终端和 Web UI 提示文案  
    保留可读性的前提下，把一些提示改得更友好一点，出错时至少不至于像在挨骂。
+
+### v1.1
+
+1. 修复注册流程中的问题，解决 Outlook 和临时邮箱收不到邮件导致注册卡住、无法完成注册的问题。
+
+2. 修复无法检查订阅状态的问题，提升订阅识别和状态检查的可用性。
+
+3. 新增绑卡半自动模式，支持自动随机地址；3DS 无法跳过，需按实际流程完成验证。
+
+4. 新增已订阅账号管理功能，支持查看和管理账号额度。
+
+5. 新增后台日志功能，并补充数据导出与导入能力，方便排查问题和迁移数据。
+
+6. 优化部分 UI 细节与交互体验，减少页面操作时的割裂感。
+
+7. 补充细节稳定性处理，尽量减少注册、订阅检测和账号管理过程中出现卡住或误判的情况。
 
 ## 核心能力
 
@@ -218,3 +237,5 @@ dist/codex-console-windows-X64.exe
 本项目仅供学习、研究和技术交流使用，请遵守相关平台和服务条款，不要用于违规、滥用或非法用途。
 
 因使用本项目产生的任何风险和后果，由使用者自行承担。
+
+

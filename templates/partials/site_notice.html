@@ -1,0 +1,33 @@
+{% set notice = project_notice if project_notice is defined else {
+    "title": "项目声明",
+    "free_notice": "本项目永久免费开源，如果你是付费购买的，请立即找卖家退款。",
+    "disclaimer": "免责声明：本工具仅供学习和研究使用，使用本工具产生的一切后果由使用者自行承担。请遵守相关服务的使用条款，不要用于任何违法或不当用途。如有侵权，请及时联系，会及时删除。",
+    "github_repo_name": "dou-jiang/codex-console",
+    "github_repo_url": "https://github.com/dou-jiang/codex-console",
+    "qq_group_id": "291638849",
+    "qq_group_url": "https://qm.qq.com/q/4TETC3mWco",
+    "telegram_name": "codex_console",
+    "telegram_url": "https://t.me/codex_console"
+} %}
+<div class="site-notice-wrapper">
+    <div class="container">
+        <section class="site-notice" role="note" aria-label="{{ notice.title }}">
+            <div class="site-notice-heading">
+                <strong>{{ notice.title }}</strong>
+                <span>{{ notice.free_notice }}</span>
+            </div>
+            <p class="site-notice-text">{{ notice.disclaimer }}</p>
+            <div class="site-notice-links">
+                <a href="{{ notice.github_repo_url }}" target="_blank" rel="noopener noreferrer">
+                    GitHub 仓库 {{ notice.github_repo_url }}
+                </a>
+                <a href="{{ notice.qq_group_url }}" target="_blank" rel="noopener noreferrer">
+                    QQ交流群 {{ notice.qq_group_id }}（点击加群）
+                </a>
+                <a href="{{ notice.telegram_url }}" target="_blank" rel="noopener noreferrer">
+                    Telegram频道 {{ notice.telegram_name }}
+                </a>
+            </div>
+        </section>
+    </div>
+</div>

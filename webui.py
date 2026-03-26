@@ -24,6 +24,13 @@ from src.core.timezone_utils import apply_process_timezone
 from src.core.db_logs import install_database_log_handler
 from src.database.init_db import initialize_database
 from src.config.settings import get_settings
+from src.config.project_notice import build_terminal_notice_lines
+
+
+def _print_project_notice():
+    """Print the project notice to the terminal on startup."""
+    for line in build_terminal_notice_lines():
+        print(line)
 
 
 def _load_dotenv():
@@ -89,6 +96,7 @@ def setup_application():
 
 
 def start_webui():
+    _print_project_notice()
     """启动 Web UI"""
     # 设置应用程序
     settings = setup_application()
