@@ -1,6 +1,7 @@
 """Shared bind-card task service for the migrated payment bridge."""
 
 from datetime import datetime
+import time
 
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
@@ -152,3 +153,165 @@ class PaymentTaskService:
             db.delete(task)
             db.commit()
             return {"success": True, "task_id": task_id}
+
+    def sync_subscription(self, task_id: int, request, **kwargs):
+        resolve_proxy_fn = kwargs["resolve_proxy_fn"]
+        check_subscription_fn = kwargs["check_subscription_fn"]
+        serialize_task_fn = kwargs["serialize_task_fn"]
+
+        with self.manager.session_scope() as db:
+            task = db.query(BindCardTask).options(joinedload(BindCardTask.account)).filter(BindCardTask.id == task_id).first()
+            if not task:
+                raise LookupError("绑卡任务不存在")
+            account = task.account
+            if not account:
+                raise LookupError("任务关联账号不存在")
+
+            proxy = resolve_proxy_fn(request.proxy, account)
+            now = datetime.utcnow()
+            try:
+                detail, refreshed = check_subscription_fn(
+                    db=db,
+                    account=account,
+                    proxy=proxy,
+                    allow_token_refresh=True,
+                )
+                status = str(detail.get("status") or "free").lower()
+            except Exception as exc:
+                task.status = "failed"
+                task.last_error = str(exc)
+                task.last_checked_at = now
+                db.commit()
+                raise RuntimeError(f"订阅检测失败: {exc}")
+
+            if status in ("plus", "team"):
+                account.subscription_type = status
+                account.subscription_at = now
+            elif status == "free" and str(detail.get("confidence") or "").lower() == "high":
+                account.subscription_type = None
+                account.subscription_at = None
+
+            task.last_checked_at = now
+            if status in ("plus", "team"):
+                task.status = "completed"
+                task.completed_at = now
+                task.last_error = None
+            else:
+                task.completed_at = None
+                task.status = "waiting_user_action"
+
+            db.commit()
+            db.refresh(task)
+            return {
+                "success": True,
+                "subscription_type": status,
+                "detail": detail,
+                "task": serialize_task_fn(task),
+                "account_id": account.id,
+                "account_email": account.email,
+            }
+
+    def mark_user_action(self, task_id: int, request, **kwargs):
+        resolve_proxy_fn = kwargs["resolve_proxy_fn"]
+        check_subscription_fn = kwargs["check_subscription_fn"]
+        serialize_task_fn = kwargs["serialize_task_fn"]
+
+        with self.manager.session_scope() as db:
+            task = db.query(BindCardTask).options(joinedload(BindCardTask.account)).filter(BindCardTask.id == task_id).first()
+            if not task:
+                raise LookupError("绑卡任务不存在")
+            account = task.account
+            if not account:
+                raise LookupError("任务关联账号不存在")
+
+            proxy = resolve_proxy_fn(request.proxy, account)
+            timeout_seconds = int(request.timeout_seconds)
+            interval_seconds = int(request.interval_seconds)
+
+            previous_status = str(task.status or "")
+            now = datetime.utcnow()
+            task.status = "verifying"
+            task.last_error = None
+            task.last_checked_at = now
+            db.commit()
+
+            deadline = time.monotonic() + timeout_seconds
+            checks = 0
+            last_status = "free"
+            token_refresh_used = False
+            detail = None
+
+            while time.monotonic() < deadline:
+                checks += 1
+                try:
+                    detail, refreshed = check_subscription_fn(
+                        db=db,
+                        account=account,
+                        proxy=proxy,
+                        allow_token_refresh=not token_refresh_used,
+                    )
+                    if refreshed:
+                        token_refresh_used = True
+                    status = str(detail.get("status") or "free").lower()
+                    last_status = status
+                except Exception as exc:
+                    failed_at = datetime.utcnow()
+                    task.status = "failed"
+                    task.last_error = f"订阅检测失败: {exc}"
+                    task.last_checked_at = failed_at
+                    db.commit()
+                    raise RuntimeError(f"订阅检测失败: {exc}")
+
+                checked_at = datetime.utcnow()
+                if status in ("plus", "team"):
+                    account.subscription_type = status
+                    account.subscription_at = checked_at
+                elif status == "free" and str(detail.get("confidence") or "").lower() == "high":
+                    account.subscription_type = None
+                    account.subscription_at = None
+                task.last_checked_at = checked_at
+
+                if status in ("plus", "team"):
+                    task.status = "completed"
+                    task.completed_at = checked_at
+                    task.last_error = None
+                    db.commit()
+                    db.refresh(task)
+                    return {
+                        "success": True,
+                        "verified": True,
+                        "checks": checks,
+                        "subscription_type": status,
+                        "detail": detail,
+                        "token_refresh_used": token_refresh_used,
+                        "task": serialize_task_fn(task),
+                        "account_id": account.id,
+                        "account_email": account.email,
+                    }
+
+                db.commit()
+                if time.monotonic() + interval_seconds >= deadline:
+                    break
+                time.sleep(interval_seconds)
+
+            timeout_confidence = str((detail or {}).get("confidence") or "unknown").lower()
+            if previous_status == "paid_pending_sync" or (last_status == "free" and timeout_confidence != "high"):
+                task.status = "paid_pending_sync"
+            else:
+                task.status = "waiting_user_action"
+            task.last_checked_at = datetime.utcnow()
+            task.completed_at = None
+            db.commit()
+            db.refresh(task)
+
+            return {
+                "success": True,
+                "verified": False,
+                "checks": checks,
+                "subscription_type": last_status,
+                "detail": detail,
+                "token_refresh_used": token_refresh_used,
+                "task": serialize_task_fn(task),
+                "account_id": account.id,
+                "account_email": account.email,
+            }

@@ -2865,99 +2865,19 @@ def auto_bind_bind_card_task_local(task_id: int, request: LocalAutoBindRequest):
 @router.post("/bind-card/tasks/{task_id}/sync-subscription")
 def sync_bind_card_task_subscription(task_id: int, request: SyncBindCardTaskRequest):
     """同步任务账号订阅状态，并回写到账号管理"""
-    with get_db() as db:
-        task = db.query(BindCardTask).options(joinedload(BindCardTask.account)).filter(BindCardTask.id == task_id).first()
-        if not task:
-            raise HTTPException(status_code=404, detail="绑卡任务不存在")
-        account = task.account
-        if not account:
-            raise HTTPException(status_code=404, detail="任务关联账号不存在")
-
-        proxy = _resolve_runtime_proxy(request.proxy, account)
-        now = datetime.utcnow()
-        try:
-            detail, refreshed = _check_subscription_detail_with_retry(
-                db=db,
-                account=account,
-                proxy=proxy,
-                allow_token_refresh=True,
-            )
-            status = str(detail.get("status") or "free").lower()
-            source = str(detail.get("source") or "unknown")
-            confidence = str(detail.get("confidence") or "low")
-            logger.info(
-                "绑卡任务同步订阅: task_id=%s account_id=%s status=%s source=%s confidence=%s token_refreshed=%s",
-                task.id, account.id, status, source, confidence, refreshed
-            )
-        except Exception as exc:
-            task.status = "failed"
-            task.last_error = str(exc)
-            task.last_checked_at = now
-            db.commit()
-            logger.warning("绑卡任务同步订阅失败: task_id=%s error=%s", task.id, exc)
-            raise HTTPException(status_code=500, detail=f"订阅检测失败: {exc}")
-
-        # 仅在高置信度 free 时清空；低置信度 free 不覆盖已有订阅
-        if status in ("plus", "team"):
-            account.subscription_type = status
-            account.subscription_at = now
-        elif status == "free":
-            if str(detail.get("confidence") or "").lower() == "high":
-                account.subscription_type = None
-                account.subscription_at = None
-
-        task.last_checked_at = now
-        if status in ("plus", "team"):
-            task.status = "completed"
-            task.completed_at = now
-            task.last_error = None
-        else:
-            task.completed_at = None
-            note = str(detail.get("note") or "").strip()
-            confidence_text = str(detail.get("confidence") or "unknown")
-            confidence_lower = confidence_text.lower()
-            source_text = str(detail.get("source") or "unknown")
-            task_status_now = str(task.status or "")
-            has_checkout_context = bool(task.checkout_session_id or task.checkout_url)
-            should_keep_paid_pending = (
-                task_status_now == "paid_pending_sync"
-                or (
-                    status == "free"
-                    and confidence_lower != "high"
-                    and has_checkout_context
-                    and task_status_now in ("waiting_user_action", "verifying", "link_ready")
-                )
-            )
-            if should_keep_paid_pending:
-                task.status = "paid_pending_sync"
-                task.last_error = (
-                    f"已确认支付，订阅暂未同步（当前: {status}, source={source_text}, "
-                    f"confidence={confidence_text}"
-                    + (f", note={note}" if note else "")
-                    + "）。可稍后再次点击“同步订阅”。"
-                )
-            else:
-                task.status = "waiting_user_action"
-                task.last_error = None
-                if confidence_lower != "high":
-                    task.last_error = (
-                        f"订阅判定低置信度（source={source_text}, "
-                        f"confidence={confidence_text}"
-                        + (f", note={note}" if note else "")
-                        + "），请稍后重试。"
-                    )
-
-        db.commit()
-        db.refresh(task)
-
-        return {
-            "success": True,
-            "subscription_type": status,
-            "detail": detail,
-            "task": _serialize_bind_card_task(task),
-            "account_id": account.id,
-            "account_email": account.email,
-        }
+    service = _create_phase2_payment_service()
+    try:
+        return service.sync_subscription(
+            task_id,
+            request,
+            resolve_proxy_fn=_resolve_runtime_proxy,
+            check_subscription_fn=_check_subscription_detail_with_retry,
+            serialize_task_fn=_serialize_bind_card_task,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/bind-card/tasks/{task_id}/mark-user-action")
@@ -2967,147 +2887,19 @@ def mark_bind_card_task_user_action(task_id: int, request: MarkUserActionRequest
     - 命中 plus/team -> completed
     - 超时未命中 -> paid_pending_sync 或 waiting_user_action
     """
-    with get_db() as db:
-        task = db.query(BindCardTask).options(joinedload(BindCardTask.account)).filter(BindCardTask.id == task_id).first()
-        if not task:
-            raise HTTPException(status_code=404, detail="绑卡任务不存在")
-        account = task.account
-        if not account:
-            raise HTTPException(status_code=404, detail="任务关联账号不存在")
-
-        proxy = _resolve_runtime_proxy(request.proxy, account)
-        timeout_seconds = int(request.timeout_seconds)
-        interval_seconds = int(request.interval_seconds)
-        logger.info(
-            "绑卡任务开始验证: task_id=%s account_id=%s timeout=%ss interval=%ss",
-            task.id, account.id, timeout_seconds, interval_seconds
+    service = _create_phase2_payment_service()
+    try:
+        return service.mark_user_action(
+            task_id,
+            request,
+            resolve_proxy_fn=_resolve_runtime_proxy,
+            check_subscription_fn=_check_subscription_detail_with_retry,
+            serialize_task_fn=_serialize_bind_card_task,
         )
-
-        previous_status = str(task.status or "")
-        now = datetime.utcnow()
-        task.status = "verifying"
-        task.last_error = None
-        task.last_checked_at = now
-        db.commit()
-
-        deadline = time.monotonic() + timeout_seconds
-        checks = 0
-        last_status = "free"
-        token_refresh_used = False
-
-        while time.monotonic() < deadline:
-            checks += 1
-            try:
-                detail, refreshed = _check_subscription_detail_with_retry(
-                    db=db,
-                    account=account,
-                    proxy=proxy,
-                    allow_token_refresh=not token_refresh_used,
-                )
-                if refreshed:
-                    token_refresh_used = True
-                status = str(detail.get("status") or "free").lower()
-                last_status = status
-                logger.info(
-                    "绑卡任务验证轮询: task_id=%s attempt=%s status=%s source=%s confidence=%s token_refreshed=%s",
-                    task.id, checks, status, detail.get("source"), detail.get("confidence"), bool(detail.get("token_refreshed"))
-                )
-            except Exception as exc:
-                failed_at = datetime.utcnow()
-                task.status = "failed"
-                task.last_error = f"订阅检测失败: {exc}"
-                task.last_checked_at = failed_at
-                db.commit()
-                logger.warning("绑卡任务验证失败: task_id=%s attempt=%s error=%s", task.id, checks, exc)
-                raise HTTPException(status_code=500, detail=f"订阅检测失败: {exc}")
-
-            checked_at = datetime.utcnow()
-            if status in ("plus", "team"):
-                account.subscription_type = status
-                account.subscription_at = checked_at
-            elif status == "free":
-                # 低置信度 free 不覆盖已有订阅，避免误判清空
-                if str(detail.get("confidence") or "").lower() == "high":
-                    account.subscription_type = None
-                    account.subscription_at = None
-            task.last_checked_at = checked_at
-
-            if status in ("plus", "team"):
-                task.status = "completed"
-                task.completed_at = checked_at
-                task.last_error = None
-                db.commit()
-                db.refresh(task)
-                logger.info(
-                    "绑卡任务验证成功: task_id=%s attempts=%s status=%s source=%s",
-                    task.id, checks, status, detail.get("source")
-                )
-                return {
-                    "success": True,
-                    "verified": True,
-                    "checks": checks,
-                    "subscription_type": status,
-                    "detail": detail,
-                    "token_refresh_used": token_refresh_used,
-                    "task": _serialize_bind_card_task(task),
-                    "account_id": account.id,
-                    "account_email": account.email,
-                }
-
-            db.commit()
-            if time.monotonic() + interval_seconds >= deadline:
-                break
-            time.sleep(interval_seconds)
-
-        timeout_msg = (
-            f"在 {timeout_seconds} 秒内未检测到订阅变更（当前: {last_status}，"
-            f"source={detail.get('source') if 'detail' in locals() else 'unknown'}，"
-            f"confidence={detail.get('confidence') if 'detail' in locals() else 'unknown'}，"
-            f"token_refreshed={token_refresh_used}"
-            + (
-                f"，note={str(detail.get('note') or '').strip()}"
-                if "detail" in locals() and detail and detail.get("note")
-                else ""
-            )
-            + "）。"
-        )
-        timeout_confidence = str((detail if "detail" in locals() else {}).get("confidence") or "unknown").lower()
-        timeout_source = str((detail if "detail" in locals() else {}).get("source") or "unknown")
-        should_keep_paid_pending = (
-            previous_status == "paid_pending_sync"
-            or (last_status == "free" and timeout_confidence != "high")
-        )
-        if should_keep_paid_pending:
-            task.status = "paid_pending_sync"
-            task.last_error = (
-                timeout_msg
-                + "支付可能已完成但订阅同步延迟"
-                + f"（source={timeout_source}, confidence={timeout_confidence}）。"
-                + "请稍后点“同步订阅”重试。"
-            )
-        else:
-            task.status = "waiting_user_action"
-            task.last_error = timeout_msg + "请稍后点击“同步订阅”重试。"
-        task.last_checked_at = datetime.utcnow()
-        task.completed_at = None
-        db.commit()
-        db.refresh(task)
-        logger.warning(
-            "绑卡任务验证超时: task_id=%s attempts=%s last_status=%s last_error=%s",
-            task.id, checks, last_status, task.last_error
-        )
-
-        return {
-            "success": True,
-            "verified": False,
-            "checks": checks,
-            "subscription_type": last_status,
-            "detail": detail if "detail" in locals() else None,
-            "token_refresh_used": token_refresh_used,
-            "task": _serialize_bind_card_task(task),
-            "account_id": account.id,
-            "account_email": account.email,
-        }
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/bind-card/tasks/{task_id}")

@@ -1,9 +1,13 @@
 from src.web.routes.payment import (
     CreateBindCardTaskRequest,
+    MarkUserActionRequest,
+    SyncBindCardTaskRequest,
     create_bind_card_task,
     delete_bind_card_task,
     list_bind_card_tasks,
+    mark_bind_card_task_user_action,
     open_bind_card_task,
+    sync_bind_card_task_subscription,
 )
 
 
@@ -26,6 +30,14 @@ class _FakeService:
     def delete_task(self, task_id):
         self.calls.append(("delete", task_id))
         return {"success": True, "task_id": task_id}
+
+    def sync_subscription(self, task_id, request, **kwargs):
+        self.calls.append(("sync", task_id, request.proxy))
+        return {"success": True, "task": {"id": task_id, "status": "completed"}}
+
+    def mark_user_action(self, task_id, request, **kwargs):
+        self.calls.append(("mark", task_id, request.timeout_seconds, request.interval_seconds))
+        return {"success": True, "task": {"id": task_id, "status": "verifying"}}
 
 
 def test_legacy_create_bind_card_task_uses_phase2_service(monkeypatch):
@@ -67,3 +79,23 @@ def test_legacy_delete_bind_card_task_uses_phase2_service(monkeypatch):
 
     assert response["success"] is True
     assert service.calls == [("delete", 9)]
+
+
+def test_legacy_sync_bind_card_task_uses_phase2_service(monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr("src.web.routes.payment._create_phase2_payment_service", lambda: service)
+
+    response = sync_bind_card_task_subscription(5, SyncBindCardTaskRequest(proxy="http://127.0.0.1:8080"))
+
+    assert response["success"] is True
+    assert service.calls == [("sync", 5, "http://127.0.0.1:8080")]
+
+
+def test_legacy_mark_user_action_uses_phase2_service(monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr("src.web.routes.payment._create_phase2_payment_service", lambda: service)
+
+    response = mark_bind_card_task_user_action(7, MarkUserActionRequest(proxy="http://127.0.0.1:8080", timeout_seconds=60, interval_seconds=10))
+
+    assert response["success"] is True
+    assert service.calls == [("mark", 7, 60, 10)]
