@@ -44,8 +44,27 @@ def get_register_task(task_uuid: str, request: Request):
     return {
         "task_uuid": task.task_uuid,
         "status": task.status,
+        "error_message": str(task.error_message or ""),
+        "proxy": task.proxy,
         "logs": [line for line in str(task.logs or "").splitlines() if line],
         "result": task.result,
+    }
+
+
+@router.get("/tasks")
+def list_register_tasks(request: Request):
+    tasks = request.app.state.store.tasks.list(limit=100)
+    return {
+        "total": len(tasks),
+        "items": [
+            {
+                "task_uuid": task.task_uuid,
+                "status": task.status,
+                "error_message": str(task.error_message or ""),
+                "proxy": task.proxy,
+            }
+            for task in tasks
+        ],
     }
 
 

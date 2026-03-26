@@ -29,6 +29,10 @@ class TaskStore:
         with self._db_manager.session_scope() as db:
             return crud.get_registration_tasks(db, status="pending", skip=0, limit=limit)
 
+    def list(self, status: str | None = None, limit: int = 100):
+        with self._db_manager.session_scope() as db:
+            return crud.get_registration_tasks(db, status=status, skip=0, limit=limit)
+
     def update(self, task_uuid: str, **kwargs):
         with self._db_manager.session_scope() as db:
             return crud.update_registration_task(db, task_uuid, **kwargs)
