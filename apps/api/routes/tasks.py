@@ -56,3 +56,12 @@ def run_register_task(task_uuid: str, request: Request):
     if outcome.get("error") == "task not found":
         raise HTTPException(status_code=404, detail="task not found")
     return outcome
+
+
+@router.post("/tasks/run-next")
+def run_next_pending_task(request: Request):
+    runner = WorkerRunner(request.app.state.store)
+    outcome = runner.process_next_pending()
+    if outcome.get("error") == "no pending tasks":
+        raise HTTPException(status_code=404, detail="no pending tasks")
+    return outcome

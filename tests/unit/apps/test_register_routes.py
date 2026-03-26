@@ -62,3 +62,30 @@ def test_run_register_task(monkeypatch, tmp_path: Path):
     payload = response.json()
     assert payload["success"] is True
     assert payload["status"] == "completed"
+
+
+def test_run_next_pending_task(monkeypatch, tmp_path: Path):
+    app = create_app(database_url=f"sqlite:///{tmp_path / 'api.db'}")
+    client = TestClient(app)
+
+    client.post("/tasks/register", json={"email_service_type": "duck_mail"})
+
+    class FakeRunner:
+        def __init__(self, store):
+            self.store = store
+
+        def process_next_pending(self):
+            pending = self.store.tasks.list_pending(limit=1)
+            task_uuid = pending[0].task_uuid
+            self.store.tasks.update(task_uuid, status="completed")
+            return {"success": True, "status": "completed", "task_uuid": task_uuid}
+
+    monkeypatch.setattr("apps.api.routes.tasks.WorkerRunner", FakeRunner)
+
+    response = client.post("/tasks/run-next")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["status"] == "completed"
+    assert payload["task_uuid"]
