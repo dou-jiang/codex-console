@@ -1,0 +1,1 @@
+"""Worker application package."""
