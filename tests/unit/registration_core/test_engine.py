@@ -42,7 +42,15 @@ def test_engine_accepts_registration_input(monkeypatch):
 
             return LegacyResult()
 
-    monkeypatch.setattr("packages.registration_core.engine.LegacyRegistrationEngine", FakeLegacyEngine)
+    monkeypatch.setattr(
+        "packages.registration_core.engine.build_legacy_engine",
+        lambda **kwargs: FakeLegacyEngine(
+            kwargs["email_service"],
+            proxy_url=kwargs.get("proxy_url"),
+            callback_logger=kwargs.get("callback_logger"),
+            task_uuid=kwargs.get("task_uuid"),
+        ),
+    )
 
     engine = RegistrationEngine(FakeEmailService())
     result = engine.run(RegistrationInput(email_service_type="tempmail"))
@@ -52,3 +60,41 @@ def test_engine_accepts_registration_input(monkeypatch):
     assert result.identity.account_id == "acct-1"
     assert result.identity.workspace_id == "ws-1"
     assert [entry.message for entry in result.logs] == ["step one", "step two"]
+
+
+def test_engine_delegates_runtime_build_and_result_build(monkeypatch):
+    calls = {}
+
+    class FakeLegacyResult:
+        success = True
+
+    class FakeLegacyEngine:
+        def run(self):
+            return FakeLegacyResult()
+
+    def fake_build_legacy_engine(*, email_service, proxy_url=None, callback_logger=None, task_uuid=None):
+        calls["legacy"] = {
+            "email_service": email_service,
+            "proxy_url": proxy_url,
+            "task_uuid": task_uuid,
+        }
+        return FakeLegacyEngine()
+
+    def fake_build_registration_result(legacy_result):
+        calls["result"] = legacy_result
+        return "built-result"
+
+    monkeypatch.setattr("packages.registration_core.engine.build_legacy_engine", fake_build_legacy_engine)
+    monkeypatch.setattr("packages.registration_core.engine.build_registration_result", fake_build_registration_result)
+
+    engine = RegistrationEngine(
+        FakeEmailService(),
+        callback_logger=lambda message: None,
+        task_uuid="task-1",
+    )
+    result = engine.run(RegistrationInput(email_service_type="tempmail", proxy_url="http://127.0.0.1:8080"))
+
+    assert result == "built-result"
+    assert calls["legacy"]["proxy_url"] == "http://127.0.0.1:8080"
+    assert calls["legacy"]["task_uuid"] == "task-1"
+    assert calls["result"].success is True

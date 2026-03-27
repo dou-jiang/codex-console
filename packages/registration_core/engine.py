@@ -1,7 +1,8 @@
 """Phase 1 registration engine that bridges to the legacy implementation."""
 
-from packages.registration_core.models import AccountIdentity, ExecutionLog, RegistrationInput, RegistrationResult
-from src.core.register import RegistrationEngine as LegacyRegistrationEngine
+from packages.registration_core.models import RegistrationInput, RegistrationResult
+from packages.registration_core.result_builder import build_registration_result
+from packages.registration_core.runtime import build_legacy_engine
 
 
 class RegistrationEngine:
@@ -13,24 +14,11 @@ class RegistrationEngine:
         self.task_uuid = task_uuid
 
     def run(self, registration_input: RegistrationInput) -> RegistrationResult:
-        legacy_engine = LegacyRegistrationEngine(
-            self.email_service,
+        legacy_engine = build_legacy_engine(
+            email_service=self.email_service,
             proxy_url=registration_input.proxy_url,
             callback_logger=self.callback_logger,
             task_uuid=self.task_uuid,
         )
         legacy_result = legacy_engine.run()
-
-        return RegistrationResult(
-            success=bool(getattr(legacy_result, "success", False)),
-            error_message=str(getattr(legacy_result, "error_message", "") or ""),
-            identity=AccountIdentity(
-                email=str(getattr(legacy_result, "email", "") or ""),
-                account_id=str(getattr(legacy_result, "account_id", "") or ""),
-                workspace_id=str(getattr(legacy_result, "workspace_id", "") or ""),
-            ),
-            logs=[
-                ExecutionLog(message=str(message))
-                for message in list(getattr(legacy_result, "logs", []) or [])
-            ],
-        )
+        return build_registration_result(legacy_result)
