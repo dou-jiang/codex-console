@@ -286,11 +286,6 @@ def submit_callback_url(
     id_token = (token_resp.get("id_token") or "").strip()
     expires_in = _to_int(token_resp.get("expires_in"))
 
-    claims = _jwt_claims_no_verify(id_token)
-    email = str(claims.get("email") or "").strip()
-    auth_claims = claims.get("https://api.openai.com/auth") or {}
-    account_id = str(auth_claims.get("chatgpt_account_id") or "").strip()
-
     now = int(time.time())
     expired_rfc3339 = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + max(expires_in, 0))
@@ -301,9 +296,9 @@ def submit_callback_url(
         "id_token": id_token,
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "account_id": account_id,
+        "account_id": "",
         "last_refresh": now_rfc3339,
-        "email": email,
+        "email": "",
         "type": "codex",
         "expired": expired_rfc3339,
     }

@@ -2,12 +2,15 @@
 SQLAlchemy ORM 模型定义
 """
 
+import base64
 from datetime import datetime
+import hashlib
 from typing import Optional, Dict, Any
 import json
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import declarative_base, relationship
+from cryptography.fernet import Fernet, InvalidToken
 
 from ..time_utils import utc_now_naive
 
@@ -17,6 +20,7 @@ Base = declarative_base()
 class JSONEncodedDict(TypeDecorator):
     """JSON 编码字典类型"""
     impl = Text
+    cache_ok = True
 
     def process_bind_param(self, value: Optional[Dict[str, Any]], dialect):
         if value is None:
@@ -29,17 +33,102 @@ class JSONEncodedDict(TypeDecorator):
         return json.loads(value)
 
 
+def _resolve_encryption_secret() -> str:
+    env_secret = str(__import__("os").environ.get("APP_ENCRYPTION_KEY") or "").strip()
+    if env_secret:
+        return env_secret
+
+    try:
+        from ..config.settings import get_settings
+
+        settings = get_settings()
+        configured = str(settings.encryption_key.get_secret_value() or "").strip()
+        if configured:
+            return configured
+        fallback = str(settings.webui_secret_key.get_secret_value() or "").strip()
+        if fallback:
+            return fallback
+    except Exception:
+        pass
+
+    return "codex-console-local-fallback-encryption-key"
+
+
+def _build_fernet() -> Fernet:
+    secret = _resolve_encryption_secret().encode("utf-8")
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+    return Fernet(key)
+
+
+class EncryptedText(TypeDecorator):
+    """Encrypted text with plaintext backward compatibility."""
+
+    impl = Text
+    cache_ok = True
+    prefix = "enc::"
+
+    def process_bind_param(self, value: Optional[str], dialect):
+        if value is None:
+            return None
+        text = str(value)
+        if not text:
+            return text
+        if text.startswith(self.prefix):
+            return text
+        token = _build_fernet().encrypt(text.encode("utf-8")).decode("utf-8")
+        return f"{self.prefix}{token}"
+
+    def process_result_value(self, value: Optional[str], dialect):
+        if value is None:
+            return None
+        text = str(value)
+        if not text.startswith(self.prefix):
+            return text
+        token = text[len(self.prefix):]
+        try:
+            return _build_fernet().decrypt(token.encode("utf-8")).decode("utf-8")
+        except InvalidToken:
+            return ""
+
+
+class EncryptedJSONDict(TypeDecorator):
+    """Encrypted JSON with plaintext backward compatibility."""
+
+    impl = Text
+    cache_ok = True
+    prefix = EncryptedText.prefix
+
+    def process_bind_param(self, value: Optional[Dict[str, Any]], dialect):
+        if value is None:
+            return None
+        raw = json.dumps(value, ensure_ascii=False)
+        token = _build_fernet().encrypt(raw.encode("utf-8")).decode("utf-8")
+        return f"{self.prefix}{token}"
+
+    def process_result_value(self, value: Optional[str], dialect):
+        if value is None:
+            return None
+        text = str(value)
+        if text.startswith(self.prefix):
+            token = text[len(self.prefix):]
+            try:
+                text = _build_fernet().decrypt(token.encode("utf-8")).decode("utf-8")
+            except InvalidToken:
+                return {}
+        return json.loads(text)
+
+
 class Account(Base):
     """已注册账号表"""
     __tablename__ = 'accounts'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
-    password = Column(String(255))  # 注册密码（明文存储）
-    access_token = Column(Text)
-    refresh_token = Column(Text)
-    id_token = Column(Text)
-    session_token = Column(Text)  # 会话令牌（优先刷新方式）
+    password = Column(EncryptedText)
+    access_token = Column(EncryptedText)
+    refresh_token = Column(EncryptedText)
+    id_token = Column(EncryptedText)
+    session_token = Column(EncryptedText)  # 会话令牌（优先刷新方式）
     client_id = Column(String(255))  # OAuth Client ID
     account_id = Column(String(255))
     workspace_id = Column(String(255))
@@ -56,7 +145,7 @@ class Account(Base):
     source = Column(String(20), default='register')  # 'register' 或 'login'，区分账号来源
     subscription_type = Column(String(20))  # None / 'plus' / 'team'
     subscription_at = Column(DateTime)  # 订阅开通时间
-    cookies = Column(Text)  # 完整 cookie 字符串，用于支付请求
+    cookies = Column(EncryptedText)  # 完整 cookie 字符串，用于支付请求
     created_at = Column(DateTime, default=utc_now_naive)
     updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
     bind_card_tasks = relationship("BindCardTask", back_populates="account")
@@ -93,7 +182,7 @@ class EmailService(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     service_type = Column(String(50), nullable=False)  # 'outlook', 'moe_mail'
     name = Column(String(100), nullable=False)
-    config = Column(JSONEncodedDict, nullable=False)  # 服务配置（加密存储）
+    config = Column(EncryptedJSONDict, nullable=False)
     enabled = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # 使用优先级
     last_used = Column(DateTime)
@@ -197,7 +286,7 @@ class CpaService(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)  # 服务名称
     api_url = Column(String(500), nullable=False)  # API URL
-    api_token = Column(Text, nullable=False)  # API Token
+    api_token = Column(EncryptedText, nullable=False)  # API Token
     proxy_url = Column(String(1000))  # ?? URL
     enabled = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # 优先级
@@ -212,7 +301,7 @@ class Sub2ApiService(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)  # 服务名称
     api_url = Column(String(500), nullable=False)  # API URL (host)
-    api_key = Column(Text, nullable=False)  # x-api-key
+    api_key = Column(EncryptedText, nullable=False)  # x-api-key
     target_type = Column(String(50), nullable=False, default='sub2api')  # sub2api/newapi
     enabled = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # 优先级
@@ -227,7 +316,7 @@ class TeamManagerService(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)  # 服务名称
     api_url = Column(String(500), nullable=False)  # API URL
-    api_key = Column(Text, nullable=False)  # X-API-Key
+    api_key = Column(EncryptedText, nullable=False)  # X-API-Key
     enabled = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # 优先级
     created_at = Column(DateTime, default=utc_now_naive)
@@ -244,7 +333,7 @@ class Proxy(Base):
     host = Column(String(255), nullable=False)
     port = Column(Integer, nullable=False)
     username = Column(String(100))
-    password = Column(String(255))
+    password = Column(EncryptedText)
     enabled = Column(Boolean, default=True)
     is_default = Column(Boolean, default=False)  # 是否为默认代理
     priority = Column(Integer, default=0)  # 优先级（保留字段）

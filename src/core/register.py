@@ -1764,12 +1764,6 @@ class RegistrationEngine:
             if not result.access_token:
                 self._capture_access_token_light(result)
 
-            if (not result.account_id) and result.id_token:
-                try:
-                    account_info = self.oauth_manager.extract_account_info(result.id_token)
-                    result.account_id = str(account_info.get("account_id") or "").strip()
-                except Exception:
-                    pass
             if (not result.account_id) and result.access_token:
                 token_acc = self._extract_account_id_from_access_token(result.access_token)
                 if token_acc:
@@ -1856,12 +1850,6 @@ class RegistrationEngine:
         Account ID / Workspace ID / Client ID / Access Token / Refresh Token
         """
         try:
-            if (not result.account_id) and result.id_token:
-                try:
-                    account_info = self.oauth_manager.extract_account_info(result.id_token)
-                    result.account_id = str(account_info.get("account_id") or "").strip()
-                except Exception:
-                    pass
             if (not result.account_id) and result.access_token:
                 result.account_id = self._extract_account_id_from_access_token(result.access_token)
 

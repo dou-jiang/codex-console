@@ -83,7 +83,7 @@ class AccountResponse(BaseModel):
 
     id: int
     email: str
-    password: Optional[str] = None
+    has_password: bool = False
     client_id: Optional[str] = None
     email_service: str
     account_id: Optional[str] = None
@@ -98,7 +98,7 @@ class AccountResponse(BaseModel):
     cpa_uploaded_at: Optional[str] = None
     subscription_type: Optional[str] = None
     subscription_at: Optional[str] = None
-    cookies: Optional[str] = None
+    has_cookies: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -239,7 +239,7 @@ def account_to_response(account: Account) -> AccountResponse:
     return AccountResponse(
         id=account.id,
         email=account.email,
-        password=account.password,
+        has_password=bool(str(account.password or "").strip()),
         client_id=account.client_id,
         email_service=account.email_service,
         account_id=account.account_id,
@@ -254,7 +254,7 @@ def account_to_response(account: Account) -> AccountResponse:
         cpa_uploaded_at=account.cpa_uploaded_at.isoformat() if account.cpa_uploaded_at else None,
         subscription_type=account.subscription_type,
         subscription_at=account.subscription_at.isoformat() if account.subscription_at else None,
-        cookies=account.cookies,
+        has_cookies=bool(str(account.cookies or "").strip()),
         created_at=account.created_at.isoformat() if account.created_at else None,
         updated_at=account.updated_at.isoformat() if account.updated_at else None,
     )
@@ -440,12 +440,12 @@ def _write_current_account_snapshot(account: Account) -> Optional[str]:
             "id": account.id,
             "email": account.email,
             "plan_type": _normalize_plan_type(account.subscription_type),
-            "access_token": account.access_token,
-            "refresh_token": account.refresh_token,
-            "id_token": account.id_token,
-            "session_token": account.session_token,
             "account_id": account.account_id,
             "workspace_id": account.workspace_id,
+            "has_access_token": bool(str(account.access_token or "").strip()),
+            "has_refresh_token": bool(str(account.refresh_token or "").strip()),
+            "has_id_token": bool(str(account.id_token or "").strip()),
+            "has_session_token": bool(str(account.session_token or "").strip()),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         output_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -495,6 +495,15 @@ def _pick_first_text(*values: Any) -> Optional[str]:
         if text:
             return text
     return None
+
+
+def _mask_secret(value: Optional[str], keep_start: int = 6, keep_end: int = 4) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= keep_start + keep_end + 2:
+        return "*" * len(text)
+    return f"{text[:keep_start]}...{text[-keep_end:]}"
 
 
 def _decode_jwt_payload_unverified(token: Optional[str]) -> Dict[str, Any]:
@@ -1347,10 +1356,18 @@ async def get_account_tokens(account_id: int):
         return {
             "id": account.id,
             "email": account.email,
-            "access_token": account.access_token,
-            "refresh_token": account.refresh_token,
-            "id_token": account.id_token,
-            "session_token": resolved_session_token,
+            "has_access_token": bool(str(account.access_token or "").strip()),
+            "access_token_len": len(str(account.access_token or "")),
+            "access_token_preview": _mask_secret(account.access_token),
+            "has_refresh_token": bool(str(account.refresh_token or "").strip()),
+            "refresh_token_len": len(str(account.refresh_token or "")),
+            "refresh_token_preview": _mask_secret(account.refresh_token),
+            "has_id_token": bool(str(account.id_token or "").strip()),
+            "id_token_len": len(str(account.id_token or "")),
+            "id_token_preview": _mask_secret(account.id_token),
+            "has_session_token": bool(resolved_session_token),
+            "session_token_len": len(str(resolved_session_token or "")),
+            "session_token_preview": _mask_secret(resolved_session_token),
             "session_token_source": session_source,
             "device_id": _resolve_account_device_id(account),
             "has_tokens": bool(account.access_token and account.refresh_token),
@@ -1377,12 +1394,10 @@ async def update_account(account_id: int, request: AccountUpdateRequest):
             update_data["metadata"] = current_metadata
 
         if request.cookies is not None:
-            # 留空则清空，非空则更新
-            update_data["cookies"] = request.cookies or None
+            update_data["cookies"] = str(request.cookies or "")
 
         if request.session_token is not None:
-            # 留空则清空，非空则更新
-            update_data["session_token"] = request.session_token or None
+            update_data["session_token"] = str(request.session_token or "")
             update_data["last_refresh"] = utc_now_naive()
 
         account = crud.update_account(db, account_id, **update_data)

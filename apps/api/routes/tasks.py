@@ -1,6 +1,6 @@
 """Minimal task routes for phase 2 API skeleton."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from apps.api.auth import require_api_access
@@ -15,6 +15,11 @@ class RegisterTaskCreate(BaseModel):
     email_service_type: str
     proxy_url: str | None = None
     email_service_config: dict | None = None
+
+
+def _run_task_in_background(store, task_uuid: str) -> None:
+    runner = WorkerRunner(store)
+    runner.process_task(task_uuid)
 
 
 @router.post("/tasks/register", status_code=202)
@@ -67,34 +72,30 @@ def list_register_tasks(request: Request):
     }
 
 
-@router.post("/tasks/{task_uuid}/run")
-def run_register_task(task_uuid: str, request: Request):
-    runner = WorkerRunner(request.app.state.store)
-    outcome = runner.process_task(task_uuid)
-    if outcome.get("error") == "task not found":
-        raise HTTPException(status_code=404, detail="task not found")
+@router.post("/tasks/{task_uuid}/run", status_code=202)
+def run_register_task(task_uuid: str, request: Request, background_tasks: BackgroundTasks):
     task = request.app.state.store.tasks.get(task_uuid)
-    serialized_task = serialize_task(task, include_logs=True, include_result=True) if task else None
-    serialized_outcome = serialize_outcome(outcome)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    background_tasks.add_task(_run_task_in_background, request.app.state.store, task_uuid)
+    serialized_task = serialize_task(task, include_logs=True, include_result=True)
     return {
-        **serialized_outcome,
+        "accepted": True,
+        "task_uuid": task_uuid,
         "task": serialized_task,
-        "outcome": serialized_outcome,
     }
 
 
-@router.post("/tasks/run-next")
-def run_next_pending_task(request: Request):
-    runner = WorkerRunner(request.app.state.store)
-    outcome = runner.process_next_pending()
-    if outcome.get("error") == "no pending tasks":
+@router.post("/tasks/run-next", status_code=202)
+def run_next_pending_task(request: Request, background_tasks: BackgroundTasks):
+    task = request.app.state.store.tasks.claim_next_pending()
+    if not task:
         raise HTTPException(status_code=404, detail="no pending tasks")
-    task_uuid = str(outcome.get("task_uuid") or "")
-    task = request.app.state.store.tasks.get(task_uuid) if task_uuid else None
-    serialized_task = serialize_task(task, include_logs=True, include_result=True) if task else None
-    serialized_outcome = serialize_outcome(outcome)
+    task_uuid = str(task.task_uuid or "")
+    background_tasks.add_task(_run_task_in_background, request.app.state.store, task_uuid)
+    serialized_task = serialize_task(task, include_logs=True, include_result=True)
     return {
-        **serialized_outcome,
+        "accepted": True,
+        "task_uuid": task_uuid,
         "task": serialized_task,
-        "outcome": serialized_outcome,
     }

@@ -296,11 +296,8 @@ function renderAccounts(accounts) {
                 </span>
             </td>
             <td class="password-cell">
-                ${account.password
-                    ? `<span style="display:inline-flex;align-items:center;gap:4px;">
-                        <span class="password-hidden" data-pwd="${escapeHtml(account.password)}" onclick="togglePassword(this, this.dataset.pwd)" title="点击查看">${escapeHtml(account.password.substring(0, 4) + '****')}</span>
-                        <button class="btn-copy-icon copy-pwd-btn" data-pwd="${escapeHtml(account.password)}" title="复制密码">📋</button>
-                       </span>`
+                ${account.has_password
+                    ? `<span style="color: var(--text-muted);">已保存</span>`
                     : '-'}
             </td>
             <td>${getServiceTypeText(account.email_service)}</td>
@@ -359,14 +356,6 @@ function renderAccounts(accounts) {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             copyToClipboard(btn.dataset.email);
-        });
-    });
-
-    // 绑定复制密码按钮
-    elements.table.querySelectorAll('.copy-pwd-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            copyToClipboard(btn.dataset.pwd);
         });
     });
 
@@ -602,10 +591,7 @@ async function viewAccount(id) {
                 <div class="info-item">
                     <span class="label">密码</span>
                     <span class="value">
-                        ${account.password
-                            ? `<code style="font-size: 0.75rem;">${escapeHtml(account.password)}</code>
-                               <button class="btn btn-ghost btn-sm" onclick="copyToClipboard('${escapeHtml(account.password)}')" title="复制">📋</button>`
-                            : '-'}
+                        ${account.has_password ? '已保存（默认不直接展示）' : '-'}
                     </span>
                 </div>
                 <div class="info-item">
@@ -649,26 +635,23 @@ async function viewAccount(id) {
                 <div class="info-item" style="grid-column: span 2;">
                     <span class="label">Access Token</span>
                     <div class="value" style="font-size: 0.7rem; word-break: break-all; font-family: var(--font-mono); background: var(--surface-hover); padding: 8px; border-radius: 4px;">
-                        ${escapeHtml(tokens.access_token || '-')}
-                        ${tokens.access_token ? `<button class="btn btn-ghost btn-sm" onclick="copyToClipboard('${escapeHtml(tokens.access_token)}')" style="margin-left: 8px;">📋</button>` : ''}
+                        ${escapeHtml(tokens.access_token_preview || '-')}
+                        <span style="margin-left: 8px; color: var(--text-muted); font-size: 0.72rem;">len=${tokens.access_token_len || 0}</span>
                     </div>
                 </div>
                 <div class="info-item" style="grid-column: span 2;">
                     <span class="label">Refresh Token</span>
                     <div class="value" style="font-size: 0.7rem; word-break: break-all; font-family: var(--font-mono); background: var(--surface-hover); padding: 8px; border-radius: 4px;">
-                        ${escapeHtml(tokens.refresh_token || '-')}
-                        ${tokens.refresh_token ? `<button class="btn btn-ghost btn-sm" onclick="copyToClipboard('${escapeHtml(tokens.refresh_token)}')" style="margin-left: 8px;">📋</button>` : ''}
+                        ${escapeHtml(tokens.refresh_token_preview || '-')}
+                        <span style="margin-left: 8px; color: var(--text-muted); font-size: 0.72rem;">len=${tokens.refresh_token_len || 0}</span>
                     </div>
                 </div>
                 <div class="info-item" style="grid-column: span 2;">
                     <span class="label">Session Token</span>
                     <div class="value" style="font-size: 0.7rem; word-break: break-all; font-family: var(--font-mono); background: var(--surface-hover); padding: 8px; border-radius: 4px;">
-                        ${escapeHtml(tokens.session_token || account.session_token || '-')}
-                        ${(tokens.session_token || account.session_token)
-                            ? `<button class="btn btn-ghost btn-sm" onclick="copyToClipboard('${escapeHtml(tokens.session_token || account.session_token)}')" style="margin-left: 8px;">📋</button>`
-                            : ''
-                        }
-                        <button class="btn btn-ghost btn-sm" onclick="editSessionToken(${id}, '${escapeHtml(tokens.session_token || account.session_token || '')}')" style="margin-left: 8px;" title="修改 Session Token">✏️</button>
+                        ${escapeHtml(tokens.session_token_preview || '-')}
+                        <span style="margin-left: 8px; color: var(--text-muted); font-size: 0.72rem;">len=${tokens.session_token_len || 0}</span>
+                        <button class="btn btn-ghost btn-sm" onclick="editSessionToken(${id}, '')" style="margin-left: 8px;" title="修改 Session Token">✏️</button>
                         ${tokens.session_token_source ? `<span style="margin-left:8px;color:var(--text-muted);font-size:0.72rem;">来源: ${escapeHtml(tokens.session_token_source)}</span>` : ''}
                     </div>
                 </div>
@@ -684,7 +667,10 @@ async function viewAccount(id) {
                     <div class="value">
                         <textarea id="cookies-input-${id}" rows="3"
                             style="width:100%;font-size:0.7rem;font-family:var(--font-mono);background:var(--surface-hover);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text-primary);resize:vertical;"
-                            placeholder="粘贴完整 cookie 字符串，留空则清除">${escapeHtml(account.cookies || '')}</textarea>
+                            placeholder="粘贴新的完整 cookie 字符串，留空则清除"></textarea>
+                        <div style="margin-top:4px;color:var(--text-muted);font-size:0.72rem;">
+                            当前状态：${account.has_cookies ? '已保存 cookies（默认不直接展示）' : '未保存 cookies'}
+                        </div>
                         <button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="saveCookies(${id})">
                             保存 Cookies
                         </button>

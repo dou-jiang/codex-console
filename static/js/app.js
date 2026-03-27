@@ -970,11 +970,8 @@ async function loadRecentAccounts() {
                     </span>
                 </td>
                 <td class="password-cell">
-                    ${account.password
-                        ? `<span style="display:inline-flex;align-items:center;gap:4px;">
-                            <span class="password-hidden" title="点击查看">${escapeHtml(account.password.substring(0, 8))}...</span>
-                            <button class="btn-copy-icon copy-pwd-btn" data-pwd="${escapeHtml(account.password)}" title="复制密码">📋</button>
-                           </span>`
+                    ${account.has_password
+                        ? `<span style="color: var(--text-muted);">已保存</span>`
                         : '-'}
                 </td>
                 <td>
@@ -987,10 +984,6 @@ async function loadRecentAccounts() {
         elements.recentAccountsTable.querySelectorAll('.copy-email-btn').forEach(btn => {
             btn.addEventListener('click', (e) => { e.stopPropagation(); copyToClipboard(btn.dataset.email); });
         });
-        elements.recentAccountsTable.querySelectorAll('.copy-pwd-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => { e.stopPropagation(); copyToClipboard(btn.dataset.pwd); });
-        });
-
     } catch (error) {
         console.error('加载账号列表失败:', error);
     }

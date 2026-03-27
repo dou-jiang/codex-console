@@ -116,13 +116,10 @@ def test_run_register_task(monkeypatch, tmp_path: Path, auth_headers):
 
     response = client.post(f"/tasks/{created['task_uuid']}/run", headers=auth_headers)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     payload = response.json()
-    assert payload["success"] is True
-    assert payload["status"] == "completed"
+    assert payload["accepted"] is True
     assert payload["task"]["task_uuid"] == created["task_uuid"]
-    assert payload["task"]["status"] == "completed"
-    assert payload["outcome"]["success"] is True
 
     detail = client.get(f"/tasks/{created['task_uuid']}", headers=auth_headers).json()
     assert detail["result"]["source"] == "register"
@@ -141,9 +138,7 @@ def test_run_next_pending_task(monkeypatch, tmp_path: Path, auth_headers):
         def __init__(self, store):
             self.store = store
 
-        def process_next_pending(self):
-            pending = self.store.tasks.list_pending(limit=1)
-            task_uuid = pending[0].task_uuid
+        def process_task(self, task_uuid: str):
             self.store.tasks.update(task_uuid, status="completed")
             return {"success": True, "status": "completed", "task_uuid": task_uuid}
 
@@ -151,14 +146,11 @@ def test_run_next_pending_task(monkeypatch, tmp_path: Path, auth_headers):
 
     response = client.post("/tasks/run-next", headers=auth_headers)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     payload = response.json()
-    assert payload["success"] is True
-    assert payload["status"] == "completed"
+    assert payload["accepted"] is True
     assert payload["task_uuid"]
     assert payload["task"]["task_uuid"] == payload["task_uuid"]
-    assert payload["task"]["status"] == "completed"
-    assert payload["outcome"]["success"] is True
 
 
 def test_list_register_tasks(tmp_path: Path, auth_headers):
