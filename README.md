@@ -66,6 +66,30 @@
 - 支持打包为 Windows/Linux/macOS 可执行文件
 - 更适配当前 OpenAI 注册与登录链路
 
+## 新任务通路
+
+仓库里现在还保留旧 Web UI，但已经补出一条新的任务式执行通路，适合逐步替换旧逻辑：
+
+- 新 API：`apps/api/main.py`
+- 新 Worker：`apps/worker/main.py`
+- 启动脚本：
+  - `scripts/run_api.py`
+  - `scripts/run_worker.py`
+
+这条新通路已经具备：
+
+- 创建任务
+- 列出任务
+- 查询单个任务
+- 查看任务日志
+- 执行单个任务
+- 执行下一条待处理任务
+- Worker 轮询、单实例锁、空闲退出
+
+如果你想直接试新通路，优先参考：
+
+- `docs/migration/2026-03-26-phase2-quickstart.md`
+
 ## 环境要求
 
 - Python 3.10+
@@ -136,6 +160,18 @@ codex-console.exe --access-password mypassword
 启动后访问:
 
 [http://127.0.0.1:8000](http://127.0.0.1:8000)
+
+## 启动新 API / Worker
+
+```bash
+# API
+set PYTHONPATH=%CD%
+python scripts/run_api.py --host 127.0.0.1 --port 8000 --database-url sqlite:///./data/api.db
+
+# Worker
+set PYTHONPATH=%CD%
+python scripts/run_worker.py --database-url sqlite:///./data/api.db --max-iterations 1 --poll-interval-seconds 1
+```
 
 ## Docker 部署
 

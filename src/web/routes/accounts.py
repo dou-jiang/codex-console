@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Body
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func
 
 from ...config.constants import AccountStatus
@@ -77,6 +77,8 @@ def _apply_status_filter(query, status: Optional[str]):
 
 class AccountResponse(BaseModel):
     """账号响应模型"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     email: str
     password: Optional[str] = None
@@ -97,10 +99,6 @@ class AccountResponse(BaseModel):
     cookies: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-
 
 class AccountListResponse(BaseModel):
     """账号列表响应"""

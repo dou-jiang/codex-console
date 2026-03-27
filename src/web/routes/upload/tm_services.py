@@ -4,7 +4,7 @@ Team Manager 服务管理 API 路由
 
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ....database import crud
 from ....database.session import get_db
@@ -32,6 +32,8 @@ class TmServiceUpdate(BaseModel):
 
 
 class TmServiceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     api_url: str
@@ -40,10 +42,6 @@ class TmServiceResponse(BaseModel):
     priority: int
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-
 
 class TmTestRequest(BaseModel):
     api_url: Optional[str] = None

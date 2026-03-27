@@ -6,7 +6,7 @@ import logging
 from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ...database import crud
 from ...database.session import get_db
@@ -38,6 +38,8 @@ class EmailServiceUpdate(BaseModel):
 
 class EmailServiceResponse(BaseModel):
     """邮箱服务响应"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     service_type: str
     name: str
@@ -47,10 +49,6 @@ class EmailServiceResponse(BaseModel):
     last_used: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-
 
 class EmailServiceListResponse(BaseModel):
     """邮箱服务列表响应"""
