@@ -4,6 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import create_app
+from src.config import settings as settings_module
+from src.database import session as session_module
 
 
 @pytest.fixture
@@ -223,3 +225,25 @@ def test_task_routes_accept_access_password_header(tmp_path: Path, monkeypatch):
     )
 
     assert response.status_code == 202
+
+
+def test_create_app_bootstraps_real_settings_from_env(tmp_path: Path, monkeypatch):
+    database_url = f"sqlite:///{tmp_path / 'api.db'}"
+
+    monkeypatch.setenv("APP_ACCESS_PASSWORD", "StrongPass123!")
+    monkeypatch.setenv("APP_DATABASE_URL", database_url)
+    monkeypatch.setattr(settings_module, "_settings", None)
+    monkeypatch.setattr(session_module, "_db_manager", None)
+
+    app = create_app(database_url=database_url)
+    client = TestClient(app)
+
+    response = client.post(
+        "/tasks/register",
+        headers={"X-Access-Password": "StrongPass123!"},
+        json={"email_service_type": "duck_mail"},
+    )
+
+    assert response.status_code == 202
+    assert settings_module.get_settings().webui_access_password.get_secret_value() == "StrongPass123!"
+    assert settings_module.get_settings().database_url == database_url

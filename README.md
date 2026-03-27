@@ -303,13 +303,16 @@ codex-console.exe --access-password mypassword
 
 ```bash
 # API
-set PYTHONPATH=%CD%
 python scripts/run_api.py --host 127.0.0.1 --port 8000 --database-url sqlite:///./data/api.db
 
 # Worker
-set PYTHONPATH=%CD%
 python scripts/run_worker.py --database-url sqlite:///./data/api.db --max-iterations 1 --poll-interval-seconds 1
 ```
+
+说明：
+
+- 以上脚本入口现在可以直接在仓库根目录运行，无需额外设置 `PYTHONPATH`
+- 新 API 会沿用同一套 `APP_ACCESS_PASSWORD` / `X-Access-Password` 访问控制
 
 调用任务 API 示例：
 

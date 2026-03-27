@@ -47,14 +47,14 @@ This is still a local in-process flow, not a full external queue yet.
 Example:
 
 ```bash
-set PYTHONPATH=C:\path\to\repo
 python scripts/run_api.py --host 127.0.0.1 --port 8000 --database-url sqlite:///./data/api.db
 ```
+
+The wrapper script can now be launched directly from the repository root without setting `PYTHONPATH` first.
 
 Equivalent module form:
 
 ```bash
-set PYTHONPATH=C:\path\to\repo
 python -m apps.api.main --host 127.0.0.1 --port 8000 --database-url sqlite:///./data/api.db
 ```
 
@@ -133,14 +133,14 @@ X-Access-Password: StrongPass123!
 You can also drive the new worker path directly from Python without the API:
 
 ```bash
-set PYTHONPATH=C:\path\to\repo
 python scripts/run_worker.py --database-url sqlite:///./data/api.db --max-iterations 1 --poll-interval-seconds 1
 ```
+
+The worker wrapper follows the same behavior and can also be started directly from the repository root.
 
 Equivalent module form:
 
 ```bash
-set PYTHONPATH=C:\path\to\repo
 python -m apps.worker.main --database-url sqlite:///./data/api.db --max-iterations 1 --poll-interval-seconds 1
 ```
 
