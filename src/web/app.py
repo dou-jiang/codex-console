@@ -3,6 +3,7 @@ FastAPI 应用主文件
 轻量级 Web UI，支持注册、账号管理、设置
 """
 
+from contextlib import asynccontextmanager
 import logging
 import sys
 import secrets
@@ -51,12 +52,65 @@ def create_app() -> FastAPI:
     """创建 FastAPI 应用实例"""
     settings = get_settings()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        import asyncio
+        from ..database.init_db import initialize_database
+        from ..core.db_logs import cleanup_database_logs
+
+        try:
+            initialize_database()
+        except Exception as e:
+            logger.warning(f"数据库初始化: {e}")
+
+        loop = asyncio.get_event_loop()
+        task_manager.set_loop(loop)
+
+        async def run_log_cleanup_once():
+            try:
+                result = await asyncio.to_thread(cleanup_database_logs)
+                logger.info(
+                    "后台日志清理完成: 删除 %s 条，剩余 %s 条",
+                    result.get("deleted_total", 0),
+                    result.get("remaining", 0),
+                )
+            except Exception as exc:
+                logger.warning(f"后台日志清理失败: {exc}")
+
+        async def periodic_log_cleanup():
+            while True:
+                try:
+                    await asyncio.sleep(3600)
+                    await run_log_cleanup_once()
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logger.warning(f"后台日志定时清理异常: {exc}")
+
+        await run_log_cleanup_once()
+        app.state.log_cleanup_task = asyncio.create_task(periodic_log_cleanup())
+
+        logger.info("=" * 50)
+        logger.info(f"{settings.app_name} v{settings.app_version} 启动中，程序正在伸懒腰...")
+        logger.info(f"调试模式: {settings.debug}")
+        logger.info(f"数据库连接已接好线: {settings.database_url}")
+        logger.info("=" * 50)
+
+        try:
+            yield
+        finally:
+            cleanup_task = getattr(app.state, "log_cleanup_task", None)
+            if cleanup_task:
+                cleanup_task.cancel()
+            logger.info("应用关闭，今天先收摊啦")
+
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
         description="OpenAI/Codex CLI 自动注册系统 Web UI",
         docs_url="/api/docs" if settings.debug else None,
         redoc_url="/api/redoc" if settings.debug else None,
+        lifespan=lifespan,
     )
 
     # CORS 中间件
@@ -227,62 +281,6 @@ def create_app() -> FastAPI:
         if not _is_authenticated(request):
             return _redirect_to_login(request)
         return _render_template(request, "logs.html")
-
-    @app.on_event("startup")
-    async def startup_event():
-        """应用启动事件"""
-        import asyncio
-        from ..database.init_db import initialize_database
-        from ..core.db_logs import cleanup_database_logs
-
-        # 确保数据库已初始化（reload 模式下子进程也需要初始化）
-        try:
-            initialize_database()
-        except Exception as e:
-            logger.warning(f"数据库初始化: {e}")
-
-        # 设置 TaskManager 的事件循环
-        loop = asyncio.get_event_loop()
-        task_manager.set_loop(loop)
-
-        async def run_log_cleanup_once():
-            try:
-                result = await asyncio.to_thread(cleanup_database_logs)
-                logger.info(
-                    "后台日志清理完成: 删除 %s 条，剩余 %s 条",
-                    result.get("deleted_total", 0),
-                    result.get("remaining", 0),
-                )
-            except Exception as exc:
-                logger.warning(f"后台日志清理失败: {exc}")
-
-        async def periodic_log_cleanup():
-            while True:
-                try:
-                    await asyncio.sleep(3600)  # 每小时清理一次
-                    await run_log_cleanup_once()
-                except asyncio.CancelledError:
-                    break
-                except Exception as exc:
-                    logger.warning(f"后台日志定时清理异常: {exc}")
-
-        # 启动时先执行一次，再开启定时任务
-        await run_log_cleanup_once()
-        app.state.log_cleanup_task = asyncio.create_task(periodic_log_cleanup())
-
-        logger.info("=" * 50)
-        logger.info(f"{settings.app_name} v{settings.app_version} 启动中，程序正在伸懒腰...")
-        logger.info(f"调试模式: {settings.debug}")
-        logger.info(f"数据库连接已接好线: {settings.database_url}")
-        logger.info("=" * 50)
-
-    @app.on_event("shutdown")
-    async def shutdown_event():
-        """应用关闭事件"""
-        cleanup_task = getattr(app.state, "log_cleanup_task", None)
-        if cleanup_task:
-            cleanup_task.cancel()
-        logger.info("应用关闭，今天先收摊啦")
 
     return app
 
