@@ -209,6 +209,12 @@ docs/migration/               迁移状态和新通路说明
 
 - `docs/migration/2026-03-26-phase2-quickstart.md`
 
+说明：
+
+- 新任务 API 现在默认也受访问控制保护
+- 浏览器侧可复用 Web UI 登录态
+- 脚本或接口调试时，可通过 `X-Access-Password: <APP_ACCESS_PASSWORD>` 访问内部任务接口
+
 ## 环境要求
 
 - Python 3.10+
@@ -287,6 +293,12 @@ codex-console.exe --access-password mypassword
 
 - `GET /healthz` 返回 `{"ok": true}`
 
+内部 API 访问:
+
+- 旧页面的 `/api/*` 路由与任务 WebSocket 不再默认裸露
+- 如果你是浏览器内使用，登录后的 cookie 会自动带上
+- 如果你是脚本调用，可显式传 `X-Access-Password`
+
 ## 启动新 API / Worker
 
 ```bash
@@ -297,6 +309,15 @@ python scripts/run_api.py --host 127.0.0.1 --port 8000 --database-url sqlite:///
 # Worker
 set PYTHONPATH=%CD%
 python scripts/run_worker.py --database-url sqlite:///./data/api.db --max-iterations 1 --poll-interval-seconds 1
+```
+
+调用任务 API 示例：
+
+```bash
+curl -X POST http://127.0.0.1:8000/tasks/register \
+  -H "Content-Type: application/json" \
+  -H "X-Access-Password: StrongPass123!" \
+  -d "{\"email_service_type\":\"duck_mail\"}"
 ```
 
 ## Docker 部署

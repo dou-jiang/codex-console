@@ -18,6 +18,12 @@ If you only used the original project before, the main thing to know is:
 the new path no longer assumes every execution has to be driven directly from
 the old Web route layer.
 
+One important update for the current branch:
+
+- task API calls now require authenticated access
+- browser callers can reuse the normal Web UI login cookie
+- direct callers should provide `X-Access-Password`
+
 ## What Exists Now
 
 The extracted path can now do the following:
@@ -57,6 +63,7 @@ python -m apps.api.main --host 127.0.0.1 --port 8000 --database-url sqlite:///./
 ```http
 POST /tasks/register
 Content-Type: application/json
+X-Access-Password: StrongPass123!
 
 {
   "email_service_type": "duck_mail",
@@ -72,6 +79,7 @@ Content-Type: application/json
 
 ```http
 GET /tasks/{task_uuid}
+X-Access-Password: StrongPass123!
 ```
 
 Returns:
@@ -86,6 +94,7 @@ Returns:
 
 ```http
 GET /tasks
+X-Access-Password: StrongPass123!
 ```
 
 Returns:
@@ -97,6 +106,7 @@ Returns:
 
 ```http
 GET /tasks/{task_uuid}/logs
+X-Access-Password: StrongPass123!
 ```
 
 Returns:
@@ -108,12 +118,14 @@ Returns:
 
 ```http
 POST /tasks/{task_uuid}/run
+X-Access-Password: StrongPass123!
 ```
 
 ## Run the Next Pending Task
 
 ```http
 POST /tasks/run-next
+X-Access-Password: StrongPass123!
 ```
 
 ## Run the Worker Loop Directly
@@ -148,7 +160,7 @@ run_worker_loop(
 
 - execution is still local and in-process
 - there is no external queue broker yet
-- task scheduling is still manual
+- run endpoints are still synchronous internal controls, so they should stay behind authenticated internal access
 - legacy SQLAlchemy/deprecated datetime warnings still exist
 
 ## Recommended Next Step

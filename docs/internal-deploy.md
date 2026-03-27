@@ -45,6 +45,7 @@ Notes:
 - `APP_ACCESS_PASSWORD` is required in non-debug mode
 - weak values such as `admin123` are rejected at startup
 - `WEBUI_*` names are still accepted for compatibility, but `APP_*` is the canonical set now
+- internal task APIs and task WebSockets also require the same access control
 
 ## Local Process Deployment
 
@@ -64,6 +65,24 @@ Expected response:
 
 ```json
 {"ok": true}
+```
+
+Internal API access:
+
+- browser requests can reuse the authenticated Web UI cookie
+- non-browser requests should send:
+
+```text
+X-Access-Password: <APP_ACCESS_PASSWORD>
+```
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:8000/tasks/register \
+  -H "Content-Type: application/json" \
+  -H "X-Access-Password: StrongPass123!" \
+  -d "{\"email_service_type\":\"duck_mail\"}"
 ```
 
 ## SSH Tunnel Access
@@ -141,6 +160,8 @@ Validated in this repository:
 - startup safety rejects weak access passwords
 - health endpoint exists at `/healthz`
 - compatibility mapping from `WEBUI_*` to `APP_*` exists
+- internal task APIs reject unauthenticated access
+- worker now claims the oldest pending task atomically
 
 Not validated on this machine:
 
