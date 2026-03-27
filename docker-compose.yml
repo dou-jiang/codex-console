@@ -5,23 +5,33 @@ services:
     build: .
     shm_size: "1gb"
     ports:
-      - "1455:1455"
-      - "6080:6080"
+      - "127.0.0.1:1455:1455"
+      # 如需明确启用 noVNC，再按需打开：
+      # - "127.0.0.1:6080:6080"
       # 如需使用 VNC 客户端直连可打开：
-      # - "5900:5900"
+      # - "127.0.0.1:5900:5900"
     environment:
-      - WEBUI_HOST=0.0.0.0
-      - WEBUI_PORT=1455
+      # 容器内监听 0.0.0.0，宿主机侧只绑定回环地址，避免直接公网暴露
+      - APP_HOST=0.0.0.0
+      - APP_PORT=1455
+      - APP_DATA_DIR=/app/data
+      - APP_LOGS_DIR=/app/logs
+      - APP_DATABASE_URL=sqlite:////app/data/database.db
       - DISPLAY=:99
-      - ENABLE_VNC=1
+      - ENABLE_VNC=0
       - VNC_PORT=5900
       - NOVNC_PORT=6080
       - DEBUG=0
       - LOG_LEVEL=info
-      # 如果需要访问密码，可以在这里取消注释并设置
-      - WEBUI_ACCESS_PASSWORD=admin123
+      - APP_ACCESS_PASSWORD=${APP_ACCESS_PASSWORD:-}
     volumes:
       # 挂载数据目录以持久化数据库和日志
       - ./data:/app/data
       - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:1455/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped

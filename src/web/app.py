@@ -189,6 +189,10 @@ def create_app() -> FastAPI:
     def _redirect_to_login(request: Request) -> RedirectResponse:
         return RedirectResponse(url=f"/login?next={request.url.path}", status_code=302)
 
+    @app.get("/healthz")
+    async def healthz():
+        return {"ok": True}
+
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request, next: Optional[str] = "/"):
         """登录页面"""

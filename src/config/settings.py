@@ -1,6 +1,6 @@
 """
-配置管理 - 完全基于数据库存储
-所有配置都从数据库读取，不再使用环境变量或 .env 文件
+配置管理 - 数据库为主，环境变量覆盖启动配置
+业务设置主要来自数据库；启动和部署安全项允许由环境变量覆盖。
 """
 
 import os
@@ -70,7 +70,7 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     # Web UI 配置
     "webui_host": SettingDefinition(
         db_key="webui.host",
-        default_value="0.0.0.0",
+        default_value="127.0.0.1",
         category=SettingCategory.WEBUI,
         description="Web UI 监听地址"
     ),
@@ -89,7 +89,7 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     ),
     "webui_access_password": SettingDefinition(
         db_key="webui.access_password",
-        default_value="admin123",
+        default_value="",
         category=SettingCategory.WEBUI,
         description="Web UI 访问密码",
         is_secret=True
@@ -540,19 +540,23 @@ def _load_settings_from_db() -> Dict[str, Any]:
                 else:
                     # 数据库中没有此设置，使用默认值
                     settings_dict[attr_name] = _convert_value(attr_name, _value_to_string(defn.default_value))
-            env_url = os.environ.get("APP_DATABASE_URL") or os.environ.get("DATABASE_URL")
+            env_url = (
+                os.environ.get("APP_DATABASE_URL")
+                or os.environ.get("WEBUI_DATABASE_URL")
+                or os.environ.get("DATABASE_URL")
+            )
             if env_url:
                 settings_dict["database_url"] = _normalize_database_url(env_url)
-            env_host = os.environ.get("APP_HOST")
+            env_host = os.environ.get("APP_HOST") or os.environ.get("WEBUI_HOST")
             if env_host:
                 settings_dict["webui_host"] = env_host
-            env_port = os.environ.get("APP_PORT")
+            env_port = os.environ.get("APP_PORT") or os.environ.get("WEBUI_PORT")
             if env_port:
                 try:
                     settings_dict["webui_port"] = int(env_port)
                 except ValueError:
                     pass
-            env_password = os.environ.get("APP_ACCESS_PASSWORD")
+            env_password = os.environ.get("APP_ACCESS_PASSWORD") or os.environ.get("WEBUI_ACCESS_PASSWORD")
             if env_password:
                 settings_dict["webui_access_password"] = env_password
         return settings_dict
@@ -615,10 +619,10 @@ class Settings(BaseModel):
         return v
 
     # Web UI 配置
-    webui_host: str = "0.0.0.0"
+    webui_host: str = "127.0.0.1"
     webui_port: int = 8000
     webui_secret_key: SecretStr = SecretStr("your-secret-key-change-in-production")
-    webui_access_password: SecretStr = SecretStr("admin123")
+    webui_access_password: SecretStr = SecretStr("")
 
     # 日志配置
     log_level: str = "INFO"

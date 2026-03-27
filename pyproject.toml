@@ -28,7 +28,7 @@ payment = [
 ]
 
 [project.scripts]
-codex-console = "webui:main"
+codex-console = "src.webui_entry:main"
 
 [build-system]
 requires = ["hatchling"]

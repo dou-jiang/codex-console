@@ -2,11 +2,16 @@
 set -euo pipefail
 
 export DISPLAY="${DISPLAY:-:99}"
-ENABLE_VNC="${ENABLE_VNC:-1}"
+ENABLE_VNC="${ENABLE_VNC:-0}"
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
+VNC_PASSWORD="${VNC_PASSWORD:-}"
 
 if [[ "${ENABLE_VNC}" == "1" || "${ENABLE_VNC,,}" == "true" ]]; then
+  if [[ -z "${VNC_PASSWORD}" ]]; then
+    echo "[docker] ENABLE_VNC is on but VNC_PASSWORD is empty; refusing to start an exposed desktop without a password"
+    exit 1
+  fi
   echo "[docker] starting Xvfb on ${DISPLAY}"
   Xvfb "${DISPLAY}" -screen 0 1366x900x24 -ac +extension RANDR >/tmp/xvfb.log 2>&1 &
 
@@ -19,7 +24,7 @@ if [[ "${ENABLE_VNC}" == "1" || "${ENABLE_VNC,,}" == "true" ]]; then
     -rfbport "${VNC_PORT}" \
     -forever \
     -shared \
-    -nopw \
+    -passwd "${VNC_PASSWORD}" \
     >/tmp/x11vnc.log 2>&1 &
 
   NOVNC_WEB_ROOT="/usr/share/novnc"

@@ -235,10 +235,12 @@ cp .env.example .env
 
 | 变量 | 说明 | 默认值 |
 | --- | --- | --- |
-| `APP_HOST` | 监听主机 | `0.0.0.0` |
+| `APP_HOST` | 监听主机 | `127.0.0.1` |
 | `APP_PORT` | 监听端口 | `8000` |
-| `APP_ACCESS_PASSWORD` | Web UI 访问密钥 | `admin123` |
+| `APP_ACCESS_PASSWORD` | Web UI 访问密钥 | 必须显式设置强密码 |
 | `APP_DATABASE_URL` | 数据库连接字符串 | `data/database.db` |
+| `APP_DATA_DIR` | 数据目录 | `<repo>/data` |
+| `APP_LOGS_DIR` | 日志目录 | `<repo>/logs` |
 
 优先级:
 
@@ -251,7 +253,7 @@ cp .env.example .env
 python webui.py
 
 # 指定地址和端口
-python webui.py --host 0.0.0.0 --port 8080
+python webui.py --host 127.0.0.1 --port 8080
 
 # 调试模式（热重载）
 python webui.py --debug
@@ -260,13 +262,14 @@ python webui.py --debug
 python webui.py --access-password mypassword
 
 # 组合参数
-python webui.py --host 0.0.0.0 --port 8080 --access-password mypassword
+python webui.py --host 127.0.0.1 --port 8080 --access-password StrongPass123!
 ```
 
 说明:
 
 - `--access-password` 的优先级高于数据库中的密钥设置
 - 该参数只对本次启动生效
+- 非调试模式下，如果访问密码为空、过弱、或仍是 `admin123`，启动会直接失败
 - 打包后的 exe 也支持这个参数
 
 例如:
@@ -278,6 +281,10 @@ codex-console.exe --access-password mypassword
 启动后访问:
 
 [http://127.0.0.1:8000](http://127.0.0.1:8000)
+
+健康检查:
+
+- `GET /healthz` 返回 `{"ok": true}`
 
 ## 启动新 API / Worker
 
@@ -296,43 +303,47 @@ python scripts/run_worker.py --database-url sqlite:///./data/api.db --max-iterat
 ### 使用 docker-compose
 
 ```bash
+export APP_ACCESS_PASSWORD='StrongPass123!'
 docker-compose up -d
 ```
 
-你可以在 `docker-compose.yml` 中修改环境变量，比如端口和访问密码。  
-如果需要看“全自动绑卡”的可视化浏览器，打开：
-
-- noVNC: `http://127.0.0.1:6080`
+默认配置只把 Web UI 绑定到宿主机回环地址，适合通过 SSH 隧道、跳板机或内网反向代理访问。  
+默认 **不会** 启动 noVNC / VNC。只有显式开启并设置 `VNC_PASSWORD` 时，才会启动桌面相关能力。
 
 ### 使用 docker run
 
 ```bash
 docker run -d \
-  -p 1455:1455 \
-  -p 6080:6080 \
+  -p 127.0.0.1:1455:1455 \
+  -e APP_HOST=0.0.0.0 \
+  -e APP_PORT=1455 \
+  -e APP_ACCESS_PASSWORD=StrongPass123! \
+  -e APP_DATABASE_URL=sqlite:////app/data/database.db \
+  -e APP_DATA_DIR=/app/data \
+  -e APP_LOGS_DIR=/app/logs \
   -e DISPLAY=:99 \
-  -e ENABLE_VNC=1 \
+  -e ENABLE_VNC=0 \
   -e VNC_PORT=5900 \
   -e NOVNC_PORT=6080 \
-  -e WEBUI_HOST=0.0.0.0 \
-  -e WEBUI_PORT=1455 \
-  -e WEBUI_ACCESS_PASSWORD=your_secure_password \
   -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
   --name codex-console \
   ghcr.io/<yourname>/codex-console:latest
 ```
 
 说明:
 
-- `WEBUI_HOST`: 监听主机，默认 `0.0.0.0`
-- `WEBUI_PORT`: 监听端口，默认 `1455`
-- `WEBUI_ACCESS_PASSWORD`: Web UI 访问密码
+- `APP_HOST`: 在 Docker 容器内建议保持 `0.0.0.0`，宿主机侧再通过 `127.0.0.1:1455:1455` 限制外部访问
+- `APP_PORT`: 监听端口，默认 `1455`
+- `APP_ACCESS_PASSWORD`: Web UI 访问密码，必须显式设置强密码
+- `ENABLE_VNC`: 默认 `0`，未显式开启时不启动 noVNC / VNC
+- `VNC_PASSWORD`: 当 `ENABLE_VNC=1` 时必须提供
 - `DEBUG`: 设为 `1` 或 `true` 可开启调试模式
 - `LOG_LEVEL`: 日志级别，例如 `info`、`debug`
 
 注意:
 
-`-v $(pwd)/data:/app/data` 很重要，这会把数据库和账号数据持久化到宿主机。否则容器一重启，数据也可能跟着表演消失术。
+`-v $(pwd)/data:/app/data` 和 `-v $(pwd)/logs:/app/logs` 很重要，这会把数据库、账号数据和日志持久化到宿主机。否则容器一重启，数据和日志都可能一起消失。
 
 ## 使用远程 PostgreSQL
 
