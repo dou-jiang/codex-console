@@ -17,6 +17,7 @@ from ...database import crud
 from ...database.session import get_db, get_session_manager
 from ...database.models import RegistrationTask, Proxy
 from ...core.register import RegistrationEngine, RegistrationResult
+from ...time_utils import utc_now_naive
 from ...services import EmailServiceFactory, EmailServiceType
 from ...config.settings import get_settings
 from ..task_manager import task_manager
@@ -244,7 +245,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
             task = crud.update_registration_task(
                 db, task_uuid,
                 status="running",
-                started_at=datetime.utcnow()
+                started_at=utc_now_naive()
             )
 
             if not task:
@@ -440,7 +441,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                                     _ok, _msg = upload_to_cpa(token_data, api_url=_svc.api_url, api_token=_svc.api_token)
                                     if _ok:
                                         saved_account.cpa_uploaded = True
-                                        saved_account.cpa_uploaded_at = datetime.utcnow()
+                                        saved_account.cpa_uploaded_at = utc_now_naive()
                                         db.commit()
                                         log_callback(f"[CPA] 投递成功，服务站已签收: {_svc.name}")
                                     else:
@@ -504,7 +505,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 crud.update_registration_task(
                     db, task_uuid,
                     status="completed",
-                    completed_at=datetime.utcnow(),
+                    completed_at=utc_now_naive(),
                     result=result.to_dict()
                 )
 
@@ -517,7 +518,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 crud.update_registration_task(
                     db, task_uuid,
                     status="failed",
-                    completed_at=datetime.utcnow(),
+                    completed_at=utc_now_naive(),
                     error_message=result.error_message
                 )
 
@@ -534,7 +535,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     crud.update_registration_task(
                         db, task_uuid,
                         status="failed",
-                        completed_at=datetime.utcnow(),
+                        completed_at=utc_now_naive(),
                         error_message=str(e)
                     )
 
@@ -1054,7 +1055,7 @@ async def get_registration_stats():
         ).group_by(RegistrationTask.status).all()
 
         # 今日统计
-        today = datetime.utcnow().date()
+        today = utc_now_naive().date()
         today_status_stats = db.query(
             RegistrationTask.status,
             func.count(RegistrationTask.id)

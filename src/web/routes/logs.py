@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Query, HTTPException
@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 
 from ...core.db_logs import cleanup_database_logs
+from ...time_utils import utc_now_naive
 from ...core.timezone_utils import to_shanghai_iso
 from ...database.models import AppLog
 from ...database.session import get_db
@@ -60,7 +61,7 @@ def list_logs(
             )
 
         if since_minutes:
-            since_at = datetime.utcnow() - timedelta(minutes=since_minutes)
+            since_at = utc_now_naive() - timedelta(minutes=since_minutes)
             query = query.filter(AppLog.created_at >= since_at)
 
         total = query.count()

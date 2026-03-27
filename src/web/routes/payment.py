@@ -21,6 +21,7 @@ from ...database.session import get_db, get_session_manager
 from ...database.models import Account, BindCardTask, EmailService as EmailServiceModel
 from ...config.settings import get_settings
 from ...config.constants import OPENAI_PAGE_TYPES
+from ...time_utils import utc_now_naive
 from ...services import EmailServiceFactory, EmailServiceType
 from ...core.register import RegistrationEngine
 from .accounts import resolve_account_ids
@@ -936,7 +937,7 @@ def _bootstrap_session_token_by_relogin(db, account: Account, proxy: Optional[st
                 account.cookies = fresh_cookies
                 if forced_access:
                     account.access_token = forced_access
-                account.last_refresh = datetime.utcnow()
+                account.last_refresh = utc_now_naive()
                 db.commit()
             return ""
 
@@ -945,7 +946,7 @@ def _bootstrap_session_token_by_relogin(db, account: Account, proxy: Optional[st
         if fresh_cookies:
             account.cookies = fresh_cookies
         account.session_token = session_token
-        account.last_refresh = datetime.utcnow()
+        account.last_refresh = utc_now_naive()
         db.commit()
         db.refresh(account)
         logger.info("会话补全登录成功: account_id=%s email=%s", account.id, account.email)
@@ -1201,7 +1202,7 @@ def _bootstrap_session_token_for_local_auto(db, account: Account, proxy: Optiona
                     account.refresh_token = refresh_result.refresh_token
                 if refresh_result.expires_at:
                     account.expires_at = refresh_result.expires_at
-                account.last_refresh = datetime.utcnow()
+                account.last_refresh = utc_now_naive()
                 db.commit()
                 db.refresh(account)
                 for proxy_item in proxy_candidates:
@@ -1275,7 +1276,7 @@ def _mask_card_number(number: Optional[str]) -> str:
 
 
 def _mark_task_paid_pending_sync(task: BindCardTask, reason: str) -> None:
-    now = datetime.utcnow()
+    now = utc_now_naive()
     task.status = "paid_pending_sync"
     task.completed_at = None
     task.last_checked_at = now
@@ -1782,7 +1783,7 @@ def _refresh_account_token_for_subscription_check(account: Account, proxy: Optio
         account.refresh_token = refresh_result.refresh_token
     if refresh_result.expires_at:
         account.expires_at = refresh_result.expires_at
-    account.last_refresh = datetime.utcnow()
+    account.last_refresh = utc_now_naive()
     return True, None
 
 
@@ -2158,7 +2159,7 @@ def get_account_session_diagnostic(
                 "probe": probe_result,
                 "notes": notes,
                 "recommendation": recommendation,
-                "checked_at": datetime.utcnow().isoformat(),
+                "checked_at": utc_now_naive().isoformat(),
             },
         }
 
@@ -2218,7 +2219,7 @@ def save_account_session_token(
         account.session_token = token
         if request.merge_cookie:
             account.cookies = _upsert_cookie(account.cookies, "__Secure-next-auth.session-token", token)
-        account.last_refresh = datetime.utcnow()
+        account.last_refresh = utc_now_naive()
         db.commit()
         db.refresh(account)
 
@@ -2508,7 +2509,7 @@ def batch_check_subscription(request: BatchCheckSubscriptionRequest):
 
                 if status in ("plus", "team"):
                     account.subscription_type = status
-                    account.subscription_at = datetime.utcnow()
+                    account.subscription_at = utc_now_naive()
                 elif status == "free" and confidence == "high":
                     account.subscription_type = None
                     account.subscription_at = None
@@ -2548,7 +2549,7 @@ def mark_subscription(account_id: int, request: MarkSubscriptionRequest):
             raise HTTPException(status_code=404, detail="账号不存在")
 
         account.subscription_type = None if request.subscription_type == "free" else request.subscription_type
-        account.subscription_at = datetime.utcnow() if request.subscription_type != "free" else None
+        account.subscription_at = utc_now_naive() if request.subscription_type != "free" else None
         db.commit()
 
     return {"success": True, "subscription_type": request.subscription_type}

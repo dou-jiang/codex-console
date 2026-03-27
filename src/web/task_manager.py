@@ -11,6 +11,8 @@ from typing import Dict, Optional, List, Callable, Any
 from collections import defaultdict
 from datetime import datetime
 
+from ..time_utils import utc_now_naive
+
 logger = logging.getLogger(__name__)
 
 # 全局线程池（支持最多 50 个并发注册任务）
@@ -115,7 +117,7 @@ class TaskManager:
                     "type": "log",
                     "task_uuid": task_uuid,
                     "message": log_message,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": utc_now_naive().isoformat()
                 })
                 # 发送成功后更新 sent_index
                 with _ws_lock:
@@ -134,7 +136,7 @@ class TaskManager:
             "type": "status",
             "task_uuid": task_uuid,
             "status": status,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now_naive().isoformat(),
             **kwargs
         }
 
@@ -264,7 +266,7 @@ class TaskManager:
                     "type": "log",
                     "batch_id": batch_id,
                     "message": log_message,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": utc_now_naive().isoformat()
                 })
                 # 发送成功后更新 sent_index
                 with _ws_lock:
@@ -304,7 +306,7 @@ class TaskManager:
                 await ws.send_json({
                     "type": "status",
                     "batch_id": batch_id,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": utc_now_naive().isoformat(),
                     **status
                 })
             except Exception as e:

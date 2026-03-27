@@ -1,7 +1,7 @@
 import asyncio
-from datetime import datetime
 
 from src.web.routes.registration import get_task, get_task_logs, list_tasks
+from src.time_utils import utc_now_naive
 
 
 class _FakeTask:
@@ -25,7 +25,7 @@ class _FakeTask:
             },
         }
         self.error_message = ""
-        self.created_at = datetime.utcnow()
+        self.created_at = utc_now_naive()
         self.started_at = None
         self.completed_at = None
         self.email_service = None

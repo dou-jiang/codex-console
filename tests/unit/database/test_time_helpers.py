@@ -1,4 +1,4 @@
-from src.database.models import utc_now_naive
+from src.time_utils import utc_now_naive
 
 
 def test_utc_now_naive_returns_naive_datetime():

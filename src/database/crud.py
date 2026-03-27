@@ -3,11 +3,12 @@
 """
 
 from typing import List, Optional, Dict, Any, Union
-from datetime import datetime, timedelta
+from datetime import timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, asc, func
 
 from .models import Account, EmailService, RegistrationTask, Setting, Proxy, CpaService, Sub2ApiService
+from ..time_utils import utc_now_naive
 
 
 # ============================================================================
@@ -53,7 +54,7 @@ def create_account(
         extra_data=extra_data or {},
         status=status or 'active',
         source=source or 'register',
-        registered_at=datetime.utcnow()
+        registered_at=utc_now_naive()
     )
     db.add(db_account)
     db.commit()
@@ -360,7 +361,7 @@ def set_setting(
         db_setting.value = value
         db_setting.description = description or db_setting.description
         db_setting.category = category
-        db_setting.updated_at = datetime.utcnow()
+        db_setting.updated_at = utc_now_naive()
     else:
         db_setting = Setting(
             key=key,
@@ -480,7 +481,7 @@ def update_proxy_last_used(db: Session, proxy_id: int) -> bool:
     if not db_proxy:
         return False
 
-    db_proxy.last_used = datetime.utcnow()
+    db_proxy.last_used = utc_now_naive()
     db.commit()
     return True
 

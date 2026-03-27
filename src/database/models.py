@@ -2,19 +2,16 @@
 SQLAlchemy ORM 模型定义
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Optional, Dict, Any
 import json
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import declarative_base, relationship
 
+from ..time_utils import utc_now_naive
+
 Base = declarative_base()
-
-
-def utc_now_naive() -> datetime:
-    """Return a naive datetime representing the current UTC time."""
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class JSONEncodedDict(TypeDecorator):

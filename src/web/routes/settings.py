@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from ...config.settings import get_settings, update_settings
+from ...time_utils import utc_now_naive
 from ...database import crud
 from ...database.session import get_db
 
@@ -423,7 +424,7 @@ async def cleanup_database(
     """清理过期数据"""
     from datetime import datetime, timedelta
 
-    cutoff_date = datetime.utcnow() - timedelta(days=days)
+    cutoff_date = utc_now_naive() - timedelta(days=days)
 
     with get_db() as db:
         from ...database.models import RegistrationTask

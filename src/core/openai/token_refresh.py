@@ -15,6 +15,7 @@ from curl_cffi import requests as cffi_requests
 
 from ...config.settings import get_settings
 from ...config.constants import AccountStatus
+from ...time_utils import utc_now_naive
 from ...database.session import get_db
 from ...database import crud
 from ...database.models import Account
@@ -225,7 +226,7 @@ class TokenRefreshManager:
                 return result
 
             # 计算过期时间
-            expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+            expires_at = utc_now_naive() + timedelta(seconds=expires_in)
 
             result.success = True
             result.access_token = access_token
@@ -345,7 +346,7 @@ def refresh_account_token(account_id: int, proxy_url: Optional[str] = None) -> T
             # 更新数据库
             update_data = {
                 "access_token": result.access_token,
-                "last_refresh": datetime.utcnow()
+                "last_refresh": utc_now_naive()
             }
 
             if result.refresh_token:
