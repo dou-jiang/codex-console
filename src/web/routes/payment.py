@@ -2366,270 +2366,29 @@ def open_bind_card_task(task_id: int):
 
 @router.post("/bind-card/tasks/{task_id}/auto-bind-third-party")
 def auto_bind_bind_card_task_third_party(task_id: int, request: ThirdPartyAutoBindRequest):
-    """
-    通过第三方 API 自动提交绑卡（A+B 方案）。
-    A: 三态判定（success/pending/failed）
-    B: 尝试轮询第三方状态接口，能确认 paid 就标记 paid_pending_sync（等待订阅同步）
-    """
-    third_party_response_safe: dict = {}
-    api_url_for_log = ""
-    third_party_assessment: dict = {}
-    third_party_status_poll: dict = {}
-    with get_db() as db:
-        task = db.query(BindCardTask).options(joinedload(BindCardTask.account)).filter(BindCardTask.id == task_id).first()
-        if not task:
-            raise HTTPException(status_code=404, detail="绑卡任务不存在")
-        account = task.account
-        if not account:
-            raise HTTPException(status_code=404, detail="任务关联账号不存在")
-
-        checkout_session_id = str(task.checkout_session_id or "").strip() or _extract_checkout_session_id_from_url(task.checkout_url)
-        publishable_key = str(task.publishable_key or "").strip()
-        if not checkout_session_id:
-            raise HTTPException(status_code=400, detail="任务缺少 checkout_session_id，请重新创建任务")
-        if not publishable_key:
-            raise HTTPException(status_code=400, detail="任务缺少 publishable_key，请重新创建任务")
-
-        api_url = _resolve_third_party_bind_api_url(request.api_url)
-        api_key = _resolve_third_party_bind_api_key(request.api_key)
-        if not api_url:
-            raise HTTPException(status_code=400, detail=f"缺少第三方 API 地址（request.api_url 或环境变量 {THIRD_PARTY_BIND_API_URL_ENV}）")
-        api_url_for_log = api_url
-
-        proxy = _resolve_runtime_proxy(request.proxy, account)
-        payload = {
-            "checkout_session_id": checkout_session_id,
-            "publishable_key": publishable_key,
-            "client_secret": str(getattr(task, "client_secret", "") or "").strip() or None,
-            "checkout_url": str(task.checkout_url or "").strip() or None,
-            "plan_type": str(task.plan_type or "").strip().lower(),
-            "country": "US",
-            "currency": "USD",
-            "card": {
-                "number": str(request.card.number or "").strip(),
-                "exp_month": str(request.card.exp_month or "").strip().zfill(2),
-                "exp_year": str(request.card.exp_year or "").strip()[-2:],
-                "cvc": str(request.card.cvc or "").strip(),
-            },
-            "profile": {
-                "name": str(request.profile.name or "").strip(),
-                "email": str(request.profile.email or account.email or "").strip(),
-                "country": str(request.profile.country or "US").strip().upper(),
-                "line1": str(request.profile.line1 or "").strip(),
-                "city": str(request.profile.city or "").strip(),
-                "state": str(request.profile.state or "").strip(),
-                "postal": str(request.profile.postal or "").strip(),
-            },
-        }
-
-        if not payload["card"]["number"] or not payload["card"]["cvc"]:
-            raise HTTPException(status_code=400, detail="卡号/CVC 不能为空")
-
-        logger.info(
-            "第三方自动绑卡提交开始: task_id=%s account_id=%s mode=third_party api_url=%s has_api_key=%s cs_id=%s card=%s",
-            task.id,
-            account.id,
-            api_url,
-            "yes" if api_key else "no",
-            checkout_session_id[:24] + "...",
-            _mask_card_number(payload["card"]["number"]),
+    service = _create_phase2_payment_service()
+    try:
+        return service.auto_bind_third_party(
+            task_id,
+            request,
+            serialize_task_fn=_serialize_bind_card_task,
+            resolve_proxy_fn=_resolve_runtime_proxy,
+            resolve_api_url_fn=_resolve_third_party_bind_api_url,
+            resolve_api_key_fn=_resolve_third_party_bind_api_key,
+            invoke_api_fn=_invoke_third_party_bind_api,
+            sanitize_response_fn=_sanitize_third_party_response,
+            assess_submission_fn=_assess_third_party_submission_result,
+            challenge_pending_fn=_is_third_party_challenge_pending,
+            poll_status_fn=_poll_third_party_bind_status,
+            mark_paid_pending_fn=_mark_task_paid_pending_sync,
+            extract_checkout_session_id_fn=_extract_checkout_session_id_from_url,
         )
-
-        task.bind_mode = "third_party"
-        task.status = "verifying"
-        task.last_error = None
-        task.last_checked_at = datetime.utcnow()
-        db.commit()
-
-        try:
-            third_party_response, used_endpoint = _invoke_third_party_bind_api(
-                api_url=api_url,
-                api_key=api_key,
-                payload=payload,
-                proxy=proxy,
-            )
-            third_party_response_safe = _sanitize_third_party_response(third_party_response)
-            third_party_assessment = _assess_third_party_submission_result(third_party_response)
-            assess_state = str(third_party_assessment.get("state") or "pending").lower()
-            assess_reason = str(third_party_assessment.get("reason") or "").strip()
-            assess_snapshot = third_party_assessment.get("snapshot") if isinstance(third_party_assessment, dict) else {}
-            payment_status = str((assess_snapshot or {}).get("payment_status") or "").lower()
-            checkout_status = str((assess_snapshot or {}).get("checkout_status") or "").lower()
-            setup_intent_status = str((assess_snapshot or {}).get("setup_intent_status") or "").lower()
-            logger.info(
-                "第三方自动绑卡提交评估: task_id=%s account_id=%s endpoint=%s state=%s payment_status=%s checkout_status=%s setup_intent_status=%s reason=%s",
-                task.id,
-                account.id,
-                used_endpoint,
-                assess_state,
-                payment_status or "-",
-                checkout_status or "-",
-                setup_intent_status or "-",
-                assess_reason or "-",
-            )
-
-            if assess_state == "failed":
-                task.status = "failed"
-                task.last_error = f"第三方返回失败: {assess_reason or 'unknown'}"
-                task.last_checked_at = datetime.utcnow()
-                db.commit()
-                logger.warning(
-                    "第三方自动绑卡返回业务失败: task_id=%s account_id=%s endpoint=%s reason=%s response=%s",
-                    task.id,
-                    account.id,
-                    used_endpoint,
-                    assess_reason,
-                    third_party_response_safe,
-                )
-                raise HTTPException(status_code=400, detail=f"第三方返回失败: {assess_reason or 'unknown'}")
-
-            paid_hint_status = payment_status or "paid"
-            paid_hint_reason = assess_reason or "third_party_paid_signal"
-
-            # B 方案：若提交后仍 pending，尝试轮询第三方状态接口确认是否已 paid。
-            if assess_state == "pending":
-                # 若第三方明确返回 challenge/requires_action，直接切换待用户完成，避免无意义轮询超时。
-                if _is_third_party_challenge_pending(third_party_assessment):
-                    task.status = "waiting_user_action"
-                    task.last_checked_at = datetime.utcnow()
-                    hint_reason = assess_reason or "requires_action"
-                    hint_payment_status = payment_status or "unknown"
-                    task.last_error = (
-                        f"第三方已受理并进入挑战流程（payment_status={hint_payment_status}, reason={hint_reason}）。"
-                        "请打开 checkout 页面完成 challenge 后点击“我已完成支付”或“同步订阅”。"
-                    )
-                    db.commit()
-                    db.refresh(task)
-                    logger.info(
-                        "第三方自动绑卡检测到挑战态，转人工继续: task_id=%s account_id=%s payment_status=%s reason=%s",
-                        task.id,
-                        account.id,
-                        hint_payment_status,
-                        hint_reason,
-                    )
-                    return {
-                        "success": True,
-                        "verified": False,
-                        "pending": True,
-                        "need_user_action": True,
-                        "subscription_type": str(account.subscription_type or "free"),
-                        "task": _serialize_bind_card_task(task),
-                        "account_id": account.id,
-                        "account_email": account.email,
-                        "third_party": {
-                            "submitted": True,
-                            "api_url": used_endpoint,
-                            "assessment": third_party_assessment,
-                            "poll": {},
-                            "response": third_party_response_safe,
-                        },
-                    }
-
-                third_party_status_poll = _poll_third_party_bind_status(
-                    api_url=used_endpoint,
-                    api_key=api_key,
-                    checkout_session_id=checkout_session_id,
-                    proxy=proxy,
-                    timeout_seconds=request.third_party_poll_timeout_seconds,
-                    interval_seconds=request.third_party_poll_interval_seconds,
-                    status_hints=assess_snapshot or {},
-                )
-                poll_state = str((third_party_status_poll or {}).get("state") or "pending").lower()
-                poll_reason = str((third_party_status_poll or {}).get("reason") or "").strip()
-                poll_snapshot = (third_party_status_poll or {}).get("snapshot") or {}
-                poll_payment_status = str((poll_snapshot or {}).get("payment_status") or "").lower()
-                logger.info(
-                    "第三方自动绑卡状态轮询: task_id=%s account_id=%s endpoint=%s state=%s payment_status=%s reason=%s",
-                    task.id,
-                    account.id,
-                    str((third_party_status_poll or {}).get("endpoint") or used_endpoint),
-                    poll_state,
-                    poll_payment_status or "-",
-                    poll_reason or "-",
-                )
-
-                if poll_state == "failed":
-                    task.status = "failed"
-                    task.last_error = f"第三方状态失败: {poll_reason or 'unknown'}"
-                    task.last_checked_at = datetime.utcnow()
-                    db.commit()
-                    raise HTTPException(status_code=400, detail=f"第三方状态失败: {poll_reason or 'unknown'}")
-
-                if poll_state != "success":
-                    task.status = "waiting_user_action"
-                    task.last_checked_at = datetime.utcnow()
-                    hint_reason = poll_reason or assess_reason or "pending_confirmation"
-                    hint_payment_status = poll_payment_status or payment_status or "unknown"
-                    task.last_error = (
-                        f"第三方已受理，等待支付最终状态（payment_status={hint_payment_status}, reason={hint_reason}）。"
-                        "如页面要求 challenge，请完成后点击“我已完成支付”或“同步订阅”。"
-                    )
-                    db.commit()
-                    db.refresh(task)
-                    return {
-                        "success": True,
-                        "verified": False,
-                        "pending": True,
-                        "need_user_action": True,
-                        "subscription_type": str(account.subscription_type or "free"),
-                        "task": _serialize_bind_card_task(task),
-                        "account_id": account.id,
-                        "account_email": account.email,
-                        "third_party": {
-                            "submitted": True,
-                            "api_url": used_endpoint,
-                            "assessment": third_party_assessment,
-                            "poll": third_party_status_poll,
-                            "response": third_party_response_safe,
-                        },
-                    }
-
-                # poll 成功视为支付确认，不阻塞在订阅轮询
-                paid_hint_status = poll_payment_status or payment_status or "paid"
-                paid_hint_reason = poll_reason or assess_reason or "third_party_paid_signal"
-
-            logger.info(
-                "第三方自动绑卡提交成功: task_id=%s account_id=%s endpoint=%s response_keys=%s",
-                task.id,
-                account.id,
-                used_endpoint,
-                ",".join(sorted(third_party_response_safe.keys())),
-            )
-            api_url_for_log = used_endpoint
-            _mark_task_paid_pending_sync(
-                task,
-                (
-                    f"支付已确认（payment_status={paid_hint_status}, reason={paid_hint_reason}）。"
-                    "等待订阅状态同步，可点击“同步订阅”刷新。"
-                ),
-            )
-            db.commit()
-            db.refresh(task)
-            return {
-                "success": True,
-                "verified": False,
-                "paid_confirmed": True,
-                "subscription_type": str(account.subscription_type or "free"),
-                "task": _serialize_bind_card_task(task),
-                "account_id": account.id,
-                "account_email": account.email,
-                "third_party": {
-                    "submitted": True,
-                    "api_url": api_url_for_log,
-                    "assessment": third_party_assessment,
-                    "poll": third_party_status_poll,
-                    "response": third_party_response_safe,
-                },
-            }
-        except HTTPException:
-            raise
-        except Exception as exc:
-            task.status = "failed"
-            task.last_error = f"第三方绑卡提交失败: {exc}"
-            task.last_checked_at = datetime.utcnow()
-            db.commit()
-            logger.warning("第三方自动绑卡提交失败: task_id=%s error=%s", task.id, exc)
-            raise HTTPException(status_code=500, detail=str(exc))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/bind-card/tasks/{task_id}/auto-bind-local")
@@ -2639,227 +2398,28 @@ def auto_bind_bind_card_task_local(task_id: int, request: LocalAutoBindRequest):
     - 成功信号后标记 paid_pending_sync（等待订阅同步）
     - challenge/超时等待用户完成时，回到 waiting_user_action
     """
-    browser_result: dict = {}
-    with get_db() as db:
-        task = db.query(BindCardTask).options(joinedload(BindCardTask.account)).filter(BindCardTask.id == task_id).first()
-        if not task:
-            raise HTTPException(status_code=404, detail="绑卡任务不存在")
-        account = task.account
-        if not account:
-            raise HTTPException(status_code=404, detail="任务关联账号不存在")
-
-        checkout_session_id = str(task.checkout_session_id or "").strip() or _extract_checkout_session_id_from_url(task.checkout_url)
-        checkout_url = (
-            _build_official_checkout_url(checkout_session_id)
-            or str(task.checkout_url or "").strip()
+    service = _create_phase2_payment_service()
+    try:
+        return service.auto_bind_local(
+            task_id,
+            request,
+            serialize_task_fn=_serialize_bind_card_task,
+            resolve_proxy_fn=_resolve_runtime_proxy,
+            extract_checkout_session_id_fn=_extract_checkout_session_id_from_url,
+            build_checkout_url_fn=_build_official_checkout_url,
+            resolve_device_id_fn=_resolve_account_device_id,
+            extract_session_token_fn=_extract_session_token_from_cookie_text,
+            bootstrap_session_token_fn=_bootstrap_session_token_for_local_auto,
+            auto_bind_checkout_fn=auto_bind_checkout_with_playwright,
+            mark_paid_pending_fn=_mark_task_paid_pending_sync,
+            open_url_fn=open_url_incognito,
         )
-        if not checkout_url:
-            raise HTTPException(status_code=400, detail="任务缺少 checkout 链接，请重新创建任务")
-
-        card_number = str(request.card.number or "").strip()
-        card_cvc = str(request.card.cvc or "").strip()
-        if not card_number or not card_cvc:
-            raise HTTPException(status_code=400, detail="卡号/CVC 不能为空")
-
-        task.bind_mode = "local_auto"
-        task.status = "verifying"
-        task.last_error = None
-        task.last_checked_at = datetime.utcnow()
-        db.commit()
-
-        logger.info(
-            "本地自动绑卡执行开始: task_id=%s account_id=%s email=%s checkout=%s headless=%s card=%s",
-            task.id,
-            account.id,
-            account.email,
-            checkout_url[:80],
-            bool(request.headless),
-            _mask_card_number(card_number),
-        )
-        runtime_proxy = _resolve_runtime_proxy(request.proxy, account)
-        resolved_device_id = _resolve_account_device_id(account)
-        if not resolved_device_id:
-            logger.warning("本地自动绑卡缺少 oai-did: task_id=%s account_id=%s email=%s", task.id, account.id, account.email)
-        resolved_session_token = str(account.session_token or "").strip() or _extract_session_token_from_cookie_text(
-            account.cookies
-        )
-        if not resolved_session_token and not runtime_proxy:
-            task.status = "failed"
-            task.last_checked_at = datetime.utcnow()
-            task.last_error = (
-                "当前账号缺少 session_token，且未检测到可用代理。"
-                "请在设置中配置代理（或为本次任务传入 proxy）后重试全自动。"
-            )
-            db.commit()
-            logger.warning(
-                "本地自动绑卡会话补全阻断: task_id=%s account_id=%s email=%s reason=no_proxy",
-                task.id,
-                account.id,
-                account.email,
-            )
-            raise HTTPException(status_code=400, detail=task.last_error)
-        if not resolved_session_token:
-            resolved_session_token = _bootstrap_session_token_for_local_auto(
-                db=db,
-                account=account,
-                proxy=runtime_proxy,
-            )
-        if not resolved_session_token:
-            task.status = "failed"
-            task.last_checked_at = datetime.utcnow()
-            task.last_error = (
-                "会话补全未拿到 session_token。"
-                "请先在支付页执行“会话诊断/自动补会话”，"
-                "或手动粘贴 session_token 后再重试全自动绑卡。"
-            )
-            db.commit()
-            logger.warning(
-                "本地自动绑卡缺少 session_token，已阻断执行: task_id=%s account_id=%s email=%s",
-                task.id,
-                account.id,
-                account.email,
-            )
-            raise HTTPException(status_code=400, detail=task.last_error)
-
-        try:
-            browser_result = auto_bind_checkout_with_playwright(
-                checkout_url=checkout_url,
-                cookies_str=str(account.cookies or ""),
-                session_token=resolved_session_token,
-                access_token=str(account.access_token or ""),
-                device_id=resolved_device_id,
-                card_number=card_number,
-                exp_month=str(request.card.exp_month or ""),
-                exp_year=str(request.card.exp_year or ""),
-                cvc=card_cvc,
-                billing_name=str(request.profile.name or "").strip(),
-                billing_country=str(request.profile.country or "US").strip().upper(),
-                billing_line1=str(request.profile.line1 or "").strip(),
-                billing_city=str(request.profile.city or "").strip(),
-                billing_state=str(request.profile.state or "").strip(),
-                billing_postal=str(request.profile.postal or "").strip(),
-                proxy=runtime_proxy,
-                timeout_seconds=request.browser_timeout_seconds,
-                post_submit_wait_seconds=request.post_submit_wait_seconds,
-                headless=bool(request.headless),
-            )
-        except Exception as exc:
-            task.status = "failed"
-            task.last_error = f"本地自动绑卡执行异常: {exc}"
-            task.last_checked_at = datetime.utcnow()
-            db.commit()
-            logger.warning("本地自动绑卡执行异常: task_id=%s account_id=%s error=%s", task.id, account.id, exc)
-            raise HTTPException(status_code=500, detail=f"本地自动绑卡执行失败: {exc}")
-
-        success = bool(browser_result.get("success"))
-        need_user_action = bool(browser_result.get("need_user_action"))
-        pending = bool(browser_result.get("pending"))
-        stage = str(browser_result.get("stage") or "").strip()
-        message = str(browser_result.get("error") or browser_result.get("message") or "").strip()
-        current_url = str(browser_result.get("current_url") or "").strip()
-
-        if not success:
-            if "playwright not installed" in message.lower():
-                task.status = "failed"
-                task.last_checked_at = datetime.utcnow()
-                task.last_error = (
-                    "本地自动绑卡环境缺少 Playwright/Chromium。"
-                    "请先执行: pip install playwright && playwright install chromium"
-                )
-                db.commit()
-                logger.warning(
-                    "本地自动绑卡环境缺失: task_id=%s account_id=%s error=%s",
-                    task.id,
-                    account.id,
-                    message or "-",
-                )
-                raise HTTPException(status_code=400, detail=task.last_error)
-
-            if need_user_action or pending:
-                if stage in ("cdp_session_missing", "navigate_checkout"):
-                    hint = (
-                        "自动会话未建立（checkout 重定向到首页）。"
-                        "请先在“支付页-半自动”打开一次官方 checkout 完成登录态预热，"
-                        "随后再次执行“全自动”。"
-                    )
-                else:
-                    hint = (
-                        f"本地自动绑卡已执行到 {stage or 'unknown'}，当前需要人工继续完成（{message or 'challenge_or_pending'}）。"
-                        "请在支付页完成后点击“我已完成支付”或“同步订阅”。"
-                    )
-                manual_opened = False
-                if stage in ("cdp_challenge", "challenge"):
-                    try:
-                        manual_opened = open_url_incognito(checkout_url, str(account.cookies or ""))
-                    except Exception:
-                        manual_opened = False
-                    if manual_opened:
-                        hint += " 已自动为你打开手动验证窗口。"
-                task.status = "waiting_user_action"
-                task.last_checked_at = datetime.utcnow()
-                task.last_error = hint
-                db.commit()
-                db.refresh(task)
-                logger.info(
-                    "本地自动绑卡需人工继续: task_id=%s account_id=%s stage=%s msg=%s url=%s",
-                    task.id,
-                    account.id,
-                    stage or "-",
-                    message or "-",
-                    current_url[:100] if current_url else "-",
-                )
-                return {
-                    "success": True,
-                    "verified": False,
-                    "pending": True,
-                    "need_user_action": True,
-                    "subscription_type": str(account.subscription_type or "free"),
-                    "task": _serialize_bind_card_task(task),
-                    "account_id": account.id,
-                    "account_email": account.email,
-                    "manual_opened": manual_opened,
-                    "local_auto": browser_result,
-                }
-
-            task.status = "failed"
-            task.last_checked_at = datetime.utcnow()
-            task.last_error = f"本地自动绑卡失败: {message or 'unknown_error'}"
-            db.commit()
-            logger.warning(
-                "本地自动绑卡失败: task_id=%s account_id=%s stage=%s msg=%s",
-                task.id,
-                account.id,
-                stage or "-",
-                message or "-",
-            )
-            raise HTTPException(status_code=400, detail=task.last_error)
-
-        logger.info(
-            "本地自动绑卡浏览器阶段成功: task_id=%s account_id=%s stage=%s url=%s",
-            task.id,
-            account.id,
-            stage or "-",
-            current_url[:100] if current_url else "-",
-        )
-        _mark_task_paid_pending_sync(
-            task,
-            (
-                f"本地自动绑卡已完成支付提交（stage={stage or 'complete'}）。"
-                "等待订阅状态同步，可点击“同步订阅”刷新。"
-            ),
-        )
-        db.commit()
-        db.refresh(task)
-        return {
-            "success": True,
-            "verified": False,
-            "paid_confirmed": True,
-            "subscription_type": str(account.subscription_type or "free"),
-            "task": _serialize_bind_card_task(task),
-            "account_id": account.id,
-            "account_email": account.email,
-            "local_auto": browser_result,
-        }
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/bind-card/tasks/{task_id}/sync-subscription")

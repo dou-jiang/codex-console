@@ -1,7 +1,13 @@
 from src.web.routes.payment import (
     CreateBindCardTaskRequest,
+    LocalAutoBindRequest,
     MarkUserActionRequest,
     SyncBindCardTaskRequest,
+    ThirdPartyAutoBindRequest,
+    ThirdPartyCardRequest,
+    ThirdPartyProfileRequest,
+    auto_bind_bind_card_task_local,
+    auto_bind_bind_card_task_third_party,
     create_bind_card_task,
     delete_bind_card_task,
     list_bind_card_tasks,
@@ -38,6 +44,14 @@ class _FakeService:
     def mark_user_action(self, task_id, request, **kwargs):
         self.calls.append(("mark", task_id, request.timeout_seconds, request.interval_seconds))
         return {"success": True, "task": {"id": task_id, "status": "verifying"}}
+
+    def auto_bind_third_party(self, task_id, request, **kwargs):
+        self.calls.append(("third_party", task_id))
+        return {"success": True, "task": {"id": task_id, "status": "paid_pending_sync"}}
+
+    def auto_bind_local(self, task_id, request, **kwargs):
+        self.calls.append(("local_auto", task_id))
+        return {"success": True, "task": {"id": task_id, "status": "paid_pending_sync"}}
 
 
 def test_legacy_create_bind_card_task_uses_phase2_service(monkeypatch):
@@ -99,3 +113,35 @@ def test_legacy_mark_user_action_uses_phase2_service(monkeypatch):
 
     assert response["success"] is True
     assert service.calls == [("mark", 7, 60, 10)]
+
+
+def test_legacy_auto_bind_third_party_uses_phase2_service(monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr("src.web.routes.payment._create_phase2_payment_service", lambda: service)
+
+    response = auto_bind_bind_card_task_third_party(
+        3,
+        ThirdPartyAutoBindRequest(
+            card=ThirdPartyCardRequest(number="4242424242424242", exp_month="12", exp_year="30", cvc="123"),
+            profile=ThirdPartyProfileRequest(name="Test", line1="Street", city="City", state="CA", postal="90001"),
+        ),
+    )
+
+    assert response["success"] is True
+    assert service.calls == [("third_party", 3)]
+
+
+def test_legacy_auto_bind_local_uses_phase2_service(monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr("src.web.routes.payment._create_phase2_payment_service", lambda: service)
+
+    response = auto_bind_bind_card_task_local(
+        4,
+        LocalAutoBindRequest(
+            card=ThirdPartyCardRequest(number="4242424242424242", exp_month="12", exp_year="30", cvc="123"),
+            profile=ThirdPartyProfileRequest(name="Test", line1="Street", city="City", state="CA", postal="90001"),
+        ),
+    )
+
+    assert response["success"] is True
+    assert service.calls == [("local_auto", 4)]
