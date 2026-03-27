@@ -32,12 +32,14 @@ class TaskStatus(str, Enum):
 class EmailServiceType(str, Enum):
     """邮箱服务类型"""
     TEMPMAIL = "tempmail"
+    YYDS_MAIL = "yyds_mail"
     OUTLOOK = "outlook"
     MOE_MAIL = "moe_mail"
     TEMP_MAIL = "temp_mail"
     DUCK_MAIL = "duck_mail"
     FREEMAIL = "freemail"
     IMAP_MAIL = "imap_mail"
+    CLOUDMAIL = "cloudmail"
 
 
 # ============================================================================
@@ -45,7 +47,7 @@ class EmailServiceType(str, Enum):
 # ============================================================================
 
 APP_NAME = "OpenAI/Codex CLI 自动注册系统"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_DESCRIPTION = "自动注册 OpenAI/Codex CLI 账号的系统"
 
 # ============================================================================
@@ -102,6 +104,13 @@ CUSTOM_DOMAIN_API_ENDPOINTS = {
 EMAIL_SERVICE_DEFAULTS = {
     "tempmail": {
         "base_url": "https://api.tempmail.lol/v2",
+        "timeout": 30,
+        "max_retries": 3,
+    },
+    "yyds_mail": {
+        "base_url": "https://maliapi.215.im/v1",
+        "api_key": "",
+        "default_domain": "",
         "timeout": 30,
         "max_retries": 3,
     },

@@ -737,6 +737,9 @@ def _normalize_email_service_config_for_session_bootstrap(
     if service_type == EmailServiceType.MOE_MAIL:
         if "domain" in normalized and "default_domain" not in normalized:
             normalized["default_domain"] = normalized.pop("domain")
+    elif service_type == EmailServiceType.YYDS_MAIL:
+        if "domain" in normalized and "default_domain" not in normalized:
+            normalized["default_domain"] = normalized.pop("domain")
     elif service_type in (EmailServiceType.TEMP_MAIL, EmailServiceType.FREEMAIL):
         if "default_domain" in normalized and "domain" not in normalized:
             normalized["domain"] = normalized.pop("default_domain")
@@ -788,6 +791,18 @@ def _resolve_email_service_for_account_session_bootstrap(db, account: Account, p
             "base_url": settings.tempmail_base_url,
             "timeout": settings.tempmail_timeout,
             "max_retries": settings.tempmail_max_retries,
+            "proxy_url": proxy,
+        }
+    elif service_type == EmailServiceType.YYDS_MAIL:
+        api_key = settings.yyds_mail_api_key.get_secret_value() if settings.yyds_mail_api_key else ""
+        if not settings.yyds_mail_enabled or not api_key:
+            raise RuntimeError("YYDS Mail 渠道未启用或未配置 API Key，无法自动获取登录验证码")
+        config = {
+            "base_url": settings.yyds_mail_base_url,
+            "api_key": api_key,
+            "default_domain": settings.yyds_mail_default_domain,
+            "timeout": settings.yyds_mail_timeout,
+            "max_retries": settings.yyds_mail_max_retries,
             "proxy_url": proxy,
         }
     else:

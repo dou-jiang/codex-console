@@ -110,6 +110,31 @@ class TokenRefreshManager:
             session = self._create_session()
             response = _request_once(session)
 
+            if response.status_code >= 400:
+                try:
+                    error_payload = response.json()
+                except Exception:
+                    error_payload = {}
+
+                error_text = str(error_payload.get("error") or "").lower()
+                error_description = str(error_payload.get("error_description") or response.text or "")
+                if response.status_code == 400 and error_text in {"invalid_grant", "unsupported_grant_type", "invalid_request"}:
+                    fallback_data = {
+                        "client_id": client_id,
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                    }
+                    response = session.post(
+                        self.TOKEN_URL,
+                        data=fallback_data,
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "Accept": "application/json",
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        },
+                        timeout=30
+                    )
+
             # 代理通道触发地区/风控时，自动回退直连重试一次
             if (
                 response.status_code in (401, 403)

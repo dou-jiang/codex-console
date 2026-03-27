@@ -186,7 +186,14 @@ def batch_upload_to_sub2api(
         return results
 
     # 2. 发起网络请求（不占用数据库连接）
-    success, message = upload_to_sub2api(accounts_data, api_url, api_key, concurrency, priority)
+    success, message = upload_to_sub2api(
+        accounts_data,
+        api_url,
+        api_key,
+        concurrency,
+        priority,
+        target_type,
+    )
 
     if success:
         for acc in accounts_data:

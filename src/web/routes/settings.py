@@ -106,9 +106,20 @@ async def get_all_settings():
             "has_access_password": bool(settings.webui_access_password and settings.webui_access_password.get_secret_value()),
         },
         "tempmail": {
+            "enabled": settings.tempmail_enabled,
+            "api_url": settings.tempmail_base_url,
             "base_url": settings.tempmail_base_url,
             "timeout": settings.tempmail_timeout,
             "max_retries": settings.tempmail_max_retries,
+        },
+        "yyds_mail": {
+            "enabled": settings.yyds_mail_enabled,
+            "api_url": settings.yyds_mail_base_url,
+            "base_url": settings.yyds_mail_base_url,
+            "default_domain": settings.yyds_mail_default_domain,
+            "timeout": settings.yyds_mail_timeout,
+            "max_retries": settings.yyds_mail_max_retries,
+            "has_api_key": bool(settings.yyds_mail_api_key and settings.yyds_mail_api_key.get_secret_value()),
         },
         "email_code": {
             "timeout": settings.email_code_timeout,
@@ -515,7 +526,11 @@ async def get_recent_logs(
 class TempmailSettings(BaseModel):
     """临时邮箱设置"""
     api_url: Optional[str] = None
-    enabled: bool = True
+    enabled: Optional[bool] = None
+    yyds_api_url: Optional[str] = None
+    yyds_api_key: Optional[str] = None
+    yyds_default_domain: Optional[str] = None
+    yyds_enabled: Optional[bool] = None
 
 
 class EmailCodeSettings(BaseModel):
@@ -530,10 +545,20 @@ async def get_tempmail_settings():
     settings = get_settings()
 
     return {
-        "api_url": settings.tempmail_base_url,
-        "timeout": settings.tempmail_timeout,
-        "max_retries": settings.tempmail_max_retries,
-        "enabled": True  # 临时邮箱默认可用
+        "tempmail": {
+            "api_url": settings.tempmail_base_url,
+            "timeout": settings.tempmail_timeout,
+            "max_retries": settings.tempmail_max_retries,
+            "enabled": settings.tempmail_enabled,
+        },
+        "yyds_mail": {
+            "api_url": settings.yyds_mail_base_url,
+            "default_domain": settings.yyds_mail_default_domain,
+            "timeout": settings.yyds_mail_timeout,
+            "max_retries": settings.yyds_mail_max_retries,
+            "enabled": settings.yyds_mail_enabled,
+            "has_api_key": bool(settings.yyds_mail_api_key and settings.yyds_mail_api_key.get_secret_value()),
+        },
     }
 
 
@@ -544,6 +569,16 @@ async def update_tempmail_settings(request: TempmailSettings):
 
     if request.api_url:
         update_dict["tempmail_base_url"] = request.api_url
+    if request.enabled is not None:
+        update_dict["tempmail_enabled"] = request.enabled
+    if request.yyds_api_url is not None:
+        update_dict["yyds_mail_base_url"] = request.yyds_api_url
+    if request.yyds_api_key is not None:
+        update_dict["yyds_mail_api_key"] = request.yyds_api_key
+    if request.yyds_default_domain is not None:
+        update_dict["yyds_mail_default_domain"] = request.yyds_default_domain
+    if request.yyds_enabled is not None:
+        update_dict["yyds_mail_enabled"] = request.yyds_enabled
 
     update_settings(**update_dict)
 
