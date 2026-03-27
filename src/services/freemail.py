@@ -3,7 +3,6 @@ Freemail 邮箱服务实现
 基于自部署 Cloudflare Worker 临时邮箱服务 (https://github.com/idinging/freemail)
 """
 
-import re
 import time
 import logging
 import random
@@ -11,6 +10,7 @@ import string
 from typing import Optional, Dict, Any, List
 
 from .base import BaseEmailService, EmailServiceError, EmailServiceType
+from .otp_policy import extract_otp_code, is_openai_otp_text, parse_mail_timestamp, select_best_otp_candidate
 from ..core.http_client import HTTPClient, RequestConfig
 from ..config.constants import OTP_CODE_PATTERN
 
@@ -58,6 +58,8 @@ class FreemailService(BaseEmailService):
 
         # 缓存 domain 列表
         self._domains = []
+        # 记录每个邮箱上次成功使用的邮件 ID，避免重复拿旧验证码
+        self._last_used_mail_ids: Dict[str, str] = {}
 
     def _get_headers(self) -> Dict[str, str]:
         """构造 admin 请求头"""
@@ -193,7 +195,7 @@ class FreemailService(BaseEmailService):
             email_id: 未使用，保留接口兼容
             timeout: 超时时间（秒）
             pattern: 验证码正则
-            otp_sent_at: OTP 发送时间戳（暂未使用）
+            otp_sent_at: OTP 发送时间戳，用于过滤旧邮件
 
         Returns:
             验证码字符串，超时返回 None
@@ -202,6 +204,7 @@ class FreemailService(BaseEmailService):
 
         start_time = time.time()
         seen_mail_ids: set = set()
+        last_used_mail_id = self._last_used_mail_ids.get(email)
 
         while time.time() - start_time < timeout:
             try:
@@ -210,49 +213,79 @@ class FreemailService(BaseEmailService):
                     time.sleep(3)
                     continue
 
+                candidates: list[dict[str, Any]] = []
                 for mail in mails:
-                    mail_id = mail.get("id")
+                    mail_id = str(mail.get("id") or "").strip()
                     if not mail_id or mail_id in seen_mail_ids:
                         continue
 
                     seen_mail_ids.add(mail_id)
+                    if last_used_mail_id and mail_id == last_used_mail_id:
+                        continue
 
                     sender = str(mail.get("sender", "")).lower()
                     subject = str(mail.get("subject", ""))
                     preview = str(mail.get("preview", ""))
-                    
+                    mail_ts = parse_mail_timestamp(
+                        mail.get("created_at")
+                        or mail.get("createdAt")
+                        or mail.get("date")
+                        or mail.get("time")
+                    )
                     content = f"{sender}\n{subject}\n{preview}"
-                    
-                    if "openai" not in content.lower():
+
+                    if not is_openai_otp_text(sender, subject, preview):
                         continue
 
                     # 尝试直接使用 Freemail 提取的验证码
                     v_code = mail.get("verification_code")
                     if v_code:
-                        logger.info(f"从 Freemail 邮箱 {email} 找到验证码: {v_code}")
-                        self.update_status(True)
-                        return v_code
+                        candidates.append({
+                            "mail_id": mail_id,
+                            "code": str(v_code),
+                            "mail_ts": mail_ts,
+                            "semantic_hit": True,
+                        })
+                        continue
 
                     # 如果没有直接提供，通过正则匹配 preview
-                    match = re.search(pattern, content)
-                    if match:
-                        code = match.group(1)
-                        logger.info(f"从 Freemail 邮箱 {email} 找到验证码: {code}")
-                        self.update_status(True)
-                        return code
+                    code, semantic_hit = extract_otp_code(content, pattern)
+                    if code:
+                        candidates.append({
+                            "mail_id": mail_id,
+                            "code": code,
+                            "mail_ts": mail_ts,
+                            "semantic_hit": semantic_hit,
+                        })
+                        continue
 
                     # 如果依然未找到，获取邮件详情进行匹配
                     try:
                         detail = self._make_request("GET", f"/api/email/{mail_id}")
                         full_content = str(detail.get("content", "")) + "\n" + str(detail.get("html_content", ""))
-                        match = re.search(pattern, full_content)
-                        if match:
-                            code = match.group(1)
-                            logger.info(f"从 Freemail 邮箱 {email} 找到验证码: {code}")
-                            self.update_status(True)
-                            return code
+                        if not is_openai_otp_text(sender, subject, full_content):
+                            continue
+                        code, semantic_hit = extract_otp_code(full_content, pattern)
+                        if code:
+                            candidates.append({
+                                "mail_id": mail_id,
+                                "code": code,
+                                "mail_ts": mail_ts,
+                                "semantic_hit": semantic_hit,
+                            })
                     except Exception as e:
                         logger.debug(f"获取 Freemail 邮件详情失败: {e}")
+
+                best = select_best_otp_candidate(
+                    candidates,
+                    otp_sent_at=otp_sent_at,
+                    last_used_mail_id=last_used_mail_id,
+                )
+                if best:
+                    self._last_used_mail_ids[email] = str(best["mail_id"])
+                    logger.info(f"从 Freemail 邮箱 {email} 找到验证码: {best['code']}")
+                    self.update_status(True)
+                    return str(best["code"])
 
             except Exception as e:
                 logger.debug(f"检查 Freemail 邮件时出错: {e}")
