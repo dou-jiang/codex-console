@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import List, Tuple, Optional
+from urllib.parse import urlsplit
 
 from curl_cffi import requests as cffi_requests
 
@@ -14,6 +15,26 @@ from ...database.session import get_db
 from ...database.models import Account
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_sub2api_base_url(api_url: str) -> str:
+    """清洗并校验 Sub2API 基础地址，避免隐藏字符导致 curl 解析失败。"""
+    normalized = (api_url or "").strip().strip("'\"")
+    if not normalized:
+        raise ValueError("Sub2API URL 未配置")
+
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Sub2API URL 必须以 http:// 或 https:// 开头")
+    if not parsed.netloc:
+        raise ValueError("Sub2API URL 缺少主机名")
+
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"Sub2API URL 端口无效: {exc}") from exc
+
+    return normalized.rstrip("/")
 
 
 def upload_to_sub2api(
@@ -45,6 +66,11 @@ def upload_to_sub2api(
 
     if not api_key:
         return False, "Sub2API API Key 未配置"
+
+    try:
+        api_url = _normalize_sub2api_base_url(api_url)
+    except ValueError as e:
+        return False, str(e)
 
     exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -99,7 +125,7 @@ def upload_to_sub2api(
         "skip_default_group_bind": True,
     }
 
-    url = api_url.rstrip("/") + "/api/v1/admin/accounts/data"
+    url = api_url + "/api/v1/admin/accounts/data"
     headers = {
         "Content-Type": "application/json",
         "x-api-key": api_key,
@@ -197,7 +223,12 @@ def test_sub2api_connection(api_url: str, api_key: str) -> Tuple[bool, str]:
     if not api_key:
         return False, "API Key 不能为空"
 
-    url = api_url.rstrip("/") + "/api/v1/admin/accounts/data"
+    try:
+        api_url = _normalize_sub2api_base_url(api_url)
+    except ValueError as e:
+        return False, str(e)
+
+    url = api_url + "/api/v1/admin/accounts/data"
     headers = {"x-api-key": api_key}
 
     try:
