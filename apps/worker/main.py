@@ -1,6 +1,7 @@
 """Minimal worker entrypoint for the migrated architecture."""
 
 import argparse
+import inspect
 from pathlib import Path
 import time
 
@@ -13,12 +14,24 @@ from packages.registration_core.models import RegistrationInput
 class WorkerRunner:
     """Very small worker façade for processing one stored registration task."""
 
-    def __init__(self, store):
+    def __init__(self, store, log_flush_threshold: int = 10):
         self.store = store
         self.email_provider_factory = EmailProviderFactory()
+        self.log_flush_threshold = max(1, int(log_flush_threshold))
+        self._log_buffers: dict[str, list[str]] = {}
 
-    def _log_task(self, task_uuid: str, message: str) -> None:
-        self.store.logs.append(task_uuid, message)
+    def _flush_task_logs(self, task_uuid: str) -> None:
+        lines = self._log_buffers.get(task_uuid) or []
+        if not lines:
+            return
+        self.store.logs.append_many(task_uuid, lines)
+        self._log_buffers[task_uuid] = []
+
+    def _log_task(self, task_uuid: str, message: str, *, flush: bool = False) -> None:
+        buffer = self._log_buffers.setdefault(task_uuid, [])
+        buffer.append(str(message))
+        if flush or len(buffer) >= self.log_flush_threshold:
+            self._flush_task_logs(task_uuid)
 
     def process_task(self, task_uuid: str) -> dict:
         task = self.store.tasks.get(task_uuid)
@@ -43,10 +56,16 @@ class WorkerRunner:
             email_service_type,
             email_service_config,
         )
+        engine_kwargs = {
+            "callback_logger": lambda message: self._log_task(task_uuid, str(message)),
+            "task_uuid": task_uuid,
+        }
+        if "persist_task_logs" in inspect.signature(RegistrationEngine).parameters:
+            engine_kwargs["persist_task_logs"] = False
+
         engine = RegistrationEngine(
             email_service,
-            callback_logger=lambda message: self._log_task(task_uuid, str(message)),
-            task_uuid=task_uuid,
+            **engine_kwargs,
         )
         try:
             result = engine.run(
@@ -58,7 +77,7 @@ class WorkerRunner:
             )
         except Exception as exc:
             message = str(exc) or exc.__class__.__name__
-            self._log_task(task_uuid, f"task failed: {message}")
+            self._log_task(task_uuid, f"task failed: {message}", flush=True)
             self.store.tasks.update(
                 task_uuid,
                 status="failed",
@@ -76,6 +95,7 @@ class WorkerRunner:
                     },
                 },
             )
+            self._flush_task_logs(task_uuid)
             return {"success": False, "status": "failed", "error": message}
 
         new_status = "completed" if result.success else "failed"
@@ -98,7 +118,8 @@ class WorkerRunner:
                 },
             },
         )
-        self._log_task(task_uuid, f"task {new_status}")
+        self._log_task(task_uuid, f"task {new_status}", flush=True)
+        self._flush_task_logs(task_uuid)
         return {"success": result.success, "status": new_status}
 
     def process_next_pending(self) -> dict:

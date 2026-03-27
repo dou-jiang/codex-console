@@ -63,6 +63,80 @@ def test_worker_marks_task_completed(monkeypatch, tmp_path: Path):
     assert any("task completed" in line for line in log_lines)
 
 
+def test_worker_flushes_buffered_logs_in_batches(monkeypatch, tmp_path: Path):
+    store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'worker-buffered.db'}")
+    task = store.tasks.create(task_uuid="t-1", status="pending")
+    store.tasks.update(
+        task.task_uuid,
+        result={
+            "request": {
+                "email_service_type": "duck_mail",
+                "email_service_config": {"base_url": "https://mail.example.test"},
+            }
+        },
+    )
+
+    class FakeLogs:
+        def __init__(self):
+            self.lines = []
+            self.batch_calls = []
+
+        def append(self, task_uuid: str, message: str) -> bool:
+            self.lines.append(message)
+            return True
+
+        def append_many(self, task_uuid: str, messages: list[str]) -> bool:
+            self.batch_calls.append(list(messages))
+            self.lines.extend(messages)
+            return True
+
+        def list(self, task_uuid: str) -> list[str]:
+            return list(self.lines)
+
+    class FakeResult:
+        success = True
+        error_message = ""
+        identity = AccountIdentity(
+            email="tester@example.com",
+            account_id="acct-1",
+            workspace_id="ws-1",
+        )
+        logs = []
+        source = "register"
+
+    class FakeEngine:
+        def __init__(self, email_service, callback_logger=None, task_uuid=None, persist_task_logs=True):
+            assert persist_task_logs is False
+            self.callback_logger = callback_logger
+
+        def run(self, registration_input):
+            self.callback_logger("step one")
+            self.callback_logger("step two")
+            self.callback_logger("step three")
+            return FakeResult()
+
+    class FakeFactory:
+        def create(self, service_type, config=None, name=None):
+            return object()
+
+    store.logs = FakeLogs()
+    monkeypatch.setattr("apps.worker.main.RegistrationEngine", FakeEngine)
+    monkeypatch.setattr("apps.worker.main.EmailProviderFactory", FakeFactory)
+
+    runner = WorkerRunner(store, log_flush_threshold=2)
+    outcome = runner.process_task("t-1")
+
+    assert outcome["success"] is True
+    assert store.logs.batch_calls
+    assert store.logs.list("t-1") == [
+        "starting task execution",
+        "step one",
+        "step two",
+        "step three",
+        "task completed",
+    ]
+
+
 def test_worker_resolves_outlook_config_from_service_id(monkeypatch, tmp_path: Path):
     store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'worker-outlook.db'}")
     task = store.tasks.create(task_uuid="t-1", status="pending", email_service_id=42)

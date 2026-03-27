@@ -19,3 +19,12 @@ def test_log_store_appends_messages(tmp_path: Path):
     store.logs.append("t-1", "hello")
 
     assert store.logs.list("t-1") == ["hello"]
+
+
+def test_log_store_appends_many_messages_in_order(tmp_path: Path):
+    store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'log-store-batch.db'}")
+    store.tasks.create(task_uuid="t-1", status="pending")
+
+    store.logs.append_many("t-1", ["line one", "line two", "line three"])
+
+    assert store.logs.list("t-1") == ["line one", "line two", "line three"]

@@ -96,7 +96,8 @@ class RegistrationEngine:
         email_service: BaseEmailService,
         proxy_url: Optional[str] = None,
         callback_logger: Optional[Callable[[str], None]] = None,
-        task_uuid: Optional[str] = None
+        task_uuid: Optional[str] = None,
+        persist_task_logs: bool = True,
     ):
         """
         初始化注册引擎
@@ -106,11 +107,13 @@ class RegistrationEngine:
             proxy_url: 代理 URL
             callback_logger: 日志回调函数
             task_uuid: 任务 UUID（用于数据库记录）
+            persist_task_logs: 是否直接写入任务日志存储
         """
         self.email_service = email_service
         self.proxy_url = proxy_url
         self.callback_logger = callback_logger or (lambda msg: logger.info(msg))
         self.task_uuid = task_uuid
+        self.persist_task_logs = persist_task_logs
 
         # 创建 HTTP 客户端
         self.http_client = OpenAIHTTPClient(proxy_url=proxy_url)
@@ -166,7 +169,7 @@ class RegistrationEngine:
             self.callback_logger(log_message)
 
         # 记录到数据库（如果有关联任务）
-        if self.task_uuid:
+        if self.task_uuid and self.persist_task_logs:
             try:
                 with get_db() as db:
                     crud.append_task_log(db, self.task_uuid, log_message)
