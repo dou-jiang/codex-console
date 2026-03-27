@@ -1,8 +1,8 @@
 # codex-console
 
-基于 [cnlimiter/codex-manager](https://github.com/cnlimiter/codex-manager) 持续修复和维护的增强版本。
+这是一个直接基于 [dou-jiang/codex-console](https://github.com/dou-jiang/codex-console) 继续重构的版本。
 
-这个版本的目标很直接: 把近期 OpenAI 注册链路里那些“昨天还能跑，今天突然翻车”的坑补上，让注册、登录、拿 token、打包运行都更稳一点。
+它不只是原版的修修补补，而是在保留旧 Web UI 可继续使用的前提下，把注册流程逐步拆成更清晰的 API、Worker 和独立边界层，方便后续维护、测试和继续演进。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
@@ -20,6 +20,80 @@
 
 如果后续创建新的私有仓库并单独发布，请保留这段来源说明，避免误解代码来源。
 
+## 这个仓库现在是什么
+
+可以把它理解成：
+
+- `dou-jiang/codex-console` 的继续重构版
+- 保留旧 Web UI 的兼容运行版
+- 同时引入新 API 和新 Worker 的过渡版本
+- 为后续彻底替换旧直连执行逻辑提前铺好的底座版本
+
+如果你是第一次接触这个仓库，最重要的一点是：
+
+**原版仍然主要围绕 Web 路由直接驱动流程，这个版本已经开始把核心注册执行链路拆成任务式架构。**
+
+## 和原版有什么区别
+
+| 对比项 | 原版 `dou-jiang/codex-console` | 当前重构版 |
+| --- | --- | --- |
+| 主体结构 | 主要围绕 `src/web` 和原有流程直接执行 | 在保留旧 Web UI 的同时，新增 `apps/api`、`apps/worker` 和 `packages/*` |
+| 执行方式 | Web 路由直接串起任务创建、执行和结果返回 | 新增任务式执行通路，先落库，再由 API / Worker 驱动执行 |
+| 启动入口 | 主要是 `webui.py` | 除 `webui.py` 外，还可单独启动 `scripts/run_api.py` 和 `scripts/run_worker.py` |
+| 边界拆分 | 邮箱、注册、任务存储等能力更多混在旧流程里 | 额外拆出 `registration_core`、`email_providers`、`account_store` 三个清晰边界 |
+| 可观察性 | 主要依赖现有页面和日志查看 | 新增任务列表、任务详情、任务日志、结构化执行结果 |
+| 演进方式 | 改逻辑时更容易牵动旧页面和旧路由 | 可以先在新通路里迭代，再逐步把旧入口收敛成兼容壳 |
+| 测试覆盖 | 以原有流程验证为主 | 补上 API、Worker、新边界和旧桥接层的回归测试 |
+
+如果你想快速判断“这版值不值得继续接手”，看这张表就够了：它已经不再只是原版的修复维护分支，而是一个开始解耦旧结构的重构分支。
+
+## 新架构概览
+
+当前仓库大致可以按下面理解：
+
+```text
+webui.py                      旧 Web UI 入口，继续保留
+apps/api/main.py              新 API 入口
+apps/worker/main.py           新 Worker 入口
+scripts/run_api.py            API 启动脚本
+scripts/run_worker.py         Worker 启动脚本
+packages/registration_core/   注册执行边界
+packages/email_providers/     邮箱服务边界
+packages/account_store/       账号、任务、日志存储边界
+src/web/routes/               旧页面和兼容路由
+docs/migration/               迁移状态和新通路说明
+```
+
+这套结构的核心思路不是“一次性推翻旧代码”，而是：
+
+1. 先把最难维护的执行链路拆出边界。
+2. 保留旧 Web UI，避免一次重写所有页面。
+3. 用新 API / Worker 跑通任务化流程。
+4. 后续再决定哪些旧路由只保留兼容壳，哪些可以彻底替换。
+
+## 这次重构新增了什么
+
+相对原版，这条重构线已经额外具备下面这些新能力：
+
+- 新的任务式 API，可创建任务、列出任务、查询单个任务、读取任务日志
+- Worker 执行通路，可执行指定任务，也可轮询下一条待处理任务
+- Worker 单实例锁和空闲退出控制，便于先做轻量后台运行
+- 更完整的任务结果结构，能保留请求参数、执行状态、错误信息和身份结果
+- 独立的邮箱服务工厂层，便于继续扩展不同接码源
+- 独立的注册执行边界，减少核心流程继续散落在旧 Web 路由里
+- 独立的账号 / 任务 / 日志存储层，降低以后改数据存储时的牵连面
+- 独立脚本入口和模块入口，便于本地调试、脚本化运行和后续部署
+- 覆盖新架构和旧兼容桥接层的回归测试，降低迁移过程中把旧行为改坏的概率
+
+## 文档入口
+
+如果你准备继续接这个仓库，建议按这个顺序看：
+
+- `README.md`：先搞清楚项目来源、架构差异和启动方式
+- `docs/migration/2026-03-26-phase1-status.md`：看已经拆出来的边界和当前冻结区
+- `docs/migration/2026-03-26-phase2-quickstart.md`：直接试新 API / Worker 通路
+- `docs/superpowers/plans/*.md`：看这次重构是怎么分阶段推进的
+
 ## QQ群
 
 - 交流群: [291638849（点击加群）](https://qm.qq.com/q/4TETC3mWco)
@@ -29,7 +103,7 @@
 
 首先感谢上游项目作者 [cnlimiter](https://github.com/cnlimiter) 提供的优秀基础工程。
 
-本仓库是在原项目思路和结构之上进行兼容性修复、流程调整和体验优化，适合作为一个“当前可用的修复维护版”继续使用。
+本仓库是在原项目思路和结构之上继续做兼容性修复、流程重构和边界拆分，适合作为一个“既能继续用、又能继续拆”的过渡版本。
 
 ## 版本更新
 
@@ -100,8 +174,10 @@
 
 ## 核心能力
 
-- Web UI 管理注册任务和账号数据
+- 保留原有 Web UI，可继续管理注册任务和账号数据
+- 新增任务式 API / Worker 通路，适合逐步替换旧直连执行逻辑
 - 支持批量注册、日志实时查看、基础任务管理
+- 支持任务日志查询和结构化执行结果回读
 - 支持多种邮箱服务接码
 - 支持 SQLite 和远程 PostgreSQL
 - 支持打包为 Windows/Linux/macOS 可执行文件
@@ -126,6 +202,7 @@
 - 执行单个任务
 - 执行下一条待处理任务
 - Worker 轮询、单实例锁、空闲退出
+- 兼容旧注册链路的桥接执行
 
 如果你想直接试新通路，优先参考：
 
@@ -293,13 +370,14 @@ dist/codex-console-windows-X64.exe
 
 这个仓库更适合作为:
 
-- 原项目的修复增强版
+- `dou-jiang/codex-console` 的继续重构版
 - 当前注册链路的兼容维护版
-- 自己二次开发的基础版本
+- 旧 Web UI 与新任务架构并行过渡版
+- 自己继续二次开发的基础版本
 
 如果你准备公开发布，建议在仓库描述里明确写上:
 
-`Forked and fixed from cnlimiter/codex-manager`
+`Refactored from dou-jiang/codex-console (original lineage: cnlimiter/codex-manager)`
 
 这样既方便别人理解来源，也对上游作者更尊重。
 

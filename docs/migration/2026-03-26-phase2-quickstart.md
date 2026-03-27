@@ -1,5 +1,23 @@
 # Phase 2 Quickstart
 
+## What This Doc Is For
+
+This repository is now a direct refactor line of `dou-jiang/codex-console`.
+
+The legacy Web UI still exists, but phase 2 introduces a new task-driven path
+that separates:
+
+- API entry
+- worker execution
+- task storage
+- task logs
+- registration engine boundaries
+
+If you only used the original project before, the main thing to know is:
+
+the new path no longer assumes every execution has to be driven directly from
+the old Web route layer.
+
 ## What Exists Now
 
 The extracted path can now do the following:
