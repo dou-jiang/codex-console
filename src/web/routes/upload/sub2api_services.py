@@ -8,7 +8,11 @@ from pydantic import BaseModel
 
 from ....database import crud
 from ....database.session import get_db
-from ....core.upload.sub2api_upload import test_sub2api_connection, batch_upload_to_sub2api
+from ....core.upload.sub2api_upload import (
+    test_sub2api_connection,
+    batch_upload_to_sub2api,
+    _normalize_sub2api_base_url,
+)
 
 router = APIRouter()
 
@@ -85,11 +89,15 @@ async def list_sub2api_services(enabled: Optional[bool] = None):
 @router.post("", response_model=Sub2ApiServiceResponse)
 async def create_sub2api_service(request: Sub2ApiServiceCreate):
     """新增 Sub2API 服务"""
+    try:
+        api_url = _normalize_sub2api_base_url(request.api_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     with get_db() as db:
         svc = crud.create_sub2api_service(
             db,
-            name=request.name,
-            api_url=request.api_url,
+            name=request.name.strip(),
+            api_url=api_url,
             api_key=request.api_key,
             target_type=request.target_type,
             enabled=request.enabled,
@@ -136,9 +144,12 @@ async def update_sub2api_service(service_id: int, request: Sub2ApiServiceUpdate)
 
         update_data = {}
         if request.name is not None:
-            update_data["name"] = request.name
+            update_data["name"] = request.name.strip()
         if request.api_url is not None:
-            update_data["api_url"] = request.api_url
+            try:
+                update_data["api_url"] = _normalize_sub2api_base_url(request.api_url)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
         # api_key 留空则保持原值
         if request.api_key:
             update_data["api_key"] = request.api_key
