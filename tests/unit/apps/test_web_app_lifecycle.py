@@ -17,3 +17,12 @@ def test_healthz_route_is_available_without_auth():
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+def test_web_app_api_requires_login_cookie():
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/api/registration/tasks")
+
+    assert response.status_code == 401

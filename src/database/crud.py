@@ -5,7 +5,7 @@
 from typing import List, Optional, Dict, Any, Union
 from datetime import timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, desc, asc, func
+from sqlalchemy import and_, or_, desc, asc, func, text
 
 from .models import Account, EmailService, RegistrationTask, Setting, Proxy, CpaService, Sub2ApiService
 from ..time_utils import utc_now_naive
@@ -282,6 +282,39 @@ def get_registration_tasks(
 
     query = query.order_by(desc(RegistrationTask.created_at)).offset(skip).limit(limit)
     return query.all()
+
+
+def claim_next_registration_task(db: Session) -> Optional[RegistrationTask]:
+    """Atomically claim the oldest pending registration task for execution."""
+    started_at = utc_now_naive()
+    result = db.execute(
+        text(
+            """
+            UPDATE registration_tasks
+            SET status = :running_status, started_at = :started_at
+            WHERE id = (
+                SELECT id
+                FROM registration_tasks
+                WHERE status = :pending_status
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+            )
+            AND status = :pending_status
+            RETURNING task_uuid
+            """
+        ),
+        {
+            "running_status": "running",
+            "pending_status": "pending",
+            "started_at": started_at,
+        },
+    )
+    claimed = result.fetchone()
+    db.commit()
+    if not claimed:
+        return None
+    task_uuid = claimed[0]
+    return get_registration_task_by_uuid(db, task_uuid)
 
 
 def update_registration_task(

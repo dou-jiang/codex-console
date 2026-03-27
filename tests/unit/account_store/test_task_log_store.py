@@ -12,6 +12,20 @@ def test_task_store_can_record_status(tmp_path: Path):
     assert task.status == "pending"
 
 
+def test_task_store_claims_oldest_pending_task(tmp_path: Path):
+    store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'task-claim.db'}")
+
+    first = store.tasks.create(task_uuid="t-1", status="pending")
+    second = store.tasks.create(task_uuid="t-2", status="pending")
+
+    claimed = store.tasks.claim_next_pending()
+
+    assert claimed is not None
+    assert claimed.task_uuid == first.task_uuid
+    assert store.tasks.get(first.task_uuid).status == "running"
+    assert store.tasks.get(second.task_uuid).status == "pending"
+
+
 def test_log_store_appends_messages(tmp_path: Path):
     store = AccountStoreDB(database_url=f"sqlite:///{tmp_path / 'log-store.db'}")
     store.tasks.create(task_uuid="t-1", status="pending")

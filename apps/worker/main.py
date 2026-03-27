@@ -123,11 +123,9 @@ class WorkerRunner:
         return {"success": result.success, "status": new_status}
 
     def process_next_pending(self) -> dict:
-        pending = self.store.tasks.list_pending(limit=1)
-        if not pending:
+        task = self.store.tasks.claim_next_pending()
+        if not task:
             return {"success": False, "error": "no pending tasks"}
-
-        task = pending[0]
         outcome = self.process_task(task.task_uuid)
         outcome["task_uuid"] = task.task_uuid
         return outcome

@@ -7,8 +7,8 @@ from contextlib import asynccontextmanager
 import logging
 import sys
 import secrets
-import hmac
-import hashlib
+import os
+from urllib.parse import quote
 from typing import Optional, Dict, Any
 from pathlib import Path
 
@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from apps.api.auth import build_webui_auth_token
 from ..config.settings import get_settings
 from ..config.project_notice import PROJECT_NOTICE
 from .routes import api_router
@@ -113,14 +114,19 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS 中间件
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    cors_origins = [
+        origin.strip()
+        for origin in str(os.environ.get("APP_CORS_ORIGINS") or "").split(",")
+        if origin.strip()
+    ]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     # 挂载静态文件
     if STATIC_DIR.exists():
@@ -178,16 +184,31 @@ def create_app() -> FastAPI:
             )
 
     def _auth_token(password: str) -> str:
-        secret = get_settings().webui_secret_key.get_secret_value().encode("utf-8")
-        return hmac.new(secret, password.encode("utf-8"), hashlib.sha256).hexdigest()
+        secret = get_settings().webui_secret_key.get_secret_value()
+        return build_webui_auth_token(password, secret)
 
     def _is_authenticated(request: Request) -> bool:
         cookie = request.cookies.get("webui_auth")
         expected = _auth_token(get_settings().webui_access_password.get_secret_value())
         return bool(cookie) and secrets.compare_digest(cookie, expected)
 
+    def _is_secure_request(request: Request) -> bool:
+        forwarded = str(request.headers.get("x-forwarded-proto") or "").strip().lower()
+        if forwarded:
+            return forwarded.split(",")[0].strip() == "https"
+        return request.url.scheme == "https"
+
+    def _normalize_next_path(next_value: Optional[str]) -> str:
+        value = str(next_value or "").strip()
+        if not value.startswith("/"):
+            return "/"
+        if value.startswith("//") or "://" in value:
+            return "/"
+        return value
+
     def _redirect_to_login(request: Request) -> RedirectResponse:
-        return RedirectResponse(url=f"/login?next={request.url.path}", status_code=302)
+        next_path = quote(_normalize_next_path(request.url.path), safe="/")
+        return RedirectResponse(url=f"/login?next={next_path}", status_code=302)
 
     @app.get("/healthz")
     async def healthz():
@@ -199,7 +220,7 @@ def create_app() -> FastAPI:
         return _render_template(
             request,
             "login.html",
-            {"error": "", "next": next or "/"},
+            {"error": "", "next": _normalize_next_path(next)},
         )
 
     @app.post("/login")
@@ -210,19 +231,25 @@ def create_app() -> FastAPI:
             return _render_template(
                 request,
                 "login.html",
-                {"error": "密码错误", "next": next or "/"},
+                {"error": "密码错误", "next": _normalize_next_path(next)},
                 status_code=401,
             )
 
-        response = RedirectResponse(url=next or "/", status_code=302)
-        response.set_cookie("webui_auth", _auth_token(expected), httponly=True, samesite="lax")
+        response = RedirectResponse(url=_normalize_next_path(next), status_code=302)
+        response.set_cookie(
+            "webui_auth",
+            _auth_token(expected),
+            httponly=True,
+            samesite="lax",
+            secure=_is_secure_request(request),
+        )
         return response
 
     @app.get("/logout")
     async def logout(request: Request, next: Optional[str] = "/login"):
         """退出登录"""
-        response = RedirectResponse(url=next or "/login", status_code=302)
-        response.delete_cookie("webui_auth")
+        response = RedirectResponse(url=_normalize_next_path(next), status_code=302)
+        response.delete_cookie("webui_auth", secure=_is_secure_request(request), httponly=True, samesite="lax")
         return response
 
     @app.get("/", response_class=HTMLResponse)

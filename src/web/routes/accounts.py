@@ -1391,12 +1391,19 @@ async def update_account(account_id: int, request: AccountUpdateRequest):
 
 @router.get("/{account_id}/cookies")
 async def get_account_cookies(account_id: int):
-    """获取账号的 cookie 字符串（仅供支付使用）"""
+    """获取账号 cookie 元信息，不直接导出原始 cookie。"""
     with get_db() as db:
         account = crud.get_account_by_id(db, account_id)
         if not account:
             raise HTTPException(status_code=404, detail="账号不存在")
-        return {"account_id": account_id, "cookies": account.cookies or ""}
+        cookies_text = str(account.cookies or "")
+        return {
+            "account_id": account_id,
+            "has_cookies": bool(cookies_text.strip()),
+            "cookies_len": len(cookies_text),
+            "has_session_token_cookie": bool(_extract_session_token_from_cookie_text(cookies_text)),
+            "has_oai_did": "oai-did=" in cookies_text,
+        }
 
 
 @router.delete("/{account_id}")

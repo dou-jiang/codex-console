@@ -2,7 +2,9 @@
 API 路由模块
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from apps.api.auth import require_api_access
 
 from .accounts import router as accounts_router
 from .registration import router as registration_router
@@ -14,7 +16,7 @@ from .upload.cpa_services import router as cpa_services_router
 from .upload.sub2api_services import router as sub2api_services_router
 from .upload.tm_services import router as tm_services_router
 
-api_router = APIRouter()
+api_router = APIRouter(dependencies=[Depends(require_api_access)])
 
 # 注册各模块路由
 api_router.include_router(accounts_router, prefix="/accounts", tags=["accounts"])

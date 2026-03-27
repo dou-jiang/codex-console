@@ -1,13 +1,14 @@
 """Minimal task routes for phase 2 API skeleton."""
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from apps.api.auth import require_api_access
 from apps.api.serializers import serialize_outcome, serialize_task
 from apps.api.task_service import create_register_task_record
 from apps.worker.main import WorkerRunner
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_access)])
 
 
 class RegisterTaskCreate(BaseModel):
