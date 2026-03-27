@@ -22,20 +22,21 @@ class _FakeTask:
 def test_legacy_start_registration_uses_phase2_chain(monkeypatch):
     created = {}
 
-    def fake_create_register_task_record(store, *, email_service_type, proxy_url=None, email_service_config=None):
+    def fake_create_register_task_record(store, *, email_service_type, proxy_url=None, email_service_config=None, email_service_id=None):
         created["email_service_type"] = email_service_type
         created["proxy_url"] = proxy_url
         created["email_service_config"] = email_service_config
+        created["email_service_id"] = email_service_id
         return _FakeTask()
 
-    def fake_run_task_once(database_url: str, task_uuid: str):
+    async def fake_run_registration_task(task_uuid: str, email_service_type: str, proxy, email_service_config, email_service_id=None, **kwargs):
         return {"success": True, "task_uuid": task_uuid, "status": "completed"}
 
     class FakeSessionManager:
         database_url = "sqlite:///./tmp/legacy.db"
 
     monkeypatch.setattr("src.web.routes.registration.create_register_task_record", fake_create_register_task_record)
-    monkeypatch.setattr("src.web.routes.registration.run_task_once", fake_run_task_once)
+    monkeypatch.setattr("src.web.routes.registration.run_registration_task", fake_run_registration_task)
     monkeypatch.setattr("src.web.routes.registration.get_session_manager", lambda: FakeSessionManager())
     monkeypatch.setattr("src.web.routes.registration._create_phase2_store", lambda database_url: object())
 
@@ -44,6 +45,7 @@ def test_legacy_start_registration_uses_phase2_chain(monkeypatch):
         email_service_type="duck_mail",
         proxy="http://127.0.0.1:8080",
         email_service_config={"base_url": "https://mail.example.test"},
+        email_service_id=7,
     )
 
     response = asyncio.run(start_registration(request, background_tasks))
@@ -52,7 +54,8 @@ def test_legacy_start_registration_uses_phase2_chain(monkeypatch):
     assert created["email_service_type"] == "duck_mail"
     assert created["proxy_url"] == "http://127.0.0.1:8080"
     assert created["email_service_config"] == {"base_url": "https://mail.example.test"}
+    assert created["email_service_id"] == 7
     assert len(background_tasks.tasks) == 1
     task = background_tasks.tasks[0]
-    assert task.func is fake_run_task_once
-    assert task.args == ("sqlite:///./tmp/legacy.db", "task-1")
+    assert task.func is fake_run_registration_task
+    assert task.args == ("task-1", "duck_mail", "http://127.0.0.1:8080", {"base_url": "https://mail.example.test"}, 7)

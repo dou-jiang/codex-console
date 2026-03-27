@@ -8,7 +8,7 @@ import logging
 import uuid
 import random
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field, ConfigDict
@@ -16,9 +16,8 @@ from pydantic import BaseModel, Field, ConfigDict
 from ...database import crud
 from ...database.session import get_db, get_session_manager
 from ...database.models import RegistrationTask, Proxy
-from ...core.register import RegistrationEngine, RegistrationResult
 from ...time_utils import utc_now_naive
-from ...services import EmailServiceFactory, EmailServiceType
+from ...services import EmailServiceType
 from ...config.settings import get_settings
 from ..task_manager import task_manager
 from apps.api.task_service import create_register_task_record, create_register_task_records, run_task_once
@@ -31,40 +30,6 @@ router = APIRouter()
 running_tasks: dict = {}
 # 批量任务存储
 batch_tasks: Dict[str, dict] = {}
-
-
-# ============== Proxy Helper Functions ==============
-
-def get_proxy_for_registration(db) -> Tuple[Optional[str], Optional[int]]:
-    """
-    获取用于注册的代理
-
-    策略：
-    1. 优先从代理列表中随机选择一个启用的代理
-    2. 如果代理列表为空且启用了动态代理，调用动态代理 API 获取
-    3. 否则使用系统设置中的静态默认代理
-
-    Returns:
-        Tuple[proxy_url, proxy_id]: 代理 URL 和代理 ID（如果来自代理列表）
-    """
-    # 先尝试从代理列表中获取
-    proxy = crud.get_random_proxy(db)
-    if proxy:
-        return proxy.proxy_url, proxy.id
-
-    # 代理列表为空，尝试动态代理或静态代理
-    from ...core.dynamic_proxy import get_proxy_url_for_task
-    proxy_url = get_proxy_url_for_task()
-    if proxy_url:
-        return proxy_url, None
-
-    return None, None
-
-
-def update_proxy_usage(db, proxy_id: Optional[int]):
-    """更新代理的使用时间"""
-    if proxy_id:
-        crud.update_proxy_last_used(db, proxy_id)
 
 
 # ============== Pydantic Models ==============
@@ -226,323 +191,6 @@ def _normalize_email_service_config(
         normalized['proxy_url'] = proxy_url
 
     return normalized
-
-
-def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
-    """
-    在线程池中执行的同步注册任务
-
-    这个函数会被 run_in_executor 调用，运行在独立线程中
-    """
-    with get_db() as db:
-        try:
-            # 检查是否已取消
-            if task_manager.is_cancelled(task_uuid):
-                logger.info(f"任务 {task_uuid} 已取消，跳过执行")
-                return
-
-            # 更新任务状态为运行中
-            task = crud.update_registration_task(
-                db, task_uuid,
-                status="running",
-                started_at=utc_now_naive()
-            )
-
-            if not task:
-                logger.error(f"任务不存在: {task_uuid}")
-                return
-
-            # 更新 TaskManager 状态
-            task_manager.update_status(task_uuid, "running")
-
-            # 确定使用的代理
-            # 如果前端传入了代理参数，使用传入的
-            # 否则从代理列表或系统设置中获取
-            actual_proxy_url = proxy
-            proxy_id = None
-
-            if not actual_proxy_url:
-                actual_proxy_url, proxy_id = get_proxy_for_registration(db)
-                if actual_proxy_url:
-                    logger.info(f"任务 {task_uuid} 使用代理: {actual_proxy_url[:50]}...")
-
-            # 更新任务的代理记录
-            crud.update_registration_task(db, task_uuid, proxy=actual_proxy_url)
-
-            # 创建邮箱服务
-            service_type = EmailServiceType(email_service_type)
-            settings = get_settings()
-
-            # 优先使用数据库中配置的邮箱服务
-            if email_service_id:
-                from ...database.models import EmailService as EmailServiceModel
-                db_service = db.query(EmailServiceModel).filter(
-                    EmailServiceModel.id == email_service_id,
-                    EmailServiceModel.enabled == True
-                ).first()
-
-                if db_service:
-                    service_type = EmailServiceType(db_service.service_type)
-                    config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                    # 更新任务关联的邮箱服务
-                    crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
-                    logger.info(f"使用数据库邮箱服务: {db_service.name} (ID: {db_service.id}, 类型: {service_type.value})")
-                else:
-                    raise ValueError(f"邮箱服务不存在或已禁用: {email_service_id}")
-            else:
-                # 使用默认配置或传入的配置
-                if service_type == EmailServiceType.TEMPMAIL:
-                    config = {
-                        "base_url": settings.tempmail_base_url,
-                        "timeout": settings.tempmail_timeout,
-                        "max_retries": settings.tempmail_max_retries,
-                        "proxy_url": actual_proxy_url,
-                    }
-                elif service_type == EmailServiceType.MOE_MAIL:
-                    # 检查数据库中是否有可用的自定义域名服务
-                    from ...database.models import EmailService as EmailServiceModel
-                    db_service = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "moe_mail",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).first()
-
-                    if db_service and db_service.config:
-                        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
-                        logger.info(f"使用数据库自定义域名服务: {db_service.name}")
-                    elif settings.custom_domain_base_url and settings.custom_domain_api_key:
-                        config = {
-                            "base_url": settings.custom_domain_base_url,
-                            "api_key": settings.custom_domain_api_key.get_secret_value() if settings.custom_domain_api_key else "",
-                            "proxy_url": actual_proxy_url,
-                        }
-                    else:
-                        raise ValueError("没有可用的自定义域名邮箱服务，请先在设置中配置")
-                elif service_type == EmailServiceType.OUTLOOK:
-                    # 检查数据库中是否有可用的 Outlook 账户
-                    from ...database.models import EmailService as EmailServiceModel, Account
-                    # 获取所有启用的 Outlook 服务
-                    outlook_services = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "outlook",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).all()
-
-                    if not outlook_services:
-                        raise ValueError("没有可用的 Outlook 账户，请先在设置中导入账户")
-
-                    # 找到一个未注册的 Outlook 账户
-                    selected_service = None
-                    for svc in outlook_services:
-                        email = svc.config.get("email") if svc.config else None
-                        if not email:
-                            continue
-                        # 检查是否已在 accounts 表中注册
-                        existing = db.query(Account).filter(Account.email == email).first()
-                        if not existing:
-                            selected_service = svc
-                            logger.info(f"选择未注册的 Outlook 账户: {email}")
-                            break
-                        else:
-                            logger.info(f"跳过已注册的 Outlook 账户: {email}")
-
-                    if selected_service and selected_service.config:
-                        config = selected_service.config.copy()
-                        crud.update_registration_task(db, task_uuid, email_service_id=selected_service.id)
-                        logger.info(f"使用数据库 Outlook 账户: {selected_service.name}")
-                    else:
-                        raise ValueError("所有 Outlook 账户都已注册过 OpenAI 账号，请添加新的 Outlook 账户")
-                elif service_type == EmailServiceType.DUCK_MAIL:
-                    from ...database.models import EmailService as EmailServiceModel
-
-                    db_service = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "duck_mail",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).first()
-
-                    if db_service and db_service.config:
-                        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
-                        logger.info(f"使用数据库 DuckMail 服务: {db_service.name}")
-                    else:
-                        raise ValueError("没有可用的 DuckMail 邮箱服务，请先在邮箱服务页面添加服务")
-                elif service_type == EmailServiceType.FREEMAIL:
-                    from ...database.models import EmailService as EmailServiceModel
-
-                    db_service = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "freemail",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).first()
-
-                    if db_service and db_service.config:
-                        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
-                        logger.info(f"使用数据库 Freemail 服务: {db_service.name}")
-                    else:
-                        raise ValueError("没有可用的 Freemail 邮箱服务，请先在邮箱服务页面添加服务")
-                elif service_type == EmailServiceType.IMAP_MAIL:
-                    from ...database.models import EmailService as EmailServiceModel
-
-                    db_service = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "imap_mail",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).first()
-
-                    if db_service and db_service.config:
-                        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
-                        logger.info(f"使用数据库 IMAP 邮箱服务: {db_service.name}")
-                    else:
-                        raise ValueError("没有可用的 IMAP 邮箱服务，请先在邮箱服务中添加")
-                else:
-                    config = email_service_config or {}
-
-            email_service = EmailServiceFactory.create(service_type, config)
-
-            # 创建注册引擎 - 使用 TaskManager 的日志回调
-            log_callback = task_manager.create_log_callback(task_uuid, prefix=log_prefix, batch_id=batch_id)
-
-            engine = RegistrationEngine(
-                email_service=email_service,
-                proxy_url=actual_proxy_url,
-                callback_logger=log_callback,
-                task_uuid=task_uuid
-            )
-
-            # 执行注册
-            result = engine.run()
-
-            if result.success:
-                # 更新代理使用时间
-                update_proxy_usage(db, proxy_id)
-
-                # 保存到数据库
-                engine.save_to_database(result)
-
-                # 自动上传到 CPA（可多服务）
-                if auto_upload_cpa:
-                    try:
-                        from ...core.upload.cpa_upload import upload_to_cpa, generate_token_json
-                        from ...database.models import Account as AccountModel
-                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
-                        if saved_account and saved_account.access_token:
-                            token_data = generate_token_json(saved_account)
-                            _cpa_ids = cpa_service_ids or []
-                            if not _cpa_ids:
-                                # 未指定则取所有启用的服务
-                                _cpa_ids = [s.id for s in crud.get_cpa_services(db, enabled=True)]
-                            if not _cpa_ids:
-                                log_callback("[CPA] 无可用 CPA 服务，跳过上传")
-                            for _sid in _cpa_ids:
-                                try:
-                                    _svc = crud.get_cpa_service_by_id(db, _sid)
-                                    if not _svc:
-                                        continue
-                                    log_callback(f"[CPA] 正在把账号打包发往服务站: {_svc.name}")
-                                    _ok, _msg = upload_to_cpa(token_data, api_url=_svc.api_url, api_token=_svc.api_token)
-                                    if _ok:
-                                        saved_account.cpa_uploaded = True
-                                        saved_account.cpa_uploaded_at = utc_now_naive()
-                                        db.commit()
-                                        log_callback(f"[CPA] 投递成功，服务站已签收: {_svc.name}")
-                                    else:
-                                        log_callback(f"[CPA] 上传失败({_svc.name}): {_msg}")
-                                except Exception as _e:
-                                    log_callback(f"[CPA] 异常({_sid}): {_e}")
-                    except Exception as cpa_err:
-                        log_callback(f"[CPA] 上传异常: {cpa_err}")
-
-                # 自动上传到 Sub2API（可多服务）
-                if auto_upload_sub2api:
-                    try:
-                        from ...core.upload.sub2api_upload import upload_to_sub2api
-                        from ...database.models import Account as AccountModel
-                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
-                        if saved_account and saved_account.access_token:
-                            _s2a_ids = sub2api_service_ids or []
-                            if not _s2a_ids:
-                                _s2a_ids = [s.id for s in crud.get_sub2api_services(db, enabled=True)]
-                            if not _s2a_ids:
-                                log_callback("[Sub2API] 无可用 Sub2API 服务，跳过上传")
-                            for _sid in _s2a_ids:
-                                try:
-                                    _svc = crud.get_sub2api_service_by_id(db, _sid)
-                                    if not _svc:
-                                        continue
-                                    log_callback(f"[Sub2API] 正在把账号发往服务站: {_svc.name}")
-                                    _ok, _msg = upload_to_sub2api([saved_account], _svc.api_url, _svc.api_key)
-                                    log_callback(f"[Sub2API] {'成功' if _ok else '失败'}({_svc.name}): {_msg}")
-                                except Exception as _e:
-                                    log_callback(f"[Sub2API] 异常({_sid}): {_e}")
-                    except Exception as s2a_err:
-                        log_callback(f"[Sub2API] 上传异常: {s2a_err}")
-
-                # 自动上传到 Team Manager（可多服务）
-                if auto_upload_tm:
-                    try:
-                        from ...core.upload.team_manager_upload import upload_to_team_manager
-                        from ...database.models import Account as AccountModel
-                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
-                        if saved_account and saved_account.access_token:
-                            _tm_ids = tm_service_ids or []
-                            if not _tm_ids:
-                                _tm_ids = [s.id for s in crud.get_tm_services(db, enabled=True)]
-                            if not _tm_ids:
-                                log_callback("[TM] 无可用 Team Manager 服务，跳过上传")
-                            for _sid in _tm_ids:
-                                try:
-                                    _svc = crud.get_tm_service_by_id(db, _sid)
-                                    if not _svc:
-                                        continue
-                                    log_callback(f"[TM] 正在把账号发往服务站: {_svc.name}")
-                                    _ok, _msg = upload_to_team_manager(saved_account, _svc.api_url, _svc.api_key)
-                                    log_callback(f"[TM] {'成功' if _ok else '失败'}({_svc.name}): {_msg}")
-                                except Exception as _e:
-                                    log_callback(f"[TM] 异常({_sid}): {_e}")
-                    except Exception as tm_err:
-                        log_callback(f"[TM] 上传异常: {tm_err}")
-
-                # 更新任务状态
-                crud.update_registration_task(
-                    db, task_uuid,
-                    status="completed",
-                    completed_at=utc_now_naive(),
-                    result=result.to_dict()
-                )
-
-                # 更新 TaskManager 状态
-                task_manager.update_status(task_uuid, "completed", email=result.email)
-
-                logger.info(f"注册任务完成: {task_uuid}, 邮箱: {result.email}")
-            else:
-                # 更新任务状态为失败
-                crud.update_registration_task(
-                    db, task_uuid,
-                    status="failed",
-                    completed_at=utc_now_naive(),
-                    error_message=result.error_message
-                )
-
-                # 更新 TaskManager 状态
-                task_manager.update_status(task_uuid, "failed", error=result.error_message)
-
-                logger.warning(f"注册任务失败: {task_uuid}, 原因: {result.error_message}")
-
-        except Exception as e:
-            logger.error(f"注册任务异常: {task_uuid}, 错误: {e}")
-
-            try:
-                with get_db() as db:
-                    crud.update_registration_task(
-                        db, task_uuid,
-                        status="failed",
-                        completed_at=utc_now_naive(),
-                        error_message=str(e)
-                    )
-
-                # 更新 TaskManager 状态
-                task_manager.update_status(task_uuid, "failed", error=str(e))
-            except:
-                pass
 
 
 async def run_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
@@ -836,12 +484,16 @@ async def start_registration(
         email_service_type=request.email_service_type,
         proxy_url=request.proxy,
         email_service_config=request.email_service_config,
+        email_service_id=request.email_service_id,
     )
 
     background_tasks.add_task(
-        run_task_once,
-        session_manager.database_url,
+        run_registration_task,
         task.task_uuid,
+        request.email_service_type,
+        request.proxy,
+        request.email_service_config,
+        request.email_service_id,
     )
 
     return task_to_response(task)
