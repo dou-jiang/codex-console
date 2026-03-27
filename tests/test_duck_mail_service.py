@@ -141,3 +141,63 @@ def test_get_verification_code_reads_message_detail_and_extracts_code():
     assert detail_call["method"] == "GET"
     assert detail_call["url"] == "https://api.duckmail.test/messages/msg-1"
     assert detail_call["kwargs"]["headers"]["Authorization"] == "Bearer token-123"
+
+
+def test_get_verification_code_prefers_newer_message_after_otp_sent_at():
+    service = DuckMailService({
+        "base_url": "https://api.duckmail.test",
+        "default_domain": "duckmail.sbs",
+    })
+    fake_client = FakeHTTPClient([
+        FakeResponse(
+            status_code=201,
+            payload={
+                "id": "account-1",
+                "address": "tester@duckmail.sbs",
+                "authType": "email",
+            },
+        ),
+        FakeResponse(
+            payload={
+                "id": "account-1",
+                "token": "token-123",
+            }
+        ),
+        FakeResponse(
+            payload={
+                "hydra:member": [
+                    {
+                        "id": "msg-old",
+                        "from": {"name": "OpenAI", "address": "noreply@openai.com"},
+                        "subject": "Old code",
+                        "createdAt": "2026-03-19T09:59:00Z",
+                    },
+                    {
+                        "id": "msg-new",
+                        "from": {"name": "OpenAI", "address": "noreply@openai.com"},
+                        "subject": "New code",
+                        "createdAt": "2026-03-19T10:01:00Z",
+                    },
+                ]
+            }
+        ),
+        FakeResponse(
+            payload={
+                "id": "msg-new",
+                "text": "Your OpenAI verification code is 888888",
+                "html": [],
+            }
+        ),
+    ])
+    service.http_client = fake_client
+
+    email_info = service.create_email()
+    code = service.get_verification_code(
+        email=email_info["email"],
+        email_id=email_info["service_id"],
+        timeout=1,
+        otp_sent_at=1_710_842_430,
+    )
+
+    assert code == "888888"
+    assert fake_client.calls[3]["url"] == "https://api.duckmail.test/messages/msg-new"

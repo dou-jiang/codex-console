@@ -13,6 +13,7 @@ from html import unescape
 from typing import Any, Dict, List, Optional
 
 from .base import BaseEmailService, EmailServiceError, EmailServiceType
+from .otp_policy import extract_otp_code, is_openai_otp_text, select_best_otp_candidate
 from ..config.constants import OTP_CODE_PATTERN
 from ..core.http_client import HTTPClient, RequestConfig
 
@@ -54,6 +55,7 @@ class DuckMailService(BaseEmailService):
 
         self._accounts_by_id: Dict[str, Dict[str, Any]] = {}
         self._accounts_by_email: Dict[str, Dict[str, Any]] = {}
+        self._last_used_message_ids: Dict[str, str] = {}
 
     def _build_headers(
         self,
@@ -248,6 +250,7 @@ class DuckMailService(BaseEmailService):
 
         start_time = time.time()
         seen_message_ids = set()
+        last_used_message_id = self._last_used_message_ids.get(str(account_info.get("email") or "").strip().lower())
 
         while time.time() - start_time < timeout:
             try:
@@ -258,6 +261,7 @@ class DuckMailService(BaseEmailService):
                     params={"page": 1},
                 )
                 messages = response.get("hydra:member", [])
+                candidates: list[dict[str, Any]] = []
 
                 for message in messages:
                     message_id = str(message.get("id") or "").strip()
@@ -265,24 +269,37 @@ class DuckMailService(BaseEmailService):
                         continue
 
                     created_at = self._parse_message_time(message.get("createdAt"))
-                    if otp_sent_at and created_at and created_at + 1 < otp_sent_at:
+                    seen_message_ids.add(message_id)
+                    if last_used_message_id and message_id == last_used_message_id:
                         continue
 
-                    seen_message_ids.add(message_id)
+                    candidates.append({
+                        "mail_id": message_id,
+                        "mail_ts": created_at,
+                        "summary": message,
+                    })
+
+                best = select_best_otp_candidate(
+                    candidates,
+                    otp_sent_at=otp_sent_at,
+                    last_used_mail_id=last_used_message_id,
+                )
+                if best:
                     detail = self._make_request(
                         "GET",
-                        f"/messages/{message_id}",
+                        f"/messages/{best['mail_id']}",
                         token=token,
                     )
 
-                    content = self._message_search_text(message, detail)
-                    if "openai" not in content.lower():
+                    content = self._message_search_text(best["summary"], detail)
+                    if not is_openai_otp_text(content):
                         continue
 
-                    match = re.search(pattern, content)
-                    if match:
+                    code, _ = extract_otp_code(content, pattern)
+                    if code:
+                        self._last_used_message_ids[str(account_info.get("email") or "").strip().lower()] = str(best["mail_id"])
                         self.update_status(True)
-                        return match.group(1)
+                        return code
             except Exception as e:
                 logger.debug(f"DuckMail 轮询验证码失败: {e}")
 
