@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import threading
 import traceback
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from sqlalchemy import func
