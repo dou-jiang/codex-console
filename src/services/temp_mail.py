@@ -67,7 +67,7 @@ class TempMailService(BaseEmailService):
             timeout=self.config["timeout"],
             max_retries=self.config["max_retries"],
         )
-        self.http_client = HTTPClient(proxy_url=None, config=http_config)
+        self.http_client = HTTPClient(proxy_url=self.config.get("proxy_url"), config=http_config)
 
         # 邮箱缓存：email -> {jwt, address}
         self._email_cache: Dict[str, Dict[str, Any]] = {}

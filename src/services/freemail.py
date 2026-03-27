@@ -54,7 +54,7 @@ class FreemailService(BaseEmailService):
             timeout=self.config["timeout"],
             max_retries=self.config["max_retries"],
         )
-        self.http_client = HTTPClient(proxy_url=None, config=http_config)
+        self.http_client = HTTPClient(proxy_url=self.config.get("proxy_url"), config=http_config)
 
         # 缓存 domain 列表
         self._domains = []

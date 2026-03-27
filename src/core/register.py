@@ -376,6 +376,10 @@ class RegistrationEngine:
             if raw_email and raw_email != normalized_email:
                 self._log(f"邮箱规范化: {raw_email} -> {normalized_email}")
 
+            source = str(self.email_info.get("source") or "").strip().lower()
+            if source == "reuse_purchase":
+                self._log("命中已购未注册邮箱池，优先复用历史未注册邮箱")
+
             self._log(f"邮箱已就位，地址新鲜出炉: {self.email}")
             return True
 

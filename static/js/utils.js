@@ -355,6 +355,7 @@ const statusMap = {
         moe_mail: 'MoeMail',
         temp_mail: 'Temp-Mail（自部署）',
         duck_mail: 'DuckMail',
+        luckmail: 'LuckMail',
         freemail: 'Freemail',
         imap_mail: 'IMAP 邮箱'
     }

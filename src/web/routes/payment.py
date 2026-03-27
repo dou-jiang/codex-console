@@ -746,6 +746,9 @@ def _normalize_email_service_config_for_session_bootstrap(
     elif service_type == EmailServiceType.DUCK_MAIL:
         if "domain" in normalized and "default_domain" not in normalized:
             normalized["default_domain"] = normalized.pop("domain")
+    elif service_type == EmailServiceType.LUCKMAIL:
+        if "domain" in normalized and "preferred_domain" not in normalized:
+            normalized["preferred_domain"] = normalized.pop("domain")
 
     # IMAP/Outlook 等可按需使用代理；Temp-Mail/Freemail 强制直连。
     if proxy_url and "proxy_url" not in normalized and service_type not in (EmailServiceType.TEMP_MAIL, EmailServiceType.FREEMAIL):

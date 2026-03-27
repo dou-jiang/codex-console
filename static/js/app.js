@@ -27,6 +27,7 @@ let availableServices = {
     moe_mail: { available: false, services: [] },
     temp_mail: { available: false, services: [] },
     duck_mail: { available: false, services: [] },
+    luckmail: { available: false, services: [] },
     freemail: { available: false, services: [] }
 };
 
@@ -390,6 +391,23 @@ function updateEmailServiceOptions() {
         select.appendChild(optgroup);
     }
 
+    // LuckMail
+    if (availableServices.luckmail && availableServices.luckmail.available) {
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = `✉️ LuckMail (${availableServices.luckmail.count} 个服务)`;
+
+        availableServices.luckmail.services.forEach(service => {
+            const option = document.createElement('option');
+            option.value = `luckmail:${service.id}`;
+            option.textContent = service.name + (service.preferred_domain ? ` (@${service.preferred_domain})` : '');
+            option.dataset.type = 'luckmail';
+            option.dataset.serviceId = service.id;
+            optgroup.appendChild(option);
+        });
+
+        select.appendChild(optgroup);
+    }
+
     // Freemail
     if (availableServices.freemail && availableServices.freemail.available) {
         const optgroup = document.createElement('optgroup');
@@ -455,6 +473,11 @@ function handleServiceChange(e) {
         const service = availableServices.duck_mail.services.find(s => s.id == id);
         if (service) {
             addLog('info', `[系统] 已选择 DuckMail 服务: ${service.name}`);
+        }
+    } else if (type === 'luckmail') {
+        const service = availableServices.luckmail.services.find(s => s.id == id);
+        if (service) {
+            addLog('info', `[系统] 已选择 LuckMail 服务: ${service.name}`);
         }
     } else if (type === 'freemail') {
         const service = availableServices.freemail.services.find(s => s.id == id);
