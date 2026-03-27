@@ -21,6 +21,8 @@ from .base import BaseEmailService, EmailServiceError, EmailServiceType
 from ..core.http_client import HTTPClient, RequestConfig
 from ..config.constants import OTP_CODE_PATTERN, OTP_CODE_SEMANTIC_PATTERN
 
+OTP_DOMAIN_PATTERN = re.compile(r"@[A-Za-z0-9.-]+\.\d{6}(?!\d)")
+
 
 logger = logging.getLogger(__name__)
 
@@ -747,6 +749,10 @@ class TempMailService(BaseEmailService):
                         reverse=True,
                     )[0]
                     code = str(best["code"])
+                    if OTP_DOMAIN_PATTERN.search(str(best.get("detail_content") or "")) and code in str(best.get("detail_content") or ""):
+                        logger.debug("??????????????????? OTP")
+                        time.sleep(3)
+                        continue
                     self._last_used_mail_ids[email] = str(best["mail_id"])
                     logger.info(
                         "从 TempMail 邮箱 %s 找到验证码: %s（mail_id=%s ts=%s semantic=%s）",

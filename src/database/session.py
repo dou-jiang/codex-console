@@ -110,6 +110,8 @@ class DatabaseSessionManager:
             ("accounts", "subscription_type", "VARCHAR(20)"),
             ("accounts", "subscription_at", "DATETIME"),
             ("accounts", "cookies", "TEXT"),
+            ("cpa_services", "proxy_url", "VARCHAR(1000)"),
+            ("sub2api_services", "target_type", "VARCHAR(50) DEFAULT 'sub2api'"),
             ("proxies", "is_default", "BOOLEAN DEFAULT 0"),
             ("bind_card_tasks", "checkout_session_id", "VARCHAR(120)"),
             ("bind_card_tasks", "publishable_key", "VARCHAR(255)"),

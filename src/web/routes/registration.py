@@ -855,15 +855,15 @@ async def start_batch_registration(
     """
     启动批量注册任务
 
-    - count: 注册数量 (1-100)
+    - count: 注册数量 (1-1000)
     - email_service_type: 邮箱服务类型
     - proxy: 代理地址
     - interval_min: 最小间隔秒数
     - interval_max: 最大间隔秒数
     """
     # 验证参数
-    if request.count < 1 or request.count > 100:
-        raise HTTPException(status_code=400, detail="注册数量必须在 1-100 之间")
+    if request.count < 1 or request.count > 1000:
+        raise HTTPException(status_code=400, detail="注册数量必须在 1-1000 之间")
 
     try:
         EmailServiceType(request.email_service_type)

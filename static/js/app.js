@@ -1596,3 +1596,18 @@ async function restoreActiveTask() {
         }
     }
 }
+
+
+async function refreshOutlookRegistrationStatus() {
+    try {
+        const ids = outlookAccounts.map(item => item.id).filter(Boolean);
+        const data = await api.post('/registration/outlook/check-accounts', { service_ids: ids });
+        outlookAccounts = data.accounts || [];
+        renderOutlookAccounts(outlookAccounts);
+        addLog('info', `[??] Outlook ??????? (???: ${data.registered_count}, ???: ${data.unregistered_count})`);
+        toast.success('Outlook ???????');
+    } catch (error) {
+        console.error('?? Outlook ??????:', error);
+        toast.error('?? Outlook ??????: ' + error.message);
+    }
+}

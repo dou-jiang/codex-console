@@ -4,6 +4,7 @@ Web UI 启动入口
 
 import uvicorn
 import logging
+import socket
 import sys
 from pathlib import Path
 
@@ -171,4 +172,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # PyInstaller 打包后 Windows 上 uvicorn 可能拉起多进程，
+    # 这里先做 freeze_support，避免 multiprocessing-fork 参数报错。
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     main()

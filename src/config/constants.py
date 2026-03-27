@@ -38,6 +38,7 @@ class EmailServiceType(str, Enum):
     DUCK_MAIL = "duck_mail"
     FREEMAIL = "freemail"
     IMAP_MAIL = "imap_mail"
+    CLOUDMAIL = "cloudmail"
 
 
 # ============================================================================
@@ -45,7 +46,7 @@ class EmailServiceType(str, Enum):
 # ============================================================================
 
 APP_NAME = "OpenAI/Codex CLI 自动注册系统"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_DESCRIPTION = "自动注册 OpenAI/Codex CLI 账号的系统"
 
 # ============================================================================

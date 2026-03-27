@@ -2,6 +2,7 @@
 账号管理 API 路由
 """
 import io
+import asyncio
 import json
 import logging
 import re
@@ -1635,6 +1636,42 @@ async def export_accounts_sub2api(request: BatchExportRequest):
         )
 
 
+@router.post("/export/codex")
+async def export_accounts_codex(request: BatchExportRequest):
+    """????? Codex ???????"""
+    with get_db() as db:
+        ids = resolve_account_ids(
+            db, request.ids, request.select_all,
+            request.status_filter, request.email_service_filter, request.search_filter
+        )
+        accounts = db.query(Account).filter(Account.id.in_(ids)).all()
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        lines = []
+        for acc in accounts:
+            lines.append(json.dumps({
+                "email": acc.email,
+                "password": acc.password or "",
+                "client_id": acc.client_id or "",
+                "access_token": acc.access_token or "",
+                "refresh_token": acc.refresh_token or "",
+                "session_token": acc.session_token or "",
+                "account_id": acc.account_id or "",
+                "workspace_id": acc.workspace_id or "",
+                "cookies": acc.cookies or "",
+                "type": "codex",
+                "source": getattr(acc, "source", None) or "manual",
+            }, ensure_ascii=False))
+
+        content = "\n".join(lines)
+        filename = f"codex_accounts_{timestamp}.jsonl"
+        return StreamingResponse(
+            iter([content]),
+            media_type="application/x-ndjson",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+
 @router.post("/export/cpa")
 async def export_accounts_cpa(request: BatchExportRequest):
     """导出账号为 CPA Token JSON 格式（每个账号单独一个 JSON 文件，打包为 ZIP）"""
@@ -2067,6 +2104,7 @@ async def batch_upload_accounts_to_sub2api(request: BatchSub2ApiUploadRequest):
         ids, api_url, api_key,
         concurrency=request.concurrency,
         priority=request.priority,
+        target_type=locals().get("target_type", "sub2api"),
     )
     return results
 
@@ -2107,7 +2145,8 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
 
         success, message = upload_to_sub2api(
             [account], api_url, api_key,
-            concurrency=concurrency, priority=priority
+            concurrency=concurrency, priority=priority,
+            target_type=locals().get("target_type", "sub2api")
         )
         if success:
             return {"success": True, "message": message}
@@ -2146,6 +2185,7 @@ async def batch_upload_accounts_to_tm(request: BatchUploadTMRequest):
 
         api_url = svc.api_url
         api_key = svc.api_key
+        target_type = getattr(svc, "target_type", "sub2api")
 
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
@@ -2174,6 +2214,7 @@ async def upload_account_to_tm(account_id: int, request: Optional[UploadTMReques
 
         api_url = svc.api_url
         api_key = svc.api_key
+        target_type = getattr(svc, "target_type", "sub2api")
 
         account = crud.get_account_by_id(db, account_id)
         if not account:

@@ -7,10 +7,12 @@ from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import func
 
 from ...database import crud
 from ...database.session import get_db
 from ...database.models import EmailService as EmailServiceModel
+from ...database.models import Account as AccountModel
 from ...services import EmailServiceFactory, EmailServiceType
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,8 @@ class EmailServiceResponse(BaseModel):
     enabled: bool
     priority: int
     config: Optional[Dict[str, Any]] = None  # 过滤敏感信息后的配置
+    registration_status: Optional[str] = None
+    registered_account_id: Optional[int] = None
     last_used: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -114,6 +118,24 @@ def filter_sensitive_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 def service_to_response(service: EmailServiceModel) -> EmailServiceResponse:
     """转换服务模型为响应"""
+    registration_status = None
+    registered_account_id = None
+    if service.service_type == "outlook":
+        email = str((service.config or {}).get("email") or service.name or "").strip()
+        normalized_email = email.lower()
+        if email:
+            with get_db() as db:
+                account = (
+                    db.query(AccountModel)
+                    .filter(func.lower(AccountModel.email) == normalized_email)
+                    .first()
+                )
+            if account:
+                registration_status = "registered"
+                registered_account_id = account.id
+            else:
+                registration_status = "unregistered"
+
     return EmailServiceResponse(
         id=service.id,
         service_type=service.service_type,
@@ -121,6 +143,8 @@ def service_to_response(service: EmailServiceModel) -> EmailServiceResponse:
         enabled=service.enabled,
         priority=service.priority,
         config=filter_sensitive_config(service.config),
+        registration_status=registration_status,
+        registered_account_id=registered_account_id,
         last_used=service.last_used.isoformat() if service.last_used else None,
         created_at=service.created_at.isoformat() if service.created_at else None,
         updated_at=service.updated_at.isoformat() if service.updated_at else None,
@@ -153,6 +177,7 @@ async def get_email_services_stats():
             'duck_mail_count': 0,
             'freemail_count': 0,
             'imap_mail_count': 0,
+            'cloudmail_count': 0,
             'tempmail_available': True,  # 临时邮箱始终可用
             'enabled_count': enabled_count
         }
@@ -170,6 +195,8 @@ async def get_email_services_stats():
                 stats['freemail_count'] = count
             elif service_type == 'imap_mail':
                 stats['imap_mail_count'] = count
+            elif service_type == 'cloudmail':
+                stats['cloudmail_count'] = count
 
         return stats
 

@@ -48,7 +48,7 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     ),
     "app_version": SettingDefinition(
         db_key="app.version",
-        default_value="1.1.0",
+        default_value="1.1.1",
         category=SettingCategory.GENERAL,
         description="应用版本"
     ),
@@ -592,7 +592,7 @@ class Settings(BaseModel):
 
     # 应用信息
     app_name: str = "OpenAI/Codex CLI 自动注册系统"
-    app_version: str = "1.1.0"
+    app_version: str = "1.1.1"
     debug: bool = False
 
     # 数据库配置

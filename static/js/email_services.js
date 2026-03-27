@@ -238,9 +238,10 @@ async function loadOutlookServices() {
                 <td><input type="checkbox" data-id="${service.id}" ${selectedOutlook.has(service.id) ? 'checked' : ''}></td>
                 <td>${escapeHtml(service.config?.email || service.name)}</td>
                 <td>
-                    <span class="status-badge ${service.config?.has_oauth ? 'active' : 'pending'}">
-                        ${service.config?.has_oauth ? 'OAuth' : '密码'}
-                    </span>
+                    ${getOutlookAuthBadge(service)}
+                </td>
+                <td>
+                    ${getOutlookRegistrationBadge(service)}
                 </td>
                 <td title="${service.enabled ? '已启用' : '已禁用'}">${service.enabled ? '✅' : '⭕'}</td>
                 <td>${service.priority}</td>
@@ -260,7 +261,6 @@ async function loadOutlookServices() {
                 </td>
             </tr>
         `).join('');
-
         elements.outlookTable.querySelectorAll('input[type="checkbox"][data-id]').forEach(cb => {
             cb.addEventListener('change', (e) => {
                 const id = parseInt(e.target.dataset.id);
@@ -274,6 +274,24 @@ async function loadOutlookServices() {
         console.error('加载 Outlook 服务失败:', error);
         elements.outlookTable.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-title">加载失败</div></div></td></tr>`;
     }
+}
+
+function getOutlookAuthBadge(service) {
+    if (service.config?.has_oauth) {
+        return '<span class="status-badge active">OAuth</span>';
+    }
+    return '<span class="status-badge pending">密码</span>';
+}
+
+function getOutlookRegistrationBadge(service) {
+    if (service.registration_status === 'registered') {
+        const suffix = service.registered_account_id ? ` #${service.registered_account_id}` : '';
+        return `<span class="status-badge active">已注册${suffix}</span>`;
+    }
+    if (service.registration_status === 'unregistered') {
+        return '<span class="status-badge pending">未注册</span>';
+    }
+    return '<span class="status-badge">未知</span>';
 }
 
 function getCustomServiceTypeBadge(subType) {
@@ -327,7 +345,7 @@ async function loadCustomServices() {
         if (customServices.length === 0) {
             elements.customTable.innerHTML = `
                 <tr>
-                    <td colspan="8">
+                    <td colspan="9">
                         <div class="empty-state">
                             <div class="empty-state-icon">📭</div>
                             <div class="empty-state-title">暂无自定义邮箱服务</div>

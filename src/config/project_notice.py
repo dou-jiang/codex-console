@@ -14,6 +14,8 @@ PROJECT_NOTICE = {
     "qq_group_url": "https://qm.qq.com/q/4TETC3mWco",
     "telegram_name": "codex_console",
     "telegram_url": "https://t.me/codex_console",
+    "afdian_name": "dou-jiang",
+    "afdian_url": "https://afdian.com/a/dou-jiang",
 }
 
 
