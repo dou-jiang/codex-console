@@ -90,6 +90,7 @@ docs/migration/               迁移状态和新通路说明
 如果你准备继续接这个仓库，建议按这个顺序看：
 
 - `README.md`：先搞清楚项目来源、架构差异和启动方式
+- `docs/internal-deploy.md`：看内部服务最小上线方式和安全默认值
 - `docs/migration/2026-03-26-phase1-status.md`：看已经拆出来的边界和当前冻结区
 - `docs/migration/2026-03-26-phase2-quickstart.md`：直接试新 API / Worker 通路
 - `docs/superpowers/plans/*.md`：看这次重构是怎么分阶段推进的
