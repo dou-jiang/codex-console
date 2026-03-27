@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import threading
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy import func
@@ -76,7 +76,7 @@ class DatabaseLogHandler(logging.Handler):
                         lineno=int(record.lineno or 0),
                         message=str(message or ""),
                         exception=exception_text,
-                        created_at=datetime.utcfromtimestamp(record.created),
+                        created_at=datetime.fromtimestamp(record.created, timezone.utc).replace(tzinfo=None),
                     )
                 )
                 db.commit()
