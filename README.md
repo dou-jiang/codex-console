@@ -9,6 +9,17 @@
 
 - GitHub Repo: [https://github.com/dou-jiang/codex-console](https://github.com/dou-jiang/codex-console)
 
+## 当前版本
+
+这是当前这条重构线的 **v1.0.0** 版本。
+
+重构来源说明：
+
+- 直接重构自 [dou-jiang/codex-console](https://github.com/dou-jiang/codex-console)
+- 上述仓库本身基于 [cnlimiter/codex-manager](https://github.com/cnlimiter/codex-manager) 演化而来
+
+如果后续创建新的私有仓库并单独发布，请保留这段来源说明，避免误解代码来源。
+
 ## QQ群
 
 - 交流群: [291638849（点击加群）](https://qm.qq.com/q/4TETC3mWco)

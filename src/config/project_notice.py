@@ -8,7 +8,7 @@ PROJECT_NOTICE = {
         "请遵守相关服务的使用条款，不要用于任何违法或不当用途。"
         "如有侵权，请及时联系，会及时删除。"
     ),
-    "github_repo_name": "dou-jiang/codex-console",
+    "github_repo_name": "source: dou-jiang/codex-console",
     "github_repo_url": "https://github.com/dou-jiang/codex-console",
     "qq_group_id": "291638849",
     "qq_group_url": "https://qm.qq.com/q/4TETC3mWco",
