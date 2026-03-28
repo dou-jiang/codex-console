@@ -9,6 +9,8 @@ let currentBatch = null;
 let logPollingInterval = null;
 let batchPollingInterval = null;
 let accountsPollingInterval = null;
+let todayStatsPollingInterval = null;
+let todayStatsResetInterval = null;
 let isBatchMode = false;
 let isOutlookBatchMode = false;
 let outlookAccounts = [];
@@ -20,6 +22,7 @@ let displayedLogs = new Set();  // 用于日志去重
 let toastShown = false;  // 标记是否已显示过 toast
 let availableServices = {
     tempmail: { available: true, services: [] },
+    yyds_mail: { available: false, services: [] },
     outlook: { available: false, services: [] },
     moe_mail: { available: false, services: [] },
     temp_mail: { available: false, services: [] },
@@ -35,6 +38,15 @@ let wsHeartbeatInterval = null;  // 心跳定时器
 let batchWsHeartbeatInterval = null;  // 批量任务心跳定时器
 let activeTaskUuid = null;   // 当前活跃的单任务 UUID（用于页面重新可见时重连）
 let activeBatchId = null;    // 当前活跃的批量任务 ID（用于页面重新可见时重连）
+let wsReconnectTimer = null;
+let batchWsReconnectTimer = null;
+let wsReconnectAttempts = 0;
+let batchWsReconnectAttempts = 0;
+let wsManualClose = false;
+let batchWsManualClose = false;
+
+const WS_RECONNECT_BASE_DELAY = 1000;
+const WS_RECONNECT_MAX_DELAY = 10000;
 
 // DOM 元素
 const elements = {
@@ -69,6 +81,12 @@ const elements = {
     // 已注册账号
     recentAccountsTable: document.getElementById('recent-accounts-table'),
     refreshAccountsBtn: document.getElementById('refresh-accounts-btn'),
+    // 今日统计
+    todayStatsTotal: document.getElementById('today-stats-total'),
+    todayStatsSuccess: document.getElementById('today-stats-success'),
+    todayStatsFailed: document.getElementById('today-stats-failed'),
+    todayStatsRate: document.getElementById('today-stats-rate'),
+    todayStatsReset: document.getElementById('today-stats-reset'),
     // Outlook 批量注册
     outlookBatchSection: document.getElementById('outlook-batch-section'),
     outlookAccountsContainer: document.getElementById('outlook-accounts-container'),
@@ -102,6 +120,9 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAvailableServices();
     loadRecentAccounts();
     startAccountsPolling();
+    loadTodayStats(true);
+    startTodayStatsPolling();
+    startTodayStatsResetTicker();
     initVisibilityReconnect();
     restoreActiveTask();
     initAutoUploadOptions();
@@ -241,18 +262,31 @@ function updateEmailServiceOptions() {
     const select = elements.emailService;
     select.innerHTML = '';
 
-    // Tempmail
-    if (availableServices.tempmail.available) {
+    // 官方临时邮箱渠道
+    if ((availableServices.tempmail && availableServices.tempmail.available) ||
+        (availableServices.yyds_mail && availableServices.yyds_mail.available)) {
         const optgroup = document.createElement('optgroup');
         optgroup.label = '🌐 临时邮箱';
 
-        availableServices.tempmail.services.forEach(service => {
-            const option = document.createElement('option');
-            option.value = `tempmail:${service.id || 'default'}`;
-            option.textContent = service.name;
-            option.dataset.type = 'tempmail';
-            optgroup.appendChild(option);
-        });
+        if (availableServices.tempmail && availableServices.tempmail.available) {
+            availableServices.tempmail.services.forEach(service => {
+                const option = document.createElement('option');
+                option.value = `tempmail:${service.id || 'default'}`;
+                option.textContent = service.name;
+                option.dataset.type = 'tempmail';
+                optgroup.appendChild(option);
+            });
+        }
+
+        if (availableServices.yyds_mail && availableServices.yyds_mail.available) {
+            availableServices.yyds_mail.services.forEach(service => {
+                const option = document.createElement('option');
+                option.value = `yyds_mail:${service.id || 'default'}`;
+                option.textContent = service.name + (service.default_domain ? ` (@${service.default_domain})` : '');
+                option.dataset.type = 'yyds_mail';
+                optgroup.appendChild(option);
+            });
+        }
 
         select.appendChild(optgroup);
     }
@@ -402,6 +436,11 @@ function handleServiceChange(e) {
         if (service) {
             addLog('info', `[系统] 已选择 Outlook 账户: ${service.name}`);
         }
+    } else if (type === 'yyds_mail') {
+        const service = availableServices.yyds_mail.services.find(s => (s.id || 'default') == id);
+        if (service) {
+            addLog('info', `[系统] 已选择 YYDS Mail 渠道: ${service.name}`);
+        }
     } else if (type === 'moe_mail') {
         const service = availableServices.moe_mail.services.find(s => s.id == id);
         if (service) {
@@ -528,24 +567,105 @@ async function handleSingleRegistration(requestData) {
 
 // ============== WebSocket 功能 ==============
 
+function getReconnectDelay(attempt) {
+    return Math.min(WS_RECONNECT_BASE_DELAY * (2 ** Math.max(0, attempt - 1)), WS_RECONNECT_MAX_DELAY);
+}
+
+function clearWebSocketReconnect() {
+    if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+    }
+    wsReconnectAttempts = 0;
+}
+
+function clearBatchWebSocketReconnect() {
+    if (batchWsReconnectTimer) {
+        clearTimeout(batchWsReconnectTimer);
+        batchWsReconnectTimer = null;
+    }
+    batchWsReconnectAttempts = 0;
+}
+
+function scheduleWebSocketReconnect(taskUuid) {
+    if (!taskUuid || wsReconnectTimer || wsManualClose || taskCompleted || taskFinalStatus !== null || activeTaskUuid !== taskUuid) {
+        return;
+    }
+
+    wsReconnectAttempts += 1;
+    const delay = getReconnectDelay(wsReconnectAttempts);
+    addLog('warning', `[系统] WebSocket 已断开，${delay / 1000} 秒后尝试重连任务监控...`);
+
+    wsReconnectTimer = setTimeout(() => {
+        wsReconnectTimer = null;
+        connectWebSocket(taskUuid);
+    }, delay);
+}
+
+function scheduleBatchWebSocketReconnect(batchId) {
+    if (!batchId || batchWsReconnectTimer || batchWsManualClose || batchCompleted || batchFinalStatus !== null || activeBatchId !== batchId) {
+        return;
+    }
+
+    batchWsReconnectAttempts += 1;
+    const delay = getReconnectDelay(batchWsReconnectAttempts);
+    addLog('warning', `[系统] 批量任务 WebSocket 已断开，${delay / 1000} 秒后尝试重连监控...`);
+
+    batchWsReconnectTimer = setTimeout(() => {
+        batchWsReconnectTimer = null;
+        connectBatchWebSocket(batchId);
+    }, delay);
+}
+
+function startCurrentBatchPolling(batchId) {
+    if (!batchId) return;
+
+    const pollingMode = currentBatch && currentBatch.batch_id === batchId
+        ? currentBatch.pollingMode
+        : (isOutlookBatchMode ? 'outlook_batch' : 'batch');
+
+    if (pollingMode === 'outlook_batch') {
+        startOutlookBatchPolling(batchId);
+        return;
+    }
+
+    startBatchPolling(batchId);
+}
+
 // 连接 WebSocket
 function connectWebSocket(taskUuid) {
+    activeTaskUuid = taskUuid;
+
+    if (webSocket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(webSocket.readyState)) {
+        return;
+    }
+
+    if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+    }
+    wsManualClose = false;
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/api/ws/task/${taskUuid}`;
 
     try {
-        webSocket = new WebSocket(wsUrl);
+        const socket = new WebSocket(wsUrl);
+        webSocket = socket;
 
-        webSocket.onopen = () => {
+        socket.onopen = () => {
+            if (webSocket !== socket) return;
             console.log('WebSocket 连接成功');
             useWebSocket = true;
+            clearWebSocketReconnect();
             // 停止轮询（如果有）
             stopLogPolling();
             // 开始心跳
             startWebSocketHeartbeat();
         };
 
-        webSocket.onmessage = (event) => {
+        socket.onmessage = (event) => {
+            if (webSocket !== socket) return;
             const data = JSON.parse(event.data);
 
             if (data.type === 'log') {
@@ -553,6 +673,12 @@ function connectWebSocket(taskUuid) {
                 addLog(logType, data.message);
             } else if (data.type === 'status') {
                 updateTaskStatus(data.status);
+                if (data.email) {
+                    elements.taskEmail.textContent = data.email;
+                }
+                if (data.email_service) {
+                    elements.taskService.textContent = getServiceTypeText(data.email_service);
+                }
 
                 // 检查是否完成
                 if (['completed', 'failed', 'cancelled', 'cancelling'].includes(data.status)) {
@@ -587,43 +713,52 @@ function connectWebSocket(taskUuid) {
             }
         };
 
-        webSocket.onclose = (event) => {
+        socket.onclose = (event) => {
+            const isCurrentSocket = webSocket === socket;
+            if (isCurrentSocket) {
+                webSocket = null;
+                stopWebSocketHeartbeat();
+            }
+
             console.log('WebSocket 连接关闭:', event.code);
-            stopWebSocketHeartbeat();
 
-            // 只有在任务未完成且最终状态不是完成状态时才切换到轮询
-            // 使用 taskFinalStatus 而不是 currentTask.status，因为 currentTask 可能已被重置
-            const shouldPoll = !taskCompleted &&
-                               taskFinalStatus === null;  // 如果 taskFinalStatus 有值，说明任务已完成
+            const shouldReconnect = isCurrentSocket &&
+                !wsManualClose &&
+                !taskCompleted &&
+                taskFinalStatus === null &&
+                activeTaskUuid === taskUuid;
 
-            if (shouldPoll && currentTask) {
-                console.log('切换到轮询模式');
+            if (shouldReconnect) {
+                console.log('WebSocket 断开，准备自动重连');
                 useWebSocket = false;
-                startLogPolling(currentTask.task_uuid);
+                startLogPolling(taskUuid);
+                scheduleWebSocketReconnect(taskUuid);
             }
         };
 
-        webSocket.onerror = (error) => {
+        socket.onerror = (error) => {
+            if (webSocket !== socket) return;
             console.error('WebSocket 错误:', error);
-            // 切换到轮询
             useWebSocket = false;
-            stopWebSocketHeartbeat();
-            startLogPolling(taskUuid);
         };
 
     } catch (error) {
         console.error('WebSocket 连接失败:', error);
         useWebSocket = false;
         startLogPolling(taskUuid);
+        scheduleWebSocketReconnect(taskUuid);
     }
 }
 
 // 断开 WebSocket
 function disconnectWebSocket() {
+    wsManualClose = true;
+    clearWebSocketReconnect();
     stopWebSocketHeartbeat();
     if (webSocket) {
-        webSocket.close();
+        const socket = webSocket;
         webSocket = null;
+        socket.close();
     }
 }
 
@@ -677,7 +812,7 @@ async function handleBatchRegistration(requestData) {
     try {
         const data = await api.post('/registration/batch', requestData);
 
-        currentBatch = data;
+        currentBatch = { ...data, pollingMode: 'batch' };
         activeBatchId = data.batch_id;  // 保存用于重连
         // 持久化到 sessionStorage，跨页面导航后可恢复
         sessionStorage.setItem('activeTask', JSON.stringify({ batch_id: data.batch_id, mode: 'batch', total: data.count }));
@@ -754,6 +889,10 @@ async function handleCancelTask() {
 
 // 开始轮询日志
 function startLogPolling(taskUuid) {
+    if (logPollingInterval) {
+        return;
+    }
+
     let lastLogIndex = 0;
 
     logPollingInterval = setInterval(async () => {
@@ -817,6 +956,10 @@ function stopLogPolling() {
 
 // 开始轮询批量状态
 function startBatchPolling(batchId) {
+    if (batchPollingInterval) {
+        return;
+    }
+
     batchPollingInterval = setInterval(async () => {
         try {
             const data = await api.get(`/registration/batch/${batchId}`);
@@ -987,6 +1130,83 @@ function startAccountsPolling() {
     }, 30000);
 }
 
+function renderTodayStats(total, success, failed, rate) {
+    if (elements.todayStatsTotal) {
+        elements.todayStatsTotal.textContent = String(Math.max(0, total));
+    }
+    if (elements.todayStatsSuccess) {
+        elements.todayStatsSuccess.textContent = String(Math.max(0, success));
+    }
+    if (elements.todayStatsFailed) {
+        elements.todayStatsFailed.textContent = String(Math.max(0, failed));
+    }
+    if (elements.todayStatsRate) {
+        const safeRate = Math.max(0, rate);
+        const rateCard = elements.todayStatsRate.closest('.today-stat-rate');
+        elements.todayStatsRate.textContent = `${safeRate.toFixed(1)}%`;
+        elements.todayStatsRate.classList.remove('rate-high', 'rate-mid', 'rate-low');
+        if (rateCard) {
+            rateCard.classList.remove('rate-high', 'rate-mid', 'rate-low');
+        }
+        if (safeRate >= 70) {
+            elements.todayStatsRate.classList.add('rate-high');
+            if (rateCard) rateCard.classList.add('rate-high');
+        } else if (safeRate < 40) {
+            elements.todayStatsRate.classList.add('rate-low');
+            if (rateCard) rateCard.classList.add('rate-low');
+        } else {
+            elements.todayStatsRate.classList.add('rate-mid');
+            if (rateCard) rateCard.classList.add('rate-mid');
+        }
+    }
+}
+
+async function loadTodayStats(silent = true) {
+    try {
+        const data = await api.get('/registration/stats');
+        const byStatus = data?.by_status || {};
+        const total = Number(data?.today_total ?? data?.today_count ?? 0);
+        const success = Number(data?.today_success ?? byStatus.completed ?? 0);
+        const failed = Number(data?.today_failed ?? byStatus.failed ?? 0);
+        const fallbackRate = total > 0 ? (success / total) * 100 : 0;
+        const rate = Number(data?.today_success_rate ?? fallbackRate);
+        renderTodayStats(total, success, failed, Number.isFinite(rate) ? rate : 0);
+    } catch (error) {
+        console.error('加载今日统计失败:', error);
+        if (!silent) {
+            toast.error('加载今日统计失败');
+        }
+    }
+}
+
+function updateTodayStatsResetText() {
+    if (!elements.todayStatsReset) return;
+    const now = new Date();
+    const next = new Date();
+    next.setHours(24, 0, 0, 0);
+    const remain = Math.max(0, next.getTime() - now.getTime());
+    const hours = Math.floor(remain / 3600000);
+    const minutes = Math.floor((remain % 3600000) / 60000);
+    elements.todayStatsReset.textContent = `重置剩余 ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function startTodayStatsResetTicker() {
+    updateTodayStatsResetText();
+    if (todayStatsResetInterval) {
+        clearInterval(todayStatsResetInterval);
+    }
+    todayStatsResetInterval = setInterval(updateTodayStatsResetText, 60000);
+}
+
+function startTodayStatsPolling() {
+    if (todayStatsPollingInterval) {
+        clearInterval(todayStatsPollingInterval);
+    }
+    todayStatsPollingInterval = setInterval(() => {
+        loadTodayStats(true);
+    }, 60000);
+}
+
 // 添加日志
 function addLog(type, message) {
     // 日志去重：使用消息内容的 hash 作为键
@@ -1047,6 +1267,10 @@ function getLogType(log) {
 function resetButtons() {
     elements.startBtn.disabled = false;
     elements.cancelBtn.disabled = true;
+    stopLogPolling();
+    stopBatchPolling();
+    clearWebSocketReconnect();
+    clearBatchWebSocketReconnect();
     currentTask = null;
     currentBatch = null;
     isBatchMode = false;
@@ -1204,7 +1428,7 @@ async function handleOutlookBatchRegistration() {
             return;
         }
 
-        currentBatch = { batch_id: data.batch_id, ...data };
+        currentBatch = { batch_id: data.batch_id, ...data, pollingMode: 'outlook_batch' };
         activeBatchId = data.batch_id;  // 保存用于重连
         // 持久化到 sessionStorage，跨页面导航后可恢复
         sessionStorage.setItem('activeTask', JSON.stringify({ batch_id: data.batch_id, mode: isOutlookBatchMode ? 'outlook_batch' : 'batch', total: data.to_register }));
@@ -1228,21 +1452,37 @@ async function handleOutlookBatchRegistration() {
 
 // 连接批量任务 WebSocket
 function connectBatchWebSocket(batchId) {
+    activeBatchId = batchId;
+
+    if (batchWebSocket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(batchWebSocket.readyState)) {
+        return;
+    }
+
+    if (batchWsReconnectTimer) {
+        clearTimeout(batchWsReconnectTimer);
+        batchWsReconnectTimer = null;
+    }
+    batchWsManualClose = false;
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/api/ws/batch/${batchId}`;
 
     try {
-        batchWebSocket = new WebSocket(wsUrl);
+        const socket = new WebSocket(wsUrl);
+        batchWebSocket = socket;
 
-        batchWebSocket.onopen = () => {
+        socket.onopen = () => {
+            if (batchWebSocket !== socket) return;
             console.log('批量任务 WebSocket 连接成功');
+            clearBatchWebSocketReconnect();
             // 停止轮询（如果有）
             stopBatchPolling();
             // 开始心跳
             startBatchWebSocketHeartbeat();
         };
 
-        batchWebSocket.onmessage = (event) => {
+        socket.onmessage = (event) => {
+            if (batchWebSocket !== socket) return;
             const data = JSON.parse(event.data);
 
             if (data.type === 'log') {
@@ -1295,40 +1535,49 @@ function connectBatchWebSocket(batchId) {
             }
         };
 
-        batchWebSocket.onclose = (event) => {
+        socket.onclose = (event) => {
+            const isCurrentSocket = batchWebSocket === socket;
+            if (isCurrentSocket) {
+                batchWebSocket = null;
+                stopBatchWebSocketHeartbeat();
+            }
+
             console.log('批量任务 WebSocket 连接关闭:', event.code);
-            stopBatchWebSocketHeartbeat();
 
-            // 只有在任务未完成且最终状态不是完成状态时才切换到轮询
-            // 使用 batchFinalStatus 而不是 currentBatch.status，因为 currentBatch 可能已被重置
-            const shouldPoll = !batchCompleted &&
-                               batchFinalStatus === null;  // 如果 batchFinalStatus 有值，说明任务已完成
+            const shouldReconnect = isCurrentSocket &&
+                !batchWsManualClose &&
+                !batchCompleted &&
+                batchFinalStatus === null &&
+                activeBatchId === batchId;
 
-            if (shouldPoll && currentBatch) {
-                console.log('切换到轮询模式');
-                startOutlookBatchPolling(currentBatch.batch_id);
+            if (shouldReconnect) {
+                console.log('批量任务 WebSocket 断开，准备自动重连');
+                startCurrentBatchPolling(batchId);
+                scheduleBatchWebSocketReconnect(batchId);
             }
         };
 
-        batchWebSocket.onerror = (error) => {
+        socket.onerror = (error) => {
+            if (batchWebSocket !== socket) return;
             console.error('批量任务 WebSocket 错误:', error);
-            stopBatchWebSocketHeartbeat();
-            // 切换到轮询
-            startOutlookBatchPolling(batchId);
         };
 
     } catch (error) {
         console.error('批量任务 WebSocket 连接失败:', error);
-        startOutlookBatchPolling(batchId);
+        startCurrentBatchPolling(batchId);
+        scheduleBatchWebSocketReconnect(batchId);
     }
 }
 
 // 断开批量任务 WebSocket
 function disconnectBatchWebSocket() {
+    batchWsManualClose = true;
+    clearBatchWebSocketReconnect();
     stopBatchWebSocketHeartbeat();
     if (batchWebSocket) {
-        batchWebSocket.close();
+        const socket = batchWebSocket;
         batchWebSocket = null;
+        socket.close();
     }
 }
 
@@ -1359,6 +1608,10 @@ function cancelBatchViaWebSocket() {
 
 // 开始轮询 Outlook 批量状态（降级方案）
 function startOutlookBatchPolling(batchId) {
+    if (batchPollingInterval) {
+        return;
+    }
+
     batchPollingInterval = setInterval(async () => {
         try {
             const data = await api.get(`/registration/outlook-batch/${batchId}`);
@@ -1484,7 +1737,7 @@ async function restoreActiveTask() {
                 return;
             }
             // 批量任务仍在运行，恢复状态
-            currentBatch = { batch_id, ...data };
+            currentBatch = { batch_id, ...data, pollingMode: mode };
             activeBatchId = batch_id;
             isOutlookBatchMode = (mode === 'outlook_batch');
             batchCompleted = false;
@@ -1500,5 +1753,20 @@ async function restoreActiveTask() {
         } catch {
             sessionStorage.removeItem('activeTask');
         }
+    }
+}
+
+
+async function refreshOutlookRegistrationStatus() {
+    try {
+        const ids = outlookAccounts.map(item => item.id).filter(Boolean);
+        const data = await api.post('/registration/outlook/check-accounts', { service_ids: ids });
+        outlookAccounts = data.accounts || [];
+        renderOutlookAccounts(outlookAccounts);
+        addLog('info', `[??] Outlook ??????? (???: ${data.registered_count}, ???: ${data.unregistered_count})`);
+        toast.success('Outlook ???????');
+    } catch (error) {
+        console.error('?? Outlook ??????:', error);
+        toast.error('?? Outlook ??????: ' + error.message);
     }
 }

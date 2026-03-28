@@ -9,6 +9,8 @@ const elements = {
     tabContents: document.querySelectorAll('.tab-content'),
     registrationForm: document.getElementById('registration-settings-form'),
     backupBtn: document.getElementById('backup-btn'),
+    importDbBtn: document.getElementById('import-db-btn'),
+    dbImportFile: document.getElementById('db-import-file'),
     cleanupBtn: document.getElementById('cleanup-btn'),
     addEmailServiceBtn: document.getElementById('add-email-service-btn'),
     addServiceModal: document.getElementById('add-service-modal'),
@@ -119,6 +121,14 @@ function initEventListeners() {
     // 备份数据库
     if (elements.backupBtn) {
         elements.backupBtn.addEventListener('click', handleBackup);
+    }
+    // 导入数据库
+    if (elements.importDbBtn && elements.dbImportFile) {
+        elements.importDbBtn.addEventListener('click', () => {
+            elements.dbImportFile.value = '';
+            elements.dbImportFile.click();
+        });
+        elements.dbImportFile.addEventListener('change', handleImportDatabase);
     }
 
     // 清理数据
@@ -329,6 +339,9 @@ async function loadSettings() {
         document.getElementById('max-retries').value = data.registration?.max_retries || 3;
         document.getElementById('timeout').value = data.registration?.timeout || 120;
         document.getElementById('password-length').value = data.registration?.default_password_length || 12;
+        const entryFlowRaw = String(data.registration?.entry_flow || 'native').toLowerCase();
+        const entryFlow = entryFlowRaw === 'abcard' ? 'abcard' : 'native';
+        document.getElementById('registration-entry-flow').value = entryFlow;
         document.getElementById('sleep-min').value = data.registration?.sleep_min || 5;
         document.getElementById('sleep-max').value = data.registration?.sleep_max || 30;
 
@@ -471,6 +484,7 @@ async function handleSaveRegistration(e) {
         max_retries: parseInt(document.getElementById('max-retries').value),
         timeout: parseInt(document.getElementById('timeout').value),
         default_password_length: parseInt(document.getElementById('password-length').value),
+        entry_flow: document.getElementById('registration-entry-flow').value || 'native',
         sleep_min: parseInt(document.getElementById('sleep-min').value),
         sleep_max: parseInt(document.getElementById('sleep-max').value),
     };
@@ -526,6 +540,48 @@ async function handleBackup() {
     } finally {
         elements.backupBtn.disabled = false;
         elements.backupBtn.textContent = '💾 备份数据库';
+    }
+}
+
+// 导入数据库
+async function handleImportDatabase() {
+    const file = elements.dbImportFile?.files?.[0];
+    if (!file) return;
+
+    const confirmed = await confirm(
+        `确定导入数据库文件「${file.name}」吗？系统会先自动备份当前数据库，再执行覆盖导入。`
+    );
+    if (!confirmed) {
+        elements.dbImportFile.value = '';
+        return;
+    }
+
+    const originText = elements.importDbBtn.textContent;
+    elements.importDbBtn.disabled = true;
+    elements.importDbBtn.innerHTML = '<span class="loading-spinner"></span> 导入中...';
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const resp = await fetch('/api/settings/database/import', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            throw new Error(data.detail || `HTTP ${resp.status}`);
+        }
+
+        const backupText = data.backup_path ? `，备份: ${data.backup_path}` : '';
+        toast.success(`导入成功，已覆盖数据库${backupText}`);
+        await loadDatabaseInfo();
+    } catch (error) {
+        toast.error('导入失败: ' + error.message);
+    } finally {
+        elements.dbImportFile.value = '';
+        elements.importDbBtn.disabled = false;
+        elements.importDbBtn.textContent = originText || '📥 导入数据';
     }
 }
 
@@ -1442,7 +1498,8 @@ async function editSub2ApiService(id) {
 }
 
 async function deleteSub2ApiService(id, name) {
-    if (!confirm(`确认删除 Sub2API 服务「${name}」？`)) return;
+    const confirmed = await confirm(`确认删除 Sub2API 服务「${name}」吗？`, "删除 Sub2API 服务");
+    if (!confirmed) return;
     try {
         await api.delete(`/sub2api-services/${id}`);
         toast.success('服务已删除');

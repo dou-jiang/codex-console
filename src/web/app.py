@@ -8,7 +8,7 @@ import sys
 import secrets
 import hmac
 import hashlib
-from typing import Optional
+from typing import Optional, Dict, Any
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Form
@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..config.settings import get_settings
+from ..config.project_notice import PROJECT_NOTICE
 from .routes import api_router
 from .routes.websocket import router as ws_router
 from .task_manager import task_manager
@@ -91,6 +92,36 @@ def create_app() -> FastAPI:
     # 模板引擎
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.globals["static_version"] = _build_static_asset_version(STATIC_DIR)
+    templates.env.globals["project_notice"] = PROJECT_NOTICE
+
+    def _render_template(
+        request: Request,
+        name: str,
+        context: Optional[Dict[str, Any]] = None,
+        status_code: int = 200,
+    ) -> HTMLResponse:
+        """
+        兼容不同 Starlette 版本的 TemplateResponse 签名：
+        - 旧版: TemplateResponse(name, context, status_code=...)
+        - 新版: TemplateResponse(request, name, context, status_code=...)
+        """
+        template_context: Dict[str, Any] = {"request": request}
+        if context:
+            template_context.update(context)
+
+        try:
+            return templates.TemplateResponse(
+                request=request,
+                name=name,
+                context=template_context,
+                status_code=status_code,
+            )
+        except TypeError:
+            return templates.TemplateResponse(
+                name,
+                template_context,
+                status_code=status_code,
+            )
 
     def _auth_token(password: str) -> str:
         secret = get_settings().webui_secret_key.get_secret_value().encode("utf-8")
@@ -174,6 +205,7 @@ def create_app() -> FastAPI:
         """应用启动事件"""
         import asyncio
         from ..database.init_db import initialize_database
+        from ..core.db_logs import cleanup_database_logs
 
         # 确保数据库已初始化（reload 模式下子进程也需要初始化）
         try:
@@ -185,6 +217,31 @@ def create_app() -> FastAPI:
         loop = asyncio.get_event_loop()
         task_manager.set_loop(loop)
 
+        async def run_log_cleanup_once():
+            try:
+                result = await asyncio.to_thread(cleanup_database_logs)
+                logger.info(
+                    "后台日志清理完成: 删除 %s 条，剩余 %s 条",
+                    result.get("deleted_total", 0),
+                    result.get("remaining", 0),
+                )
+            except Exception as exc:
+                logger.warning(f"后台日志清理失败: {exc}")
+
+        async def periodic_log_cleanup():
+            while True:
+                try:
+                    await asyncio.sleep(3600)  # 每小时清理一次
+                    await run_log_cleanup_once()
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logger.warning(f"后台日志定时清理异常: {exc}")
+
+        # 启动时先执行一次，再开启定时任务
+        await run_log_cleanup_once()
+        app.state.log_cleanup_task = asyncio.create_task(periodic_log_cleanup())
+
         logger.info("=" * 50)
         logger.info(f"{settings.app_name} v{settings.app_version} 启动中，程序正在伸懒腰...")
         logger.info(f"调试模式: {settings.debug}")
@@ -194,6 +251,9 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def shutdown_event():
         """应用关闭事件"""
+        cleanup_task = getattr(app.state, "log_cleanup_task", None)
+        if cleanup_task:
+            cleanup_task.cancel()
         logger.info("应用关闭，今天先收摊啦")
 
     return app

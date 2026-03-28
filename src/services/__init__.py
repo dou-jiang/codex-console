@@ -11,21 +11,25 @@ from .base import (
     EmailServiceType
 )
 from .tempmail import TempmailService
+from .yyds_mail import YYDSMailService
 from .outlook import OutlookService
 from .moe_mail import MeoMailEmailService
 from .temp_mail import TempMailService
 from .duck_mail import DuckMailService
 from .freemail import FreemailService
 from .imap_mail import ImapMailService
+from .cloudmail import CloudMailService
 
 # 注册服务
 EmailServiceFactory.register(EmailServiceType.TEMPMAIL, TempmailService)
+EmailServiceFactory.register(EmailServiceType.YYDS_MAIL, YYDSMailService)
 EmailServiceFactory.register(EmailServiceType.OUTLOOK, OutlookService)
 EmailServiceFactory.register(EmailServiceType.MOE_MAIL, MeoMailEmailService)
 EmailServiceFactory.register(EmailServiceType.TEMP_MAIL, TempMailService)
 EmailServiceFactory.register(EmailServiceType.DUCK_MAIL, DuckMailService)
 EmailServiceFactory.register(EmailServiceType.FREEMAIL, FreemailService)
 EmailServiceFactory.register(EmailServiceType.IMAP_MAIL, ImapMailService)
+EmailServiceFactory.register(EmailServiceType.CLOUDMAIL, CloudMailService)
 
 # 导出 Outlook 模块的额外内容
 from .outlook.base import (
@@ -53,12 +57,14 @@ __all__ = [
     'EmailServiceType',
     # 服务类
     'TempmailService',
+    'YYDSMailService',
     'OutlookService',
     'MeoMailEmailService',
     'TempMailService',
     'DuckMailService',
     'FreemailService',
     'ImapMailService',
+    'CloudMailService',
     # Outlook 模块
     'ProviderType',
     'EmailMessage',

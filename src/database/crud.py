@@ -27,6 +27,7 @@ def create_account(
     access_token: Optional[str] = None,
     refresh_token: Optional[str] = None,
     id_token: Optional[str] = None,
+    cookies: Optional[str] = None,
     proxy_used: Optional[str] = None,
     expires_at: Optional['datetime'] = None,
     extra_data: Optional[Dict[str, Any]] = None,
@@ -46,6 +47,7 @@ def create_account(
         access_token=access_token,
         refresh_token=refresh_token,
         id_token=id_token,
+        cookies=cookies,
         proxy_used=proxy_used,
         expires_at=expires_at,
         extra_data=extra_data or {},
@@ -526,6 +528,7 @@ def create_cpa_service(
     name: str,
     api_url: str,
     api_token: str,
+    proxy_url: Optional[str] = None,
     enabled: bool = True,
     priority: int = 0
 ) -> CpaService:
@@ -534,6 +537,7 @@ def create_cpa_service(
         name=name,
         api_url=api_url,
         api_token=api_token,
+        proxy_url=proxy_url,
         enabled=enabled,
         priority=priority
     )
@@ -595,6 +599,7 @@ def create_sub2api_service(
     name: str,
     api_url: str,
     api_key: str,
+    target_type: str = 'sub2api',
     enabled: bool = True,
     priority: int = 0
 ) -> Sub2ApiService:

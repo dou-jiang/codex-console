@@ -29,6 +29,18 @@ class IMAPOldProvider(OutlookProvider):
     # IMAP 服务器配置
     IMAP_HOST = "outlook.office365.com"
     IMAP_PORT = 993
+    # 验证邮件有时会进入垃圾邮件/存档等文件夹，需多文件夹轮询
+    SEARCH_MAILBOXES = [
+        "INBOX",
+        "Junk",
+        "Junk Email",
+        "Junk E-mail",
+        "Spam",
+        "Deleted Items",
+        "Trash",
+        "Clutter",
+        "Archive",
+    ]
 
     @property
     def provider_type(self) -> ProviderType:
@@ -191,13 +203,39 @@ class IMAPOldProvider(OutlookProvider):
             recent_ids = ids[-count:][::-1]  # 倒序，最新的在前
 
             emails = []
-            for msg_id in recent_ids:
+            seen_keys = set()
+
+            for mailbox in self.SEARCH_MAILBOXES:
                 try:
-                    email_msg = self._fetch_email(msg_id)
-                    if email_msg:
-                        emails.append(email_msg)
+                    status, _ = self._conn.select(mailbox, readonly=True)
+                    if status != "OK":
+                        continue
+
+                    status, data = self._conn.search(None, flag)
+                    if status != "OK" or not data or not data[0]:
+                        continue
+
+                    ids = data[0].split()
+                    recent_ids = ids[-count:][::-1]  # 倒序，最新的在前
+
+                    for msg_id in recent_ids:
+                        try:
+                            email_msg = self._fetch_email(msg_id)
+                            if not email_msg:
+                                continue
+
+                            dedupe_key = email_msg.id or f"{mailbox}:{msg_id.decode(errors='ignore')}"
+                            if dedupe_key in seen_keys:
+                                continue
+
+                            seen_keys.add(dedupe_key)
+                            emails.append(email_msg)
+                        except Exception as e:
+                            logger.warning(
+                                f"[{self.account.email}] 解析邮件失败 ({mailbox}, ID: {msg_id}): {e}"
+                            )
                 except Exception as e:
-                    logger.warning(f"[{self.account.email}] 解析邮件失败 (ID: {msg_id}): {e}")
+                    logger.debug(f"[{self.account.email}] 跳过邮箱文件夹 {mailbox}: {e}")
 
             return emails
 

@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from ...config.settings import build_proxy_mapping, get_settings, update_settings
@@ -49,6 +49,7 @@ class RegistrationSettings(BaseModel):
     default_password_length: int = 12
     sleep_min: int = 5
     sleep_max: int = 30
+    entry_flow: str = "native"
 
 
 class WebUISettings(BaseModel):
@@ -73,6 +74,9 @@ async def get_all_settings():
     """获取所有设置"""
     settings = get_settings()
 
+    entry_flow_raw = str(settings.registration_entry_flow or "native").strip().lower()
+    entry_flow = "abcard" if entry_flow_raw == "abcard" else "native"
+
     return {
         "proxy": {
             "enabled": settings.proxy_enabled,
@@ -93,6 +97,7 @@ async def get_all_settings():
             "default_password_length": settings.registration_default_password_length,
             "sleep_min": settings.registration_sleep_min,
             "sleep_max": settings.registration_sleep_max,
+            "entry_flow": entry_flow,
         },
         "webui": {
             "host": settings.webui_host,
@@ -101,9 +106,20 @@ async def get_all_settings():
             "has_access_password": bool(settings.webui_access_password and settings.webui_access_password.get_secret_value()),
         },
         "tempmail": {
+            "enabled": settings.tempmail_enabled,
+            "api_url": settings.tempmail_base_url,
             "base_url": settings.tempmail_base_url,
             "timeout": settings.tempmail_timeout,
             "max_retries": settings.tempmail_max_retries,
+        },
+        "yyds_mail": {
+            "enabled": settings.yyds_mail_enabled,
+            "api_url": settings.yyds_mail_base_url,
+            "base_url": settings.yyds_mail_base_url,
+            "default_domain": settings.yyds_mail_default_domain,
+            "timeout": settings.yyds_mail_timeout,
+            "max_retries": settings.yyds_mail_max_retries,
+            "has_api_key": bool(settings.yyds_mail_api_key and settings.yyds_mail_api_key.get_secret_value()),
         },
         "email_code": {
             "timeout": settings.email_code_timeout,
@@ -205,24 +221,35 @@ async def get_registration_settings():
     """获取注册设置"""
     settings = get_settings()
 
+    entry_flow_raw = str(settings.registration_entry_flow or "native").strip().lower()
+    entry_flow = "abcard" if entry_flow_raw == "abcard" else "native"
+
     return {
         "max_retries": settings.registration_max_retries,
         "timeout": settings.registration_timeout,
         "default_password_length": settings.registration_default_password_length,
         "sleep_min": settings.registration_sleep_min,
         "sleep_max": settings.registration_sleep_max,
+        "entry_flow": entry_flow,
     }
 
 
 @router.post("/registration")
 async def update_registration_settings(request: RegistrationSettings):
     """更新注册设置"""
+    flow_raw = (request.entry_flow or "native").strip().lower()
+    # 兼容旧前端历史值：outlook -> native（Outlook 邮箱会在运行时自动走 outlook 链路）。
+    flow = "native" if flow_raw == "outlook" else flow_raw
+    if flow not in {"native", "abcard"}:
+        raise HTTPException(status_code=400, detail="entry_flow 仅支持 native / abcard")
+
     update_settings(
         registration_max_retries=request.max_retries,
         registration_timeout=request.timeout,
         registration_default_password_length=request.default_password_length,
         registration_sleep_min=request.sleep_min,
         registration_sleep_max=request.sleep_max,
+        registration_entry_flow=flow,
     )
 
     return {"success": True, "message": "注册设置已更新"}
@@ -311,6 +338,97 @@ async def backup_database():
     }
 
 
+@router.post("/database/import")
+async def import_database(file: UploadFile = File(...)):
+    """导入数据库（自动备份后覆盖当前 SQLite 文件）"""
+    import shutil
+    import tempfile
+    from datetime import datetime
+    from pathlib import Path as FilePath
+    from ...database.session import get_session_manager
+
+    settings = get_settings()
+
+    db_path = settings.database_url
+    if not db_path.startswith("sqlite:///"):
+        raise HTTPException(status_code=400, detail="当前仅支持 SQLite 数据库导入")
+
+    db_path = db_path[10:]
+    db_file = FilePath(db_path)
+
+    # 校验上传扩展名
+    filename = (file.filename or "").lower()
+    allowed_ext = (".db", ".sqlite", ".sqlite3")
+    if filename and not filename.endswith(allowed_ext):
+        raise HTTPException(status_code=400, detail="仅支持 .db / .sqlite / .sqlite3 文件")
+
+    if not db_file.exists():
+        raise HTTPException(status_code=404, detail="数据库文件不存在")
+
+    # 先落地到临时文件，再校验头，避免脏写
+    temp_path = None
+    try:
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix="db_import_",
+            suffix=".db",
+            dir=str(db_file.parent),
+            delete=False
+        ) as tmp:
+            temp_path = FilePath(tmp.name)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+
+        if not temp_path.exists() or temp_path.stat().st_size < 100:
+            raise HTTPException(status_code=400, detail="导入文件无效或为空")
+
+        # SQLite 文件头校验
+        with temp_path.open("rb") as f:
+            header = f.read(16)
+        if not header.startswith(b"SQLite format 3\x00"):
+            raise HTTPException(status_code=400, detail="文件不是有效的 SQLite 数据库")
+
+        # 先释放数据库连接，避免 Windows 下文件被占用
+        session_manager = get_session_manager()
+        session_manager.engine.dispose()
+
+        # 导入前自动备份
+        backup_dir = db_file.parent / "backups"
+        backup_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"database_backup_before_import_{timestamp}.db"
+        shutil.copy2(db_file, backup_path)
+
+        # 清理 WAL/SHM，避免替换后出现旧事务残留
+        wal_file = FilePath(f"{db_file}-wal")
+        shm_file = FilePath(f"{db_file}-shm")
+        for sidecar in (wal_file, shm_file):
+            try:
+                if sidecar.exists():
+                    sidecar.unlink()
+            except Exception:
+                logger.warning("清理 SQLite 附属文件失败: %s", sidecar)
+
+        os.replace(str(temp_path), str(db_file))
+
+        logger.info("数据库导入成功: file=%s backup=%s", file.filename, backup_path)
+        return {
+            "success": True,
+            "message": "数据库导入成功",
+            "backup_path": str(backup_path),
+        }
+    finally:
+        await file.close()
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+
+
 @router.post("/database/cleanup")
 async def cleanup_database(
     days: int = 30,
@@ -382,7 +500,11 @@ async def get_recent_logs(
 class TempmailSettings(BaseModel):
     """临时邮箱设置"""
     api_url: Optional[str] = None
-    enabled: bool = True
+    enabled: Optional[bool] = None
+    yyds_api_url: Optional[str] = None
+    yyds_api_key: Optional[str] = None
+    yyds_default_domain: Optional[str] = None
+    yyds_enabled: Optional[bool] = None
 
 
 class EmailCodeSettings(BaseModel):
@@ -397,10 +519,20 @@ async def get_tempmail_settings():
     settings = get_settings()
 
     return {
-        "api_url": settings.tempmail_base_url,
-        "timeout": settings.tempmail_timeout,
-        "max_retries": settings.tempmail_max_retries,
-        "enabled": True  # 临时邮箱默认可用
+        "tempmail": {
+            "api_url": settings.tempmail_base_url,
+            "timeout": settings.tempmail_timeout,
+            "max_retries": settings.tempmail_max_retries,
+            "enabled": settings.tempmail_enabled,
+        },
+        "yyds_mail": {
+            "api_url": settings.yyds_mail_base_url,
+            "default_domain": settings.yyds_mail_default_domain,
+            "timeout": settings.yyds_mail_timeout,
+            "max_retries": settings.yyds_mail_max_retries,
+            "enabled": settings.yyds_mail_enabled,
+            "has_api_key": bool(settings.yyds_mail_api_key and settings.yyds_mail_api_key.get_secret_value()),
+        },
     }
 
 
@@ -411,6 +543,16 @@ async def update_tempmail_settings(request: TempmailSettings):
 
     if request.api_url:
         update_dict["tempmail_base_url"] = request.api_url
+    if request.enabled is not None:
+        update_dict["tempmail_enabled"] = request.enabled
+    if request.yyds_api_url is not None:
+        update_dict["yyds_mail_base_url"] = request.yyds_api_url
+    if request.yyds_api_key is not None:
+        update_dict["yyds_mail_api_key"] = request.yyds_api_key
+    if request.yyds_default_domain is not None:
+        update_dict["yyds_mail_default_domain"] = request.yyds_default_domain
+    if request.yyds_enabled is not None:
+        update_dict["yyds_mail_enabled"] = request.yyds_enabled
 
     update_settings(**update_dict)
 

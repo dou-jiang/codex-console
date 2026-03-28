@@ -350,6 +350,7 @@ const statusMap = {
     },
     service: {
         tempmail: 'Tempmail.lol',
+        yyds_mail: 'YYDS Mail',
         outlook: 'Outlook',
         moe_mail: 'MoeMail',
         temp_mail: 'Temp-Mail（自部署）',

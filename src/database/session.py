@@ -110,7 +110,13 @@ class DatabaseSessionManager:
             ("accounts", "subscription_type", "VARCHAR(20)"),
             ("accounts", "subscription_at", "DATETIME"),
             ("accounts", "cookies", "TEXT"),
+            ("cpa_services", "proxy_url", "VARCHAR(1000)"),
+            ("sub2api_services", "target_type", "VARCHAR(50) DEFAULT 'sub2api'"),
             ("proxies", "is_default", "BOOLEAN DEFAULT 0"),
+            ("bind_card_tasks", "checkout_session_id", "VARCHAR(120)"),
+            ("bind_card_tasks", "publishable_key", "VARCHAR(255)"),
+            ("bind_card_tasks", "client_secret", "TEXT"),
+            ("bind_card_tasks", "bind_mode", "VARCHAR(30) DEFAULT 'semi_auto'"),
         ]
 
         # 确保新表存在（create_tables 已处理，此处兜底）

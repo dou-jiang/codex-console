@@ -208,6 +208,9 @@ def _normalize_email_service_config(
     if service_type == EmailServiceType.MOE_MAIL:
         if 'domain' in normalized and 'default_domain' not in normalized:
             normalized['default_domain'] = normalized.pop('domain')
+    elif service_type == EmailServiceType.YYDS_MAIL:
+        if 'domain' in normalized and 'default_domain' not in normalized:
+            normalized['default_domain'] = normalized.pop('domain')
     elif service_type in (EmailServiceType.TEMP_MAIL, EmailServiceType.FREEMAIL):
         if 'default_domain' in normalized and 'domain' not in normalized:
             normalized['domain'] = normalized.pop('default_domain')
@@ -285,10 +288,24 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
             else:
                 # 使用默认配置或传入的配置
                 if service_type == EmailServiceType.TEMPMAIL:
+                    if not settings.tempmail_enabled:
+                        raise ValueError("Tempmail.lol 渠道已禁用，请先在邮箱服务页面启用")
                     config = {
                         "base_url": settings.tempmail_base_url,
                         "timeout": settings.tempmail_timeout,
                         "max_retries": settings.tempmail_max_retries,
+                        "proxy_url": actual_proxy_url,
+                    }
+                elif service_type == EmailServiceType.YYDS_MAIL:
+                    api_key = settings.yyds_mail_api_key.get_secret_value() if settings.yyds_mail_api_key else ""
+                    if not settings.yyds_mail_enabled or not api_key:
+                        raise ValueError("YYDS Mail 渠道未启用或未配置 API Key，请先在邮箱服务页面配置")
+                    config = {
+                        "base_url": settings.yyds_mail_base_url,
+                        "api_key": api_key,
+                        "default_domain": settings.yyds_mail_default_domain,
+                        "timeout": settings.yyds_mail_timeout,
+                        "max_retries": settings.yyds_mail_max_retries,
                         "proxy_url": actual_proxy_url,
                     }
                 elif service_type == EmailServiceType.MOE_MAIL:
@@ -865,15 +882,15 @@ async def start_batch_registration(
     """
     启动批量注册任务
 
-    - count: 注册数量 (1-100)
+    - count: 注册数量 (1-1000)
     - email_service_type: 邮箱服务类型
     - proxy: 代理地址
     - interval_min: 最小间隔秒数
     - interval_max: 最大间隔秒数
     """
     # 验证参数
-    if request.count < 1 or request.count > 100:
-        raise HTTPException(status_code=400, detail="注册数量必须在 1-100 之间")
+    if request.count < 1 or request.count > 1000:
+        raise HTTPException(status_code=400, detail="注册数量必须在 1-1000 之间")
 
     try:
         EmailServiceType(request.email_service_type)
@@ -1015,9 +1032,14 @@ async def get_task_logs(task_uuid: str):
             raise HTTPException(status_code=404, detail="任务不存在")
 
         logs = task.logs or ""
+        result = task.result if isinstance(task.result, dict) else {}
+        email = result.get("email")
+        service_type = task.email_service.service_type if task.email_service else None
         return {
             "task_uuid": task_uuid,
             "status": task.status,
+            "email": email,
+            "email_service": service_type,
             "logs": logs.split("\n") if logs else []
         }
 
@@ -1066,15 +1088,33 @@ async def get_registration_stats():
             func.count(RegistrationTask.id)
         ).group_by(RegistrationTask.status).all()
 
-        # 今日注册数
+        # 今日统计
         today = datetime.utcnow().date()
+        today_status_stats = db.query(
+            RegistrationTask.status,
+            func.count(RegistrationTask.id)
+        ).filter(
+            func.date(RegistrationTask.created_at) == today
+        ).group_by(RegistrationTask.status).all()
+
         today_count = db.query(func.count(RegistrationTask.id)).filter(
             func.date(RegistrationTask.created_at) == today
         ).scalar()
 
+        today_by_status = {status: count for status, count in today_status_stats}
+        today_success = int(today_by_status.get("completed", 0))
+        today_failed = int(today_by_status.get("failed", 0))
+        today_total = int(today_count or 0)
+        today_success_rate = round((today_success / today_total) * 100, 1) if today_total > 0 else 0.0
+
         return {
             "by_status": {status: count for status, count in status_stats},
-            "today_count": today_count
+            "today_count": today_total,
+            "today_total": today_total,
+            "today_success": today_success,
+            "today_failed": today_failed,
+            "today_success_rate": today_success_rate,
+            "today_by_status": today_by_status,
         }
 
 
@@ -1085,6 +1125,7 @@ async def get_available_email_services():
 
     返回所有已启用的邮箱服务，包括：
     - tempmail: 临时邮箱（无需配置）
+    - yyds_mail: YYDS Mail 临时邮箱（需 API Key）
     - outlook: 已导入的 Outlook 账户
     - moe_mail: 已配置的自定义域名服务
     """
@@ -1094,14 +1135,19 @@ async def get_available_email_services():
     settings = get_settings()
     result = {
         "tempmail": {
-            "available": True,
-            "count": 1,
-            "services": [{
+            "available": bool(settings.tempmail_enabled),
+            "count": 1 if settings.tempmail_enabled else 0,
+            "services": ([{
                 "id": None,
                 "name": "Tempmail.lol",
                 "type": "tempmail",
                 "description": "临时邮箱，自动创建"
-            }]
+            }] if settings.tempmail_enabled else [])
+        },
+        "yyds_mail": {
+            "available": False,
+            "count": 0,
+            "services": []
         },
         "outlook": {
             "available": False,
@@ -1135,7 +1181,37 @@ async def get_available_email_services():
         }
     }
 
+    yyds_api_key = settings.yyds_mail_api_key.get_secret_value() if settings.yyds_mail_api_key else ""
+    if settings.yyds_mail_enabled and yyds_api_key:
+        result["yyds_mail"]["available"] = True
+        result["yyds_mail"]["count"] = 1
+        result["yyds_mail"]["services"].append({
+            "id": None,
+            "name": "YYDS Mail",
+            "type": "yyds_mail",
+            "default_domain": settings.yyds_mail_default_domain or None,
+            "description": "YYDS Mail API 临时邮箱",
+        })
+
     with get_db() as db:
+        yyds_mail_services = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "yyds_mail",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).all()
+
+        for service in yyds_mail_services:
+            config = service.config or {}
+            result["yyds_mail"]["services"].append({
+                "id": service.id,
+                "name": service.name,
+                "type": "yyds_mail",
+                "default_domain": config.get("default_domain"),
+                "priority": service.priority
+            })
+
+        if yyds_mail_services:
+            result["yyds_mail"]["count"] = len(result["yyds_mail"]["services"])
+            result["yyds_mail"]["available"] = True
         # 获取 Outlook 账户
         outlook_services = db.query(EmailServiceModel).filter(
             EmailServiceModel.service_type == "outlook",
