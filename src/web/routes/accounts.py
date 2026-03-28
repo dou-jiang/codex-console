@@ -2275,6 +2275,7 @@ def _build_inbox_config(db, service_type, email: str) -> dict:
     # 其余服务类型：直接按 service_type 查数据库
     type_map = {
         EST.TEMP_MAIL: "temp_mail",
+        EST.CLOUDMAIL: "cloudmail",
         EST.DUCK_MAIL: "duck_mail",
         EST.FREEMAIL: "freemail",
         EST.IMAP_MAIL: "imap_mail",

@@ -26,6 +26,7 @@ let availableServices = {
     outlook: { available: false, services: [] },
     moe_mail: { available: false, services: [] },
     temp_mail: { available: false, services: [] },
+    cloudmail: { available: false, services: [] },
     duck_mail: { available: false, services: [] },
     freemail: { available: false, services: [] }
 };
@@ -373,6 +374,23 @@ function updateEmailServiceOptions() {
         select.appendChild(optgroup);
     }
 
+    // CloudMail
+    if (availableServices.cloudmail && availableServices.cloudmail.available) {
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = `☁️ CloudMail (${availableServices.cloudmail.count} 个服务)`;
+
+        availableServices.cloudmail.services.forEach(service => {
+            const option = document.createElement('option');
+            option.value = `cloudmail:${service.id}`;
+            option.textContent = service.name + (service.domain ? ` (@${service.domain})` : '');
+            option.dataset.type = 'cloudmail';
+            option.dataset.serviceId = service.id;
+            optgroup.appendChild(option);
+        });
+
+        select.appendChild(optgroup);
+    }
+
     // DuckMail
     if (availableServices.duck_mail && availableServices.duck_mail.available) {
         const optgroup = document.createElement('optgroup');
@@ -450,6 +468,11 @@ function handleServiceChange(e) {
         const service = availableServices.temp_mail.services.find(s => s.id == id);
         if (service) {
             addLog('info', `[系统] 已选择 Temp-Mail 自部署服务: ${service.name}`);
+        }
+    } else if (type === 'cloudmail') {
+        const service = availableServices.cloudmail.services.find(s => s.id == id);
+        if (service) {
+            addLog('info', `[系统] 已选择 CloudMail 服务: ${service.name}`);
         }
     } else if (type === 'duck_mail') {
         const service = availableServices.duck_mail.services.find(s => s.id == id);

@@ -4,7 +4,7 @@
 
 // 状态
 let outlookServices = [];
-let customServices = [];  // 合并 moe_mail + temp_mail + duck_mail + freemail + imap_mail
+let customServices = [];  // 合并 moe_mail + temp_mail + cloudmail + duck_mail + freemail + imap_mail
 let selectedOutlook = new Set();
 let selectedCustom = new Set();
 
@@ -86,6 +86,7 @@ const CUSTOM_SUBTYPE_LABELS = {
     yydsmail: 'YYDS Mail (YYDS Mail API)',
     moemail: '🔗 MoeMail（自定义域名 API）',
     tempmail: '📮 TempMail（自部署 Cloudflare Worker）',
+    cloudmail: '☁️ CloudMail（Cloudflare Worker）',
     duckmail: '🦆 DuckMail（DuckMail API）',
     freemail: 'Freemail（自部署 Cloudflare Worker）',
     imap: '📧 IMAP 邮箱（Gmail/QQ/163等）'
@@ -194,7 +195,7 @@ function switchAddSubType(subType) {
     elements.customSubType.value = subType;
     elements.addMoemailFields.style.display = subType === 'moemail' ? '' : 'none';
     elements.addYydsMailFields.style.display = subType === 'yydsmail' ? '' : 'none';
-    elements.addTempmailFields.style.display = subType === 'tempmail' ? '' : 'none';
+    elements.addTempmailFields.style.display = (subType === 'tempmail' || subType === 'cloudmail') ? '' : 'none';
     elements.addDuckmailFields.style.display = subType === 'duckmail' ? '' : 'none';
     elements.addFreemailFields.style.display = subType === 'freemail' ? '' : 'none';
     elements.addImapFields.style.display = subType === 'imap' ? '' : 'none';
@@ -205,7 +206,7 @@ function switchEditSubType(subType) {
     elements.editCustomSubTypeHidden.value = subType;
     elements.editMoemailFields.style.display = subType === 'moemail' ? '' : 'none';
     elements.editYydsMailFields.style.display = subType === 'yydsmail' ? '' : 'none';
-    elements.editTempmailFields.style.display = subType === 'tempmail' ? '' : 'none';
+    elements.editTempmailFields.style.display = (subType === 'tempmail' || subType === 'cloudmail') ? '' : 'none';
     elements.editDuckmailFields.style.display = subType === 'duckmail' ? '' : 'none';
     elements.editFreemailFields.style.display = subType === 'freemail' ? '' : 'none';
     elements.editImapFields.style.display = subType === 'imap' ? '' : 'none';
@@ -217,7 +218,7 @@ async function loadStats() {
     try {
         const data = await api.get('/email-services/stats');
         elements.outlookCount.textContent = data.outlook_count || 0;
-        elements.customCount.textContent = (data.custom_count || 0) + (data.yyds_mail_count || 0) + (data.temp_mail_count || 0) + (data.duck_mail_count || 0) + (data.freemail_count || 0) + (data.imap_mail_count || 0);
+        elements.customCount.textContent = (data.custom_count || 0) + (data.yyds_mail_count || 0) + (data.temp_mail_count || 0) + (data.cloudmail_count || 0) + (data.duck_mail_count || 0) + (data.freemail_count || 0) + (data.imap_mail_count || 0);
         elements.tempmailStatus.textContent = data.tempmail_available ? '可用' : '不可用';
         elements.totalEnabled.textContent = data.enabled_count || 0;
     } catch (error) {
@@ -317,6 +318,9 @@ function getCustomServiceTypeBadge(subType) {
     if (subType === 'tempmail') {
         return '<span class="status-badge warning">TempMail</span>';
     }
+    if (subType === 'cloudmail') {
+        return '<span class="status-badge" style="background-color:#1976d2;color:white;">CloudMail</span>';
+    }
     if (subType === 'duckmail') {
         return '<span class="status-badge success">DuckMail</span>';
     }
@@ -340,13 +344,14 @@ function getCustomServiceAddress(service) {
     return `${escapeHtml(baseUrl)}<div style="color: var(--text-muted); margin-top: 4px;">默认域名：@${escapeHtml(domain)}</div>`;
 }
 
-// 加载自定义邮箱服务（moe_mail + temp_mail + duck_mail + freemail 合并）
+// 加载自定义邮箱服务（moe_mail + temp_mail + cloudmail + duck_mail + freemail + imap_mail 合并）
 async function loadCustomServices() {
     try {
-        const [r1, r2, r3, r4, r5, r6] = await Promise.all([
+        const [r1, r2, r3, r4, r5, r6, r7] = await Promise.all([
             api.get('/email-services?service_type=moe_mail'),
             api.get('/email-services?service_type=yyds_mail'),
             api.get('/email-services?service_type=temp_mail'),
+            api.get('/email-services?service_type=cloudmail'),
             api.get('/email-services?service_type=duck_mail'),
             api.get('/email-services?service_type=freemail'),
             api.get('/email-services?service_type=imap_mail')
@@ -355,9 +360,10 @@ async function loadCustomServices() {
             ...(r1.services || []).map(s => ({ ...s, _subType: 'moemail' })),
             ...(r2.services || []).map(s => ({ ...s, _subType: 'yydsmail' })),
             ...(r3.services || []).map(s => ({ ...s, _subType: 'tempmail' })),
-            ...(r4.services || []).map(s => ({ ...s, _subType: 'duckmail' })),
-            ...(r5.services || []).map(s => ({ ...s, _subType: 'freemail' })),
-            ...(r6.services || []).map(s => ({ ...s, _subType: 'imap' }))
+            ...(r4.services || []).map(s => ({ ...s, _subType: 'cloudmail' })),
+            ...(r5.services || []).map(s => ({ ...s, _subType: 'duckmail' })),
+            ...(r6.services || []).map(s => ({ ...s, _subType: 'freemail' })),
+            ...(r7.services || []).map(s => ({ ...s, _subType: 'imap' }))
         ];
 
         if (customServices.length === 0) {
@@ -494,8 +500,8 @@ async function handleAddCustom(e) {
             api_key: formData.get('yyds_api_key'),
             default_domain: formData.get('yyds_domain')
         };
-    } else if (subType === 'tempmail') {
-        serviceType = 'temp_mail';
+    } else if (subType === 'tempmail' || subType === 'cloudmail') {
+        serviceType = subType === 'cloudmail' ? 'cloudmail' : 'temp_mail';
         config = {
             base_url: formData.get('tm_base_url'),
             admin_password: formData.get('tm_admin_password'),
@@ -723,13 +729,15 @@ function escapeHtml(text) {
 
 // ============== 编辑功能 ==============
 
-// 编辑自定义邮箱服务（支持 moemail / tempmail / duckmail）
+// 编辑自定义邮箱服务（支持 moemail / tempmail / cloudmail / duckmail）
 async function editCustomService(id, subType) {
     try {
         const service = await api.get(`/email-services/${id}/full`);
         const resolvedSubType = subType || (
             service.service_type === 'temp_mail'
                 ? 'tempmail'
+                : service.service_type === 'cloudmail'
+                    ? 'cloudmail'
                 : service.service_type === 'yyds_mail'
                     ? 'yydsmail'
                 : service.service_type === 'duck_mail'
@@ -758,7 +766,7 @@ async function editCustomService(id, subType) {
             document.getElementById('edit-yyds-api-key').value = '';
             document.getElementById('edit-yyds-api-key').placeholder = service.config?.api_key ? '已设置，留空保持不变' : 'Enter API Key';
             document.getElementById('edit-yyds-domain').value = service.config?.default_domain || service.config?.domain || '';
-        } else if (resolvedSubType === 'tempmail') {
+        } else if (resolvedSubType === 'tempmail' || resolvedSubType === 'cloudmail') {
             document.getElementById('edit-tm-base-url').value = service.config?.base_url || '';
             document.getElementById('edit-tm-admin-password').value = '';
             document.getElementById('edit-tm-admin-password').placeholder = service.config?.admin_password ? '已设置，留空保持不变' : '请输入 Admin 密码';
@@ -811,7 +819,7 @@ async function handleEditCustom(e) {
         };
         const apiKey = formData.get('yyds_api_key');
         if (apiKey && apiKey.trim()) config.api_key = apiKey.trim();
-    } else if (subType === 'tempmail') {
+    } else if (subType === 'tempmail' || subType === 'cloudmail') {
         config = {
             base_url: formData.get('tm_base_url'),
             domain: formData.get('tm_domain'),

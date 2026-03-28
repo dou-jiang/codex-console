@@ -184,10 +184,10 @@ async def get_email_services_stats():
             'custom_count': 0,
             'yyds_mail_count': 0,
             'temp_mail_count': 0,
+            'cloudmail_count': 0,
             'duck_mail_count': 0,
             'freemail_count': 0,
             'imap_mail_count': 0,
-            'cloudmail_count': 0,
             'tempmail_available': tempmail_enabled or yyds_enabled,
             'yyds_mail_available': yyds_enabled,
             'enabled_count': enabled_count
@@ -202,14 +202,14 @@ async def get_email_services_stats():
                 stats['yyds_mail_count'] = count
             elif service_type == 'temp_mail':
                 stats['temp_mail_count'] = count
+            elif service_type == 'cloudmail':
+                stats['cloudmail_count'] = count
             elif service_type == 'duck_mail':
                 stats['duck_mail_count'] = count
             elif service_type == 'freemail':
                 stats['freemail_count'] = count
             elif service_type == 'imap_mail':
                 stats['imap_mail_count'] = count
-            elif service_type == 'cloudmail':
-                stats['cloudmail_count'] = count
 
         return stats
 
@@ -268,6 +268,17 @@ async def get_service_types():
                     {"name": "base_url", "label": "Worker 地址", "required": True, "placeholder": "https://mail.example.com"},
                     {"name": "admin_password", "label": "Admin 密码", "required": True, "secret": True},
                     {"name": "custom_auth", "label": "Custom Auth（可选）", "required": False, "secret": True},
+                    {"name": "domain", "label": "邮箱域名", "required": True, "placeholder": "example.com"},
+                    {"name": "enable_prefix", "label": "启用前缀", "required": False, "default": True},
+                ]
+            },
+            {
+                "value": "cloudmail",
+                "label": "CloudMail",
+                "description": "CloudMail 临时邮箱服务，使用与 Temp-Mail 兼容的 Cloudflare Worker 接口",
+                "config_fields": [
+                    {"name": "base_url", "label": "Worker 地址", "required": True, "placeholder": "https://mail.example.com"},
+                    {"name": "admin_password", "label": "Admin 密码", "required": True, "secret": True},
                     {"name": "domain", "label": "邮箱域名", "required": True, "placeholder": "example.com"},
                     {"name": "enable_prefix", "label": "启用前缀", "required": False, "default": True},
                 ]
