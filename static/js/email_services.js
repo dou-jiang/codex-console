@@ -505,6 +505,7 @@ async function handleAddCustom(e) {
         config = {
             base_url: formData.get('tm_base_url'),
             admin_password: formData.get('tm_admin_password'),
+            custom_auth: formData.get('tm_site_password'),
             domain: formData.get('tm_domain'),
             enable_prefix: true
         };
@@ -577,7 +578,7 @@ async function testService(id) {
     try {
         const result = await api.post(`/email-services/${id}/test`);
         if (result.success) toast.success('测试成功');
-        else toast.error('测试失败: ' + (result.error || '未知错误'));
+        else toast.error('测试失败: ' + (result.error || result.message || '未知错误'));
     } catch (error) {
         toast.error('测试失败: ' + error.message);
     }
@@ -770,6 +771,8 @@ async function editCustomService(id, subType) {
             document.getElementById('edit-tm-base-url').value = service.config?.base_url || '';
             document.getElementById('edit-tm-admin-password').value = '';
             document.getElementById('edit-tm-admin-password').placeholder = service.config?.admin_password ? '已设置，留空保持不变' : '请输入 Admin 密码';
+            document.getElementById('edit-tm-site-password').value = '';
+            document.getElementById('edit-tm-site-password').placeholder = (service.config?.custom_auth || service.config?.site_password) ? '已设置，留空保持不变' : '请输入站点密码（可选）';
             document.getElementById('edit-tm-domain').value = service.config?.domain || '';
         } else if (resolvedSubType === 'duckmail') {
             document.getElementById('edit-dm-base-url').value = service.config?.base_url || '';
@@ -827,6 +830,8 @@ async function handleEditCustom(e) {
         };
         const pwd = formData.get('tm_admin_password');
         if (pwd && pwd.trim()) config.admin_password = pwd.trim();
+        const sitePassword = formData.get('tm_site_password');
+        if (sitePassword && sitePassword.trim()) config.custom_auth = sitePassword.trim();
     } else if (subType === 'duckmail') {
         config = {
             base_url: formData.get('dm_base_url'),

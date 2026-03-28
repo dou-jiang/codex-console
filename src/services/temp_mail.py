@@ -219,7 +219,11 @@ class TempMailService(BaseEmailService):
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        custom_auth = (self.config.get("custom_auth") or "").strip()
+        custom_auth = (
+            self.config.get("custom_auth")
+            or self.config.get("site_password")
+            or ""
+        ).strip()
         if custom_auth:
             headers["x-custom-auth"] = custom_auth
         return headers

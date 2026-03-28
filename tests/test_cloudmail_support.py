@@ -1,6 +1,7 @@
 import asyncio
 
 from src.config.constants import EmailServiceType
+from src.services.cloudmail import CloudMailService
 from src.web.routes.email import get_service_types
 from src.web.routes.payment import _normalize_email_service_config_for_session_bootstrap
 from src.web.routes.registration import _normalize_email_service_config
@@ -43,3 +44,19 @@ def test_email_service_types_includes_cloudmail():
     payload = asyncio.run(get_service_types())
     type_values = {item["value"] for item in payload["types"]}
     assert "cloudmail" in type_values
+
+
+def test_cloudmail_supports_site_password_alias():
+    service = CloudMailService(
+        {
+            "base_url": "https://mail.example.com",
+            "admin_password": "admin-secret",
+            "site_password": "site-secret",
+            "domain": "example.com",
+        }
+    )
+
+    headers = service._admin_headers()
+
+    assert headers["x-admin-auth"] == "admin-secret"
+    assert headers["x-custom-auth"] == "site-secret"

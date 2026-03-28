@@ -301,6 +301,11 @@
                             <input type="password" id="custom-tm-admin-password" name="tm_admin_password" placeholder="x-admin-auth 密码">
                         </div>
                         <div class="form-group">
+                            <label for="custom-tm-site-password">站点密码（可选）</label>
+                            <input type="password" id="custom-tm-site-password" name="tm_site_password" placeholder="私有站点密码，会映射到 x-custom-auth">
+                            <small style="color: var(--text-muted);">如果 Worker 开启了 private site password，这里必须填写。</small>
+                        </div>
+                        <div class="form-group">
                             <label for="custom-tm-domain">邮箱域名</label>
                             <input type="text" id="custom-tm-domain" name="tm_domain" placeholder="example.com">
                         </div>
@@ -450,6 +455,11 @@
                             <label for="edit-tm-admin-password">Admin 密码</label>
                             <input type="password" id="edit-tm-admin-password" name="tm_admin_password" placeholder="留空则不修改">
                             <small style="color: var(--text-muted);">留空则保持原值不变</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-tm-site-password">站点密码（可选）</label>
+                            <input type="password" id="edit-tm-site-password" name="tm_site_password" placeholder="留空则不修改">
+                            <small style="color: var(--text-muted);">如果 Worker 开启了 private site password，这里需要填写；留空则保持原值不变。</small>
                         </div>
                         <div class="form-group">
                             <label for="edit-tm-domain">邮箱域名</label>
