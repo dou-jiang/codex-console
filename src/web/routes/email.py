@@ -6,7 +6,7 @@ import logging
 from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func
 
 from ...database import crud
@@ -53,8 +53,7 @@ class EmailServiceResponse(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EmailServiceListResponse(BaseModel):

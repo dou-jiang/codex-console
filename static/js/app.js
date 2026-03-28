@@ -8,11 +8,13 @@ let currentTask = null;
 let currentBatch = null;
 let logPollingInterval = null;
 let batchPollingInterval = null;
+let autoMonitorPollingInterval = null;
 let accountsPollingInterval = null;
 let todayStatsPollingInterval = null;
 let todayStatsResetInterval = null;
 let isBatchMode = false;
 let isOutlookBatchMode = false;
+let isAutoMode = false;
 let outlookAccounts = [];
 let taskCompleted = false;  // 标记任务是否已完成
 let batchCompleted = false;  // 标记批量任务是否已完成
@@ -44,6 +46,7 @@ let wsReconnectAttempts = 0;
 let batchWsReconnectAttempts = 0;
 let wsManualClose = false;
 let batchWsManualClose = false;
+let autoMonitorLastLogIndex = 0;
 
 const WS_RECONNECT_BASE_DELAY = 1000;
 const WS_RECONNECT_MAX_DELAY = 10000;
@@ -52,6 +55,7 @@ const WS_RECONNECT_MAX_DELAY = 10000;
 const elements = {
     form: document.getElementById('registration-form'),
     emailService: document.getElementById('email-service'),
+    emailServiceGroup: document.getElementById('email-service')?.closest('.form-group'),
     regMode: document.getElementById('reg-mode'),
     regModeGroup: document.getElementById('reg-mode-group'),
     batchCountGroup: document.getElementById('batch-count-group'),
@@ -71,6 +75,10 @@ const elements = {
     taskStatus: document.getElementById('task-status'),
     taskService: document.getElementById('task-service'),
     taskStatusBadge: document.getElementById('task-status-badge'),
+    autoMonitorStatusBadge: document.getElementById('auto-monitor-status-badge'),
+    autoMonitorLastChecked: document.getElementById('auto-monitor-last-checked'),
+    taskLastChecked: document.getElementById('task-last-checked'),
+    taskInventory: document.getElementById('task-inventory'),
     // 批量状态
     batchProgressText: document.getElementById('batch-progress-text'),
     batchProgressPercent: document.getElementById('batch-progress-percent'),
@@ -112,13 +120,29 @@ const elements = {
     autoUploadTm: document.getElementById('auto-upload-tm'),
     tmServiceSelectGroup: document.getElementById('tm-service-select-group'),
     tmServiceSelect: document.getElementById('tm-service-select'),
+    autoRegistrationSection: document.getElementById('auto-registration-section'),
+    autoRegistrationEnabled: document.getElementById('auto-registration-enabled'),
+    autoRegistrationCheckInterval: document.getElementById('auto-registration-check-interval'),
+    autoRegistrationMinReady: document.getElementById('auto-registration-min-ready'),
+    autoRegistrationCpaServiceId: document.getElementById('auto-registration-cpa-service-id'),
+    autoRegistrationEmailServiceType: document.getElementById('auto-registration-email-service-type'),
+    autoRegistrationEmailServiceId: document.getElementById('auto-registration-email-service-id'),
+    autoRegistrationProxy: document.getElementById('auto-registration-proxy'),
+    autoRegistrationMode: document.getElementById('auto-registration-mode'),
+    autoRegistrationConcurrency: document.getElementById('auto-registration-concurrency'),
+    autoRegistrationIntervalGroup: document.getElementById('auto-registration-interval-group'),
+    autoRegistrationIntervalMin: document.getElementById('auto-registration-interval-min'),
+    autoRegistrationIntervalMax: document.getElementById('auto-registration-interval-max'),
 };
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
     initEventListeners();
+    handleModeChange({ target: elements.regMode });
     loadAvailableServices();
     loadRecentAccounts();
+    loadAutoRegistrationSettings();
+    loadAutoRegistrationCpaOptions();
     startAccountsPolling();
     loadTodayStats(true);
     startTodayStatsPolling();
@@ -216,6 +240,18 @@ function initEventListeners() {
 
     // 邮箱服务切换
     elements.emailService.addEventListener('change', handleServiceChange);
+    if (elements.autoRegistrationEmailServiceType) {
+        elements.autoRegistrationEmailServiceType.addEventListener('change', () => populateAutoRegistrationEmailServiceOptions(0));
+    }
+    if (elements.autoRegistrationMode) {
+        elements.autoRegistrationMode.addEventListener('change', () => {
+            handleConcurrencyModeChange(
+                elements.autoRegistrationMode,
+                elements.concurrencyHint,
+                elements.autoRegistrationIntervalGroup
+            );
+        });
+    }
 
     // 取消按钮
     elements.cancelBtn.addEventListener('click', handleCancelTask);
@@ -249,6 +285,7 @@ async function loadAvailableServices() {
 
         // 更新邮箱服务选择框
         updateEmailServiceOptions();
+        populateAutoRegistrationEmailServiceOptions(parseInt(elements.autoRegistrationEmailServiceId?.value || '0', 10) || 0);
 
         addLog('info', '[系统] 邮箱服务列表已加载');
     } catch (error) {
@@ -467,10 +504,30 @@ function handleServiceChange(e) {
 // 模式切换
 function handleModeChange(e) {
     const mode = e.target.value;
+    isAutoMode = mode === 'auto';
     isBatchMode = mode === 'batch';
 
     elements.batchCountGroup.style.display = isBatchMode ? 'block' : 'none';
     elements.batchOptions.style.display = isBatchMode ? 'block' : 'none';
+    if (elements.autoRegistrationSection) {
+        elements.autoRegistrationSection.style.display = isAutoMode ? 'block' : 'none';
+    }
+    if (elements.emailServiceGroup) {
+        elements.emailServiceGroup.style.display = isAutoMode ? 'none' : 'block';
+    }
+    const autoUploadGroup = elements.autoUploadCpa?.closest('#auto-upload-group');
+    if (autoUploadGroup) {
+        autoUploadGroup.style.display = isAutoMode ? 'none' : 'block';
+    }
+    elements.startBtn.textContent = isAutoMode ? '💾 保存自动注册设置' : '🚀 开始注册';
+
+    if (isAutoMode) {
+        elements.cancelBtn.disabled = false;
+    } else {
+        stopAutoRegistrationMonitor();
+        updateAutoMonitorHeader('idle', null);
+        elements.cancelBtn.disabled = true;
+    }
 }
 
 // 并发模式切换（批量）
@@ -488,6 +545,11 @@ function handleConcurrencyModeChange(selectEl, hintEl, intervalGroupEl) {
 // 开始注册
 async function handleStartRegistration(e) {
     e.preventDefault();
+
+    if (isAutoMode) {
+        await handleSaveAutoRegistration();
+        return;
+    }
 
     const selectedValue = elements.emailService.value;
     if (!selectedValue) {
@@ -530,6 +592,142 @@ async function handleStartRegistration(e) {
         await handleBatchRegistration(requestData);
     } else {
         await handleSingleRegistration(requestData);
+    }
+}
+
+
+async function loadAutoRegistrationSettings() {
+    if (!elements.autoRegistrationEnabled) return;
+    try {
+        const data = await api.get('/settings');
+        const reg = data.registration || {};
+        elements.autoRegistrationEnabled.checked = reg.auto_enabled || false;
+        elements.autoRegistrationCheckInterval.value = reg.auto_check_interval || 60;
+        elements.autoRegistrationMinReady.value = reg.auto_min_ready_auth_files || 1;
+        elements.autoRegistrationEmailServiceType.value = reg.auto_email_service_type || 'tempmail';
+        elements.autoRegistrationProxy.value = reg.auto_proxy || '';
+        elements.autoRegistrationMode.value = reg.auto_mode || 'pipeline';
+        elements.autoRegistrationConcurrency.value = reg.auto_concurrency || 1;
+        elements.autoRegistrationIntervalMin.value = reg.auto_interval_min || 5;
+        elements.autoRegistrationIntervalMax.value = reg.auto_interval_max || 30;
+        handleConcurrencyModeChange(
+            elements.autoRegistrationMode,
+            elements.concurrencyHint,
+            elements.autoRegistrationIntervalGroup
+        );
+        elements.autoRegistrationEmailServiceId.dataset.selectedId = String(reg.auto_email_service_id || 0);
+        elements.autoRegistrationCpaServiceId.dataset.selectedId = String(reg.auto_cpa_service_id || 0);
+        populateAutoRegistrationEmailServiceOptions(reg.auto_email_service_id || 0);
+    } catch (error) {
+        console.error('加载自动注册设置失败:', error);
+    }
+}
+
+async function loadAutoRegistrationCpaOptions() {
+    if (!elements.autoRegistrationCpaServiceId) return;
+    try {
+        const services = await api.get('/cpa-services?enabled=true');
+        const options = ['<option value="0">请选择 CPA 服务</option>'];
+        services.forEach(service => {
+            options.push(`<option value="${service.id}">${escapeHtml(service.name)} (#${service.id})</option>`);
+        });
+        elements.autoRegistrationCpaServiceId.innerHTML = options.join('');
+        elements.autoRegistrationCpaServiceId.value = elements.autoRegistrationCpaServiceId.dataset.selectedId || '0';
+    } catch (error) {
+        console.error('加载 CPA 服务失败:', error);
+    }
+}
+
+function populateAutoRegistrationEmailServiceOptions(selectedId = 0) {
+    if (!elements.autoRegistrationEmailServiceId || !elements.autoRegistrationEmailServiceType) return;
+    const selectedType = elements.autoRegistrationEmailServiceType.value || 'tempmail';
+    const options = ['<option value="0">自动选择</option>'];
+    const bucket = availableServices[selectedType];
+    if (bucket && Array.isArray(bucket.services)) {
+        bucket.services.forEach(service => {
+            options.push(`<option value="${service.id}">${escapeHtml(service.name)} (#${service.id})</option>`);
+        });
+    }
+    elements.autoRegistrationEmailServiceId.innerHTML = options.join('');
+    elements.autoRegistrationEmailServiceId.value = String(selectedId || elements.autoRegistrationEmailServiceId.dataset.selectedId || 0);
+}
+
+async function handleSaveAutoRegistration() {
+    const autoCheckInterval = parseInt(elements.autoRegistrationCheckInterval.value, 10) || 60;
+    const autoMinReady = parseInt(elements.autoRegistrationMinReady.value, 10) || 1;
+    const autoEmailServiceId = parseInt(elements.autoRegistrationEmailServiceId.value, 10) || 0;
+    const autoConcurrency = parseInt(elements.autoRegistrationConcurrency.value, 10) || 1;
+    const autoIntervalMin = parseInt(elements.autoRegistrationIntervalMin.value, 10) || 0;
+    const autoIntervalMax = parseInt(elements.autoRegistrationIntervalMax.value, 10) || 0;
+    const autoCpaServiceId = parseInt(elements.autoRegistrationCpaServiceId.value, 10) || 0;
+
+    if (autoCheckInterval < 5 || autoCheckInterval > 3600) {
+        toast.error('自动注册检查间隔必须在 5-3600 秒之间');
+        return;
+    }
+    if (autoMinReady < 1 || autoMinReady > 10000) {
+        toast.error('自动注册保底数量必须在 1-10000 之间');
+        return;
+    }
+    if (autoIntervalMin < 0 || autoIntervalMax < autoIntervalMin) {
+        toast.error('自动注册启动间隔参数无效');
+        return;
+    }
+    if (autoConcurrency < 1 || autoConcurrency > 100) {
+        toast.error('自动注册并发数必须在 1-100 之间');
+        return;
+    }
+    if (elements.autoRegistrationEnabled.checked && autoCpaServiceId <= 0) {
+        toast.error('启用自动注册前请先选择一个 CPA 服务');
+        return;
+    }
+
+    const data = await api.get('/settings');
+    const reg = data.registration || {};
+    const payload = {
+        max_retries: reg.max_retries || 3,
+        timeout: reg.timeout || 120,
+        default_password_length: reg.default_password_length || 12,
+        entry_flow: reg.entry_flow || 'native',
+        sleep_min: reg.sleep_min || 5,
+        sleep_max: reg.sleep_max || 30,
+        auto_enabled: elements.autoRegistrationEnabled.checked,
+        auto_check_interval: autoCheckInterval,
+        auto_min_ready_auth_files: autoMinReady,
+        auto_email_service_type: elements.autoRegistrationEmailServiceType.value,
+        auto_email_service_id: autoEmailServiceId,
+        auto_proxy: elements.autoRegistrationProxy.value.trim(),
+        auto_interval_min: autoIntervalMin,
+        auto_interval_max: autoIntervalMax,
+        auto_concurrency: autoConcurrency,
+        auto_mode: elements.autoRegistrationMode.value,
+        auto_cpa_service_id: autoCpaServiceId,
+    };
+
+    await api.post('/settings/registration', payload);
+    toast.success('自动注册设置已保存');
+
+    if (elements.autoRegistrationEnabled.checked) {
+        sessionStorage.setItem('activeTask', JSON.stringify({ mode: 'auto' }));
+        autoMonitorLastLogIndex = 0;
+        displayedLogs.clear();
+        elements.consoleLog.innerHTML = '';
+        addLog('info', '[系统] 自动注册监控已启动');
+        startAutoRegistrationMonitor();
+    } else {
+        stopAutoRegistrationMonitor();
+        const saved = sessionStorage.getItem('activeTask');
+        if (saved) {
+            try {
+                const parsed = JSON.parse(saved);
+                if (parsed.mode === 'auto') {
+                    sessionStorage.removeItem('activeTask');
+                }
+            } catch {
+                sessionStorage.removeItem('activeTask');
+            }
+        }
+        addLog('info', '[系统] 自动注册已禁用');
     }
 }
 
@@ -838,7 +1036,7 @@ async function handleCancelTask() {
 
     try {
         // 批量任务取消（包括普通批量模式和 Outlook 批量模式）
-        if (currentBatch && (isBatchMode || isOutlookBatchMode)) {
+        if (currentBatch && (isBatchMode || isOutlookBatchMode || isAutoMode)) {
             // 优先通过 WebSocket 取消
             if (batchWebSocket && batchWebSocket.readyState === WebSocket.OPEN) {
                 batchWebSocket.send(JSON.stringify({ type: 'cancel' }));
@@ -853,8 +1051,10 @@ async function handleCancelTask() {
                 await api.post(endpoint);
                 addLog('warning', '[警告] 批量任务取消请求已提交');
                 toast.info('任务取消请求已提交');
-                stopBatchPolling();
-                resetButtons();
+                if (!isAutoMode) {
+                    stopBatchPolling();
+                    resetButtons();
+                }
             }
         }
         // 单次任务取消
@@ -1005,6 +1205,12 @@ function showTaskStatus(task) {
     elements.taskId.textContent = task.task_uuid.substring(0, 8) + '...';
     elements.taskEmail.textContent = '-';
     elements.taskService.textContent = '-';
+    if (elements.taskLastChecked) {
+        elements.taskLastChecked.textContent = '-';
+    }
+    if (elements.taskInventory) {
+        elements.taskInventory.textContent = '-';
+    }
 }
 
 // 更新任务状态
@@ -1014,7 +1220,12 @@ function updateTaskStatus(status) {
         running: { text: '运行中', class: 'running' },
         completed: { text: '已完成', class: 'completed' },
         failed: { text: '失败', class: 'failed' },
-        cancelled: { text: '已取消', class: 'disabled' }
+        cancelled: { text: '已取消', class: 'disabled' },
+        checking: { text: '检查中', class: 'running' },
+        idle: { text: '空闲', class: 'completed' },
+        disabled: { text: '已禁用', class: 'disabled' },
+        error: { text: '异常', class: 'failed' },
+        cancelling: { text: '取消中', class: 'running' },
     };
 
     const info = statusInfo[status] || { text: status, class: '' };
@@ -1026,8 +1237,8 @@ function updateTaskStatus(status) {
 // 显示批量状态
 function showBatchStatus(batch) {
     elements.batchProgressSection.style.display = 'block';
-    elements.taskStatusRow.style.display = 'none';
-    elements.taskStatusBadge.style.display = 'none';
+    elements.taskStatusRow.style.display = isAutoMode ? 'grid' : 'none';
+    elements.taskStatusBadge.style.display = isAutoMode ? 'inline-flex' : 'none';
     elements.batchProgressText.textContent = `0/${batch.count}`;
     elements.batchProgressPercent.textContent = '0%';
     elements.progressBar.style.width = '0%';
@@ -1038,6 +1249,113 @@ function showBatchStatus(batch) {
     // 重置计数器
     elements.batchSuccess.dataset.last = '0';
     elements.batchFailed.dataset.last = '0';
+}
+
+function formatAutoMonitorTimestamp(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString('zh-CN', {
+        hour12: false,
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+}
+
+function updateAutoMonitorHeader(status, lastCheckedAt) {
+    if (!elements.autoMonitorStatusBadge || !elements.autoMonitorLastChecked) return;
+
+    if (!isAutoMode) {
+        elements.autoMonitorStatusBadge.style.display = 'none';
+        elements.autoMonitorLastChecked.style.display = 'none';
+        return;
+    }
+
+    const statusInfo = {
+        pending: { text: '自动等待', class: 'pending' },
+        checking: { text: '自动检查中', class: 'running' },
+        running: { text: '自动补货中', class: 'running' },
+        idle: { text: '自动空闲', class: 'completed' },
+        disabled: { text: '自动已禁用', class: 'disabled' },
+        error: { text: '自动异常', class: 'failed' },
+        cancelling: { text: '自动取消中', class: 'running' },
+    };
+
+    const info = statusInfo[status] || { text: `自动${status || '未知'}`, class: 'pending' };
+    elements.autoMonitorStatusBadge.style.display = 'inline-flex';
+    elements.autoMonitorStatusBadge.textContent = info.text;
+    elements.autoMonitorStatusBadge.className = `status-badge ${info.class}`;
+    elements.autoMonitorLastChecked.style.display = 'inline';
+    elements.autoMonitorLastChecked.textContent = `最近检查: ${formatAutoMonitorTimestamp(lastCheckedAt)}`;
+}
+
+async function pollAutoRegistrationStatus() {
+    try {
+        const data = await api.get('/registration/auto-monitor');
+
+        elements.taskStatusRow.style.display = 'grid';
+        elements.taskId.textContent = data.current_batch_id || 'auto-registration';
+        elements.taskStatus.textContent = data.message || data.status || '-';
+        if (elements.taskLastChecked) {
+            elements.taskLastChecked.textContent = formatAutoMonitorTimestamp(data.last_checked_at);
+        }
+        if (elements.taskInventory) {
+            const readyCount = data.current_ready_count ?? '-';
+            const targetCount = data.target_ready_count ?? '-';
+            elements.taskInventory.textContent = `${readyCount} / ${targetCount}`;
+        }
+        const effectiveStatus = data.batch && data.batch.cancelled && !data.batch.finished
+            ? 'cancelling'
+            : (data.status || 'pending');
+        updateAutoMonitorHeader(effectiveStatus, data.last_checked_at);
+        updateTaskStatus(effectiveStatus);
+
+        const logs = data.logs || [];
+        for (let i = autoMonitorLastLogIndex; i < logs.length; i++) {
+            addLog(getLogType(logs[i]), logs[i]);
+        }
+        autoMonitorLastLogIndex = logs.length;
+
+        if (data.batch) {
+            currentBatch = data.batch;
+            activeBatchId = data.batch.batch_id;
+            batchCompleted = !!data.batch.finished;
+            elements.cancelBtn.disabled = !!data.batch.finished;
+            showBatchStatus({ count: data.batch.total });
+            updateBatchProgress(data.batch);
+            if ((!batchWebSocket || batchWebSocket.readyState === WebSocket.CLOSED) && !data.batch.finished) {
+                connectBatchWebSocket(data.batch.batch_id);
+            }
+        } else {
+            currentBatch = null;
+            activeBatchId = null;
+            elements.cancelBtn.disabled = true;
+            elements.batchProgressSection.style.display = 'none';
+        }
+    } catch (error) {
+        console.error('加载自动注册监控失败:', error);
+        updateAutoMonitorHeader('error', null);
+        elements.taskStatus.textContent = '自动注册监控获取失败';
+        addLog('warning', '[警告] 自动注册监控获取失败');
+    }
+}
+
+function startAutoRegistrationMonitor() {
+    stopAutoRegistrationMonitor();
+    pollAutoRegistrationStatus();
+    autoMonitorPollingInterval = setInterval(() => {
+        pollAutoRegistrationStatus();
+    }, 2000);
+}
+
+function stopAutoRegistrationMonitor() {
+    if (autoMonitorPollingInterval) {
+        clearInterval(autoMonitorPollingInterval);
+        autoMonitorPollingInterval = null;
+    }
 }
 
 // 更新批量进度
@@ -1266,9 +1584,12 @@ function getLogType(log) {
 // 重置按钮状态
 function resetButtons() {
     elements.startBtn.disabled = false;
-    elements.cancelBtn.disabled = true;
+    elements.cancelBtn.disabled = isAutoMode;
     stopLogPolling();
     stopBatchPolling();
+    if (!isAutoMode) {
+        stopAutoRegistrationMonitor();
+    }
     clearWebSocketReconnect();
     clearBatchWebSocketReconnect();
     currentTask = null;
@@ -1284,7 +1605,9 @@ function resetButtons() {
     activeTaskUuid = null;
     activeBatchId = null;
     // 清除 sessionStorage 持久化状态
-    sessionStorage.removeItem('activeTask');
+    if (!isAutoMode) {
+        sessionStorage.removeItem('activeTask');
+    }
     // 断开 WebSocket
     disconnectWebSocket();
     disconnectBatchWebSocket();
@@ -1683,6 +2006,11 @@ function initVisibilityReconnect() {
             addLog('info', '[系统] 页面重新激活，正在重连批量任务监控...');
             connectBatchWebSocket(activeBatchId);
         }
+
+        if (isAutoMode && !autoMonitorPollingInterval) {
+            addLog('info', '[系统] 页面重新激活，正在恢复自动注册监控...');
+            startAutoRegistrationMonitor();
+        }
     });
 }
 
@@ -1753,6 +2081,8 @@ async function restoreActiveTask() {
         } catch {
             sessionStorage.removeItem('activeTask');
         }
+    } else if (mode === 'auto') {
+        sessionStorage.removeItem('activeTask');
     }
 }
 

@@ -366,6 +366,7 @@
                                     <select id="reg-mode" name="reg_mode">
                                         <option value="single">单次注册</option>
                                         <option value="batch">批量注册</option>
+                                        <option value="auto">自动注册</option>
                                     </select>
                                 </div>
 
@@ -398,6 +399,88 @@
                                         <div class="form-group">
                                             <label for="interval-max">最大间隔 (秒)</label>
                                             <input type="number" id="interval-max" name="interval_max" min="1" max="600" value="30">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div id="auto-registration-section" style="display: none; margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--border-light);">
+                                    <div class="form-group">
+                                        <label style="font-weight: 600; margin-bottom: 4px; display: block;">自动注册补货</label>
+                                        <small style="color: var(--text-muted); display: block; margin-bottom: var(--spacing-sm);">按间隔检查目标 CPA 服务的 auth-files（仅 codex），低于阈值时自动补货</small>
+                                        <label style="display: flex; align-items: center; gap: var(--spacing-sm); cursor: pointer;">
+                                            <input type="checkbox" id="auto-registration-enabled" name="auto_enabled">
+                                            <span>启用自动注册</span>
+                                        </label>
+                                    </div>
+
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="auto-registration-check-interval">检查间隔 (秒)</label>
+                                            <input type="number" id="auto-registration-check-interval" value="60" min="5" max="3600">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="auto-registration-min-ready">保底可用 auth-files 数量</label>
+                                            <input type="number" id="auto-registration-min-ready" value="1" min="1" max="10000">
+                                        </div>
+                                    </div>
+
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="auto-registration-cpa-service-id">监控 CPA 服务</label>
+                                            <select id="auto-registration-cpa-service-id">
+                                                <option value="0">请选择 CPA 服务</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="auto-registration-email-service-type">邮箱服务类型</label>
+                                            <select id="auto-registration-email-service-type">
+                                                <option value="tempmail">Tempmail.lol</option>
+                                                <option value="yyds_mail">YYDS Mail</option>
+                                                <option value="outlook">Outlook</option>
+                                                <option value="moe_mail">MoeMail</option>
+                                                <option value="temp_mail">Temp-Mail 自部署</option>
+                                                <option value="duck_mail">DuckMail</option>
+                                                <option value="freemail">Freemail</option>
+                                                <option value="imap_mail">IMAP 邮箱</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="auto-registration-email-service-id">指定邮箱服务 ID（可选）</label>
+                                            <select id="auto-registration-email-service-id">
+                                                <option value="0">自动选择</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="auto-registration-proxy">固定代理（可选）</label>
+                                            <input type="text" id="auto-registration-proxy" placeholder="留空则沿用现有代理策略">
+                                        </div>
+                                    </div>
+
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="auto-registration-mode">批量模式</label>
+                                            <select id="auto-registration-mode">
+                                                <option value="pipeline">流水线（Pipeline）</option>
+                                                <option value="parallel">并行（Parallel）</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="auto-registration-concurrency">并发数</label>
+                                            <input type="number" id="auto-registration-concurrency" value="1" min="1" max="100">
+                                        </div>
+                                    </div>
+
+                                    <div class="form-row" id="auto-registration-interval-group">
+                                        <div class="form-group">
+                                            <label for="auto-registration-interval-min">最小启动间隔 (秒)</label>
+                                            <input type="number" id="auto-registration-interval-min" value="5" min="0">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="auto-registration-interval-max">最大启动间隔 (秒)</label>
+                                            <input type="number" id="auto-registration-interval-max" value="30" min="1">
                                         </div>
                                     </div>
                                 </div>
@@ -450,13 +533,15 @@
                 <div class="right-panel">
                     <!-- 监控台 -->
                     <div class="card" id="console-card">
-                        <div class="card-header">
-                            <h3>💻 监控台</h3>
-                            <div style="display: flex; gap: var(--spacing-sm); align-items: center;">
-                                <span id="task-status-badge" class="status-badge pending" style="display: none;">等待中</span>
-                                <button class="btn btn-ghost btn-sm" id="clear-log-btn">清空</button>
+                            <div class="card-header">
+                                <h3>💻 监控台</h3>
+                                <div style="display: flex; gap: var(--spacing-sm); align-items: center;">
+                                    <span id="task-status-badge" class="status-badge pending" style="display: none;">等待中</span>
+                                    <span id="auto-monitor-status-badge" class="status-badge pending" style="display: none;">自动注册</span>
+                                    <span id="auto-monitor-last-checked" style="font-size: 0.85rem; color: var(--text-muted); display: none;">最近检查: -</span>
+                                    <button class="btn btn-ghost btn-sm" id="clear-log-btn">清空</button>
+                                </div>
                             </div>
-                        </div>
                         <div class="card-body" style="padding: 0;">
                             <!-- 任务状态行 -->
                             <div class="task-status-row" id="task-status-row" style="display: none;">
@@ -475,6 +560,14 @@
                                 <div class="task-status-item">
                                     <div class="label">状态</div>
                                     <div class="value" id="task-status">-</div>
+                                </div>
+                                <div class="task-status-item">
+                                    <div class="label">最近检查</div>
+                                    <div class="value" id="task-last-checked">-</div>
+                                </div>
+                                <div class="task-status-item">
+                                    <div class="label">Codex 库存</div>
+                                    <div class="value" id="task-inventory">-</div>
                                 </div>
                             </div>
 

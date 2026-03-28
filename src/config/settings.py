@@ -254,6 +254,72 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.REGISTRATION,
         description="注册入口链路（native=原本链路, abcard=ABCard入口链路；Outlook 邮箱会自动走 Outlook 链路）"
     ),
+    "registration_auto_enabled": SettingDefinition(
+        db_key="registration.auto.enabled",
+        default_value=False,
+        category=SettingCategory.REGISTRATION,
+        description="是否启用自动注册补货"
+    ),
+    "registration_auto_check_interval": SettingDefinition(
+        db_key="registration.auto.check_interval",
+        default_value=60,
+        category=SettingCategory.REGISTRATION,
+        description="自动注册库存检查间隔（秒）"
+    ),
+    "registration_auto_min_ready_auth_files": SettingDefinition(
+        db_key="registration.auto.min_ready_auth_files",
+        default_value=1,
+        category=SettingCategory.REGISTRATION,
+        description="自动注册保底可用认证文件数量"
+    ),
+    "registration_auto_email_service_type": SettingDefinition(
+        db_key="registration.auto.email_service_type",
+        default_value="tempmail",
+        category=SettingCategory.REGISTRATION,
+        description="自动注册使用的邮箱服务类型"
+    ),
+    "registration_auto_email_service_id": SettingDefinition(
+        db_key="registration.auto.email_service_id",
+        default_value=0,
+        category=SettingCategory.REGISTRATION,
+        description="自动注册绑定的邮箱服务 ID（0 表示自动选择）"
+    ),
+    "registration_auto_proxy": SettingDefinition(
+        db_key="registration.auto.proxy",
+        default_value="",
+        category=SettingCategory.REGISTRATION,
+        description="自动注册固定代理地址（留空则沿用系统策略）"
+    ),
+    "registration_auto_interval_min": SettingDefinition(
+        db_key="registration.auto.interval_min",
+        default_value=5,
+        category=SettingCategory.REGISTRATION,
+        description="自动注册批量任务最小启动间隔（秒）"
+    ),
+    "registration_auto_interval_max": SettingDefinition(
+        db_key="registration.auto.interval_max",
+        default_value=30,
+        category=SettingCategory.REGISTRATION,
+        description="自动注册批量任务最大启动间隔（秒）"
+    ),
+    "registration_auto_concurrency": SettingDefinition(
+        db_key="registration.auto.concurrency",
+        default_value=1,
+        category=SettingCategory.REGISTRATION,
+        description="自动注册批量任务并发数"
+    ),
+    "registration_auto_mode": SettingDefinition(
+        db_key="registration.auto.mode",
+        default_value="pipeline",
+        category=SettingCategory.REGISTRATION,
+        description="自动注册批量任务模式"
+    ),
+    "registration_auto_cpa_service_id": SettingDefinition(
+        db_key="registration.auto.cpa_service_id",
+        default_value=0,
+        category=SettingCategory.REGISTRATION,
+        description="自动注册监控并回传的 CPA 服务 ID"
+    ),
 
     # 邮箱服务配置
     "email_service_priority": SettingDefinition(
@@ -450,6 +516,17 @@ SETTING_TYPES: Dict[str, Type] = {
     "registration_sleep_min": int,
     "registration_sleep_max": int,
     "registration_entry_flow": str,
+    "registration_auto_enabled": bool,
+    "registration_auto_check_interval": int,
+    "registration_auto_min_ready_auth_files": int,
+    "registration_auto_email_service_type": str,
+    "registration_auto_email_service_id": int,
+    "registration_auto_proxy": str,
+    "registration_auto_interval_min": int,
+    "registration_auto_interval_max": int,
+    "registration_auto_concurrency": int,
+    "registration_auto_mode": str,
+    "registration_auto_cpa_service_id": int,
     "email_service_priority": dict,
     "tempmail_enabled": bool,
     "tempmail_timeout": int,
@@ -718,6 +795,17 @@ class Settings(BaseModel):
     registration_sleep_min: int = 5
     registration_sleep_max: int = 30
     registration_entry_flow: str = "native"
+    registration_auto_enabled: bool = False
+    registration_auto_check_interval: int = 60
+    registration_auto_min_ready_auth_files: int = 1
+    registration_auto_email_service_type: str = "tempmail"
+    registration_auto_email_service_id: int = 0
+    registration_auto_proxy: str = ""
+    registration_auto_interval_min: int = 5
+    registration_auto_interval_max: int = 30
+    registration_auto_concurrency: int = 1
+    registration_auto_mode: str = "pipeline"
+    registration_auto_cpa_service_id: int = 0
 
     # 邮箱服务配置
     email_service_priority: Dict[str, int] = {"tempmail": 0, "yyds_mail": 1, "outlook": 2, "moe_mail": 3}
