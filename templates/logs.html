@@ -113,7 +113,6 @@
     </style>
 </head>
 <body>
-    {% include "partials/site_notice.html" %}
     <div class="container">
         <nav class="navbar">
             <div class="nav-brand">
@@ -122,16 +121,18 @@
             <div class="nav-links">
                 <a href="/" class="nav-link">注册</a>
                 <a href="/accounts" class="nav-link">账号管理</a>
-                <a href="/accounts-overview" class="nav-link">账号总览</a>
                 <a href="/email-services" class="nav-link">邮箱服务</a>
                 <a href="/payment" class="nav-link">支付</a>
                 <a href="/card-pool" class="nav-link">卡池</a>
-                <a href="/auto-team" class="nav-link">自动进team</a>
+                <a href="/auto-team" class="nav-link">team</a>
                 <a href="/logs" class="nav-link active">后台日志</a>
                 <a href="/settings" class="nav-link">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
+                        <div class="nav-actions">
+            <a href="/selfcheck" class="selfcheck-toggle" title="系统自检">⚙️</a>
             <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </div>
         </nav>
 
         <main class="main-content logs-layout">
@@ -247,3 +248,10 @@
     <script src="/static/js/logs.js?v={{ static_version }}"></script>
 </body>
 </html>
+
+
+
+
+
+
+

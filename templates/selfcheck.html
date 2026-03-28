@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统自检 - OpenAI 注册系统</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
+    <style>
+        .selfcheck-grid {
+            display: grid;
+            grid-template-columns: minmax(320px, 420px) 1fr;
+            gap: var(--spacing-lg);
+            align-items: start;
+        }
+        .selfcheck-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--spacing-sm);
+        }
+        .selfcheck-schedule-block {
+            border-top: 1px solid var(--border-light);
+            padding-top: var(--spacing-md);
+            margin-bottom: var(--spacing-md);
+        }
+        .selfcheck-schedule-block .form-group {
+            margin-bottom: 12px;
+        }
+        .selfcheck-schedule-block .form-group:last-child {
+            margin-bottom: 0;
+        }
+        .selfcheck-schedule-block .auto-quick-refresh-check {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            margin: 0;
+            font-size: 0.88rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1.2;
+        }
+        .selfcheck-schedule-block .auto-quick-refresh-check input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin: 0;
+            accent-color: var(--primary-color);
+            flex: 0 0 16px;
+        }
+        .selfcheck-runtime {
+            background: var(--surface-hover);
+            border: 1px solid var(--border-light);
+            border-radius: var(--radius);
+            padding: var(--spacing-md);
+            font-size: 0.84rem;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+        .selfcheck-runtime-line {
+            display: flex;
+            justify-content: space-between;
+            gap: var(--spacing-sm);
+            margin-bottom: 6px;
+        }
+        .selfcheck-runtime-line strong {
+            color: var(--text-primary);
+        }
+        .selfcheck-log-list {
+            margin-top: var(--spacing-sm);
+            max-height: 200px;
+            overflow-y: auto;
+            border-top: 1px solid var(--border-light);
+            padding-top: var(--spacing-sm);
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .selfcheck-log-item {
+            display: grid;
+            grid-template-columns: 125px 42px 1fr;
+            gap: 6px;
+            font-size: 0.76rem;
+            color: var(--text-secondary);
+        }
+        .selfcheck-log-level {
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .selfcheck-log-level.info { color: var(--primary-color); }
+        .selfcheck-log-level.success { color: var(--success-color); }
+        .selfcheck-log-level.warning { color: var(--warning-color); }
+        .selfcheck-log-level.error { color: var(--danger-color); }
+        .selfcheck-table-wrap {
+            max-height: 540px;
+            overflow: auto;
+        }
+        .run-row-active {
+            background: var(--primary-light);
+        }
+        .check-list {
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-sm);
+        }
+        .check-item {
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: var(--spacing-sm) var(--spacing-md);
+            background: var(--surface);
+        }
+        .check-item-top {
+            display: flex;
+            justify-content: space-between;
+            gap: var(--spacing-md);
+            align-items: center;
+        }
+        .check-item-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .check-item-desc {
+            margin-top: 4px;
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .check-fixes {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .repair-result-list {
+            margin-top: var(--spacing-md);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .repair-result-item {
+            background: var(--surface-hover);
+            border: 1px solid var(--border-light);
+            border-radius: var(--radius);
+            padding: 10px 12px;
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+        }
+        .repair-center-box {
+            margin-top: var(--spacing-lg);
+            padding-top: var(--spacing-md);
+            border-top: 1px dashed var(--border-light);
+        }
+        .repair-center-preview-list {
+            margin-top: var(--spacing-sm);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .repair-center-preview-item {
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            border: 1px solid var(--border-light);
+            border-radius: var(--radius);
+            padding: 8px 10px;
+            background: var(--surface-hover);
+            font-size: 0.82rem;
+        }
+        .repair-center-preview-item input[type="checkbox"] {
+            margin-top: 2px;
+        }
+        .repair-center-rollback-item {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            align-items: center;
+            border: 1px solid var(--border-light);
+            border-radius: var(--radius);
+            padding: 8px 10px;
+            background: var(--surface-hover);
+            font-size: 0.82rem;
+        }
+        @media (max-width: 980px) {
+            .selfcheck-grid {
+                grid-template-columns: 1fr;
+            }
+            .selfcheck-log-item {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar">
+            <div class="nav-brand">
+                <h1>OpenAI 注册系统</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/" class="nav-link">注册</a>
+                <a href="/accounts" class="nav-link">账号管理</a>
+                <a href="/email-services" class="nav-link">邮箱服务</a>
+                <a href="/payment" class="nav-link">支付</a>
+                <a href="/card-pool" class="nav-link">卡池</a>
+                <a href="/auto-team" class="nav-link">team</a>
+                <a href="/logs" class="nav-link">后台日志</a>
+                <a href="/settings" class="nav-link">设置</a>
+                <a href="/logout" class="nav-link">退出</a>
+            </div>
+                        <div class="nav-actions">
+            <a href="/selfcheck" class="selfcheck-toggle active" title="系统自检">⚙️</a>
+            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </div>
+        </nav>
+
+        <main class="main-content">
+            <div class="page-header">
+                <h2>系统自检</h2>
+                <p class="subtitle">快速定位运行风险并一键执行修复动作（支持定时巡检）</p>
+            </div>
+
+            <div class="selfcheck-grid">
+                <section class="card">
+                    <div class="card-header">
+                        <h3>执行控制</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label for="selfcheck-mode-select">执行模式</label>
+                            <select id="selfcheck-mode-select" class="form-select">
+                                <option value="quick">快速自检（基础检查）</option>
+                                <option value="full">完整自检（含数据一致性）</option>
+                            </select>
+                        </div>
+                        <div class="selfcheck-actions" style="margin-bottom: var(--spacing-lg);">
+                            <button id="selfcheck-run-btn" class="btn btn-success">🚀 立即执行</button>
+                            <button id="selfcheck-refresh-btn" class="btn btn-secondary">🔄 刷新列表</button>
+                        </div>
+
+                        <div class="selfcheck-schedule-block">
+                            <div class="form-group">
+                                <label class="auto-quick-refresh-check">
+                                    <input type="checkbox" id="selfcheck-auto-enabled">
+                                    <span>启用定时巡检</span>
+                                </label>
+                            </div>
+                            <div class="form-group">
+                                <label for="selfcheck-interval-select">巡检间隔</label>
+                                <select id="selfcheck-interval-select" class="form-select">
+                                    <option value="5">每 5 分钟</option>
+                                    <option value="10">每 10 分钟</option>
+                                    <option value="15">每 15 分钟</option>
+                                    <option value="30">每 30 分钟</option>
+                                    <option value="60">每 60 分钟</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="selfcheck-auto-mode-select">定时模式</label>
+                                <select id="selfcheck-auto-mode-select" class="form-select">
+                                    <option value="quick">quick</option>
+                                    <option value="full">full</option>
+                                </select>
+                            </div>
+                            <div class="selfcheck-actions">
+                                <button id="selfcheck-save-schedule-btn" class="btn btn-primary">💾 保存定时</button>
+                                <button id="selfcheck-run-now-btn" class="btn btn-secondary">⚡ 立即巡检</button>
+                            </div>
+                        </div>
+
+                        <div class="selfcheck-runtime" id="selfcheck-runtime-box">
+                            <div class="selfcheck-runtime-line"><span>运行状态</span><strong id="runtime-status">-</strong></div>
+                            <div class="selfcheck-runtime-line"><span>下次执行</span><strong id="runtime-next-run">-</strong></div>
+                            <div class="selfcheck-runtime-line"><span>上次执行</span><strong id="runtime-last-run">-</strong></div>
+                            <div class="selfcheck-runtime-line"><span>最近结果</span><strong id="runtime-last-summary">-</strong></div>
+                            <div class="selfcheck-log-list" id="selfcheck-runtime-logs"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <div class="card-header">
+                        <h3>运行历史</h3>
+                    </div>
+                    <div class="card-body" style="padding: 0;">
+                        <div class="selfcheck-table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 70px;">ID</th>
+                                        <th style="width: 90px;">模式</th>
+                                        <th style="width: 110px;">来源</th>
+                                        <th style="width: 110px;">状态</th>
+                                        <th style="width: 90px;">评分</th>
+                                        <th style="width: 90px;">检查数</th>
+                                        <th style="width: 170px;">开始时间</th>
+                                        <th style="width: 170px;">结束时间</th>
+                                        <th>摘要</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="selfcheck-runs-body">
+                                    <tr><td colspan="9" class="empty-state">加载中...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <section class="card">
+                <div class="card-header">
+                    <h3>检查明细</h3>
+                    <span id="selfcheck-detail-title" class="hint-inline">请在上方点击一条运行记录</span>
+                </div>
+                <div class="card-body">
+                    <div id="selfcheck-check-list" class="check-list">
+                        <div class="empty-state">暂无检查数据</div>
+                    </div>
+                    <div id="selfcheck-repair-results" class="repair-result-list"></div>
+
+                    <div class="repair-center-box">
+                        <div class="card-header" style="padding: 0 0 8px 0; border: 0;">
+                            <h3 style="margin:0;">修复中心</h3>
+                            <span class="hint-inline">预览影响后再执行，自动创建回滚点</span>
+                        </div>
+                        <div class="selfcheck-actions">
+                            <button id="repair-center-preview-btn" class="btn btn-secondary">🧪 预览影响</button>
+                            <button id="repair-center-execute-btn" class="btn btn-warning">🛠 执行修复</button>
+                            <button id="repair-center-refresh-rollbacks-btn" class="btn btn-secondary">🔁 刷新回滚点</button>
+                        </div>
+                        <div id="repair-center-preview-list" class="repair-center-preview-list">
+                            <div class="empty-state">先选择运行记录，再点击“预览影响”</div>
+                        </div>
+                        <div style="margin-top: var(--spacing-md);">
+                            <div class="hint-inline" style="margin-bottom: 6px; display:block;">回滚点</div>
+                            <div id="repair-center-rollbacks" class="repair-result-list"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/static/js/selfcheck.js?v={{ static_version }}"></script>
+</body>
+</html>
+
+
+
+

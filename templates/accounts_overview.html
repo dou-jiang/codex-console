@@ -63,7 +63,7 @@
 
         .cards-block {
             margin-top: 0;
-            background: linear-gradient(130deg, #edf1ff 0%, #eef6f2 55%, #f8fafc 100%);
+            background: linear-gradient(130deg, #eef2ff 0%, #edf4ff 55%, #f8fafc 100%);
             border: 1px solid #d8e2f2;
             border-radius: 22px;
             padding: 16px;
@@ -150,7 +150,7 @@
         }
 
         .view-toggle-btn#view-grid-btn {
-            color: #7c3aed;
+            color: var(--primary-color);
         }
 
         .view-toggle-btn#view-grid-btn.active,
@@ -159,9 +159,9 @@
         }
 
         .view-toggle-btn.active {
-            background: linear-gradient(120deg, #6d28d9, #8b5cf6);
+            background: var(--brand-gradient);
             color: #fff;
-            box-shadow: 0 4px 12px rgba(109, 40, 217, 0.35);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
         }
 
         .cards-icon-btn {
@@ -179,8 +179,8 @@
         .cards-icon-btn.primary {
             border: 0;
             color: #fff;
-            background: linear-gradient(120deg, #6d28d9, #8b5cf6);
-            box-shadow: 0 6px 14px rgba(109, 40, 217, 0.38);
+            background: var(--brand-gradient);
+            box-shadow: 0 6px 14px rgba(99, 102, 241, 0.38);
         }
 
         .cards-status-line {
@@ -304,7 +304,7 @@
         }
 
         .status-pill.current {
-            background: #22c55e;
+            background: var(--primary-color);
         }
 
         .plan-badge {
@@ -320,11 +320,11 @@
         }
 
         .plan-badge.plus {
-            background: #10b981;
+            background: var(--brand-gradient);
         }
 
         .plan-badge.team {
-            background: linear-gradient(120deg, #6d28d9, #8b5cf6);
+            background: var(--brand-gradient);
         }
 
         .plan-badge.free {
@@ -370,8 +370,8 @@
             transition: width .2s ease;
         }
 
-        .tone-green { color: #22c55e; }
-        .tone-green-bar { background: #22c55e; }
+        .tone-green { color: var(--primary-color); }
+        .tone-green-bar { background: var(--primary-color); }
         .tone-orange { color: #f59e0b; }
         .tone-orange-bar { background: #f59e0b; }
         .tone-red { color: #ef4444; }
@@ -427,9 +427,9 @@
 
         .card-action-btn:active {
             transform: scale(0.92);
-            background: #ddf3eb;
-            border-color: #86cfb8;
-            color: #0f8f70;
+            background: #e8efff;
+            border-color: #99b2ff;
+            color: #3759f0;
         }
 
         .card-action-btn:focus {
@@ -438,8 +438,8 @@
 
         .card-action-btn:focus-visible {
             outline: none;
-            border-color: #10a37f;
-            box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.2);
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px var(--primary-light);
         }
 
         .card-action-btn.danger {
@@ -449,15 +449,28 @@
         .card-action-btn.is-loading {
             color: transparent;
             pointer-events: none;
-            background: #e7f7f2;
-            border-color: #86cfb8;
-            box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.16);
+            background: #e8efff;
+            border-color: #99b2ff;
+            box-shadow: 0 0 0 2px rgba(77, 107, 255, 0.16);
         }
 
         .card-action-btn.is-loading::after {
             content: "⟳";
             display: inline-block;
-            color: #0f8f70;
+            color: #3759f0;
+            animation: cardRefreshSpin .75s linear infinite;
+        }
+
+        .cards-icon-btn.is-loading {
+            pointer-events: none;
+            color: transparent;
+            position: relative;
+        }
+
+        .cards-icon-btn.is-loading::after {
+            content: "⟳";
+            position: absolute;
+            color: #3759f0;
             animation: cardRefreshSpin .75s linear infinite;
         }
 
@@ -500,7 +513,6 @@
     </style>
 </head>
 <body>
-    {% include "partials/site_notice.html" %}
 <div class="container">
     <nav class="navbar">
         <div class="nav-brand">
@@ -513,12 +525,15 @@
             <a href="/email-services" class="nav-link">邮箱服务</a>
             <a href="/payment" class="nav-link">支付</a>
             <a href="/card-pool" class="nav-link">卡池</a>
-            <a href="/auto-team" class="nav-link">自动进team</a>
+            <a href="/auto-team" class="nav-link">team</a>
             <a href="/logs" class="nav-link">后台日志</a>
-            <a href="/settings" class="nav-link">设置</a>
+                <a href="/settings" class="nav-link">设置</a>
             <a href="/logout" class="nav-link">退出</a>
         </div>
-        <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+                    <div class="nav-actions">
+            <a href="/selfcheck" class="selfcheck-toggle" title="系统自检">⚙️</a>
+            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </div>
     </nav>
 
     <main class="main-content">
@@ -600,6 +615,7 @@
                     <div class="cards-toolbar-right">
                         <button id="card-add-btn" class="cards-icon-btn primary" title="添加账号">+</button>
                         <button id="card-refresh-btn" class="cards-icon-btn" title="一键刷新">⟳</button>
+                        <button id="card-refresh-failed-btn" class="cards-icon-btn" title="仅重试失败/过期">!</button>
                         <button id="card-import-btn" class="cards-icon-btn" title="一键导入">⇩</button>
                         <button id="card-delete-btn" class="cards-icon-btn" title="一键删除">🗑</button>
                         <button id="card-export-all-btn" class="cards-icon-btn" title="一键导出">⇪</button>
@@ -618,6 +634,10 @@
                             <option value="5">5 分钟</option>
                             <option value="7" selected>7 分钟</option>
                             <option value="10">10 分钟</option>
+                        </select>
+                        <select id="card-refresh-scope" class="cards-refresh-select" title="自动刷新范围">
+                            <option value="stale_failed" selected>仅异常/过期</option>
+                            <option value="visible">当前列表</option>
                         </select>
                     </div>
                 </div>
@@ -739,3 +759,10 @@
 <script src="/static/js/accounts_overview.js?v={{ static_version }}"></script>
 </body>
 </html>
+
+
+
+
+
+
+

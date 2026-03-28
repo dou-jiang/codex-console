@@ -30,10 +30,18 @@
             margin-bottom: var(--spacing-md);
             font-size: 0.875rem;
         }
+        .login-notice {
+            background: var(--info-light);
+            color: var(--info-color);
+            border: 1px solid var(--info-color);
+            padding: var(--spacing-sm) var(--spacing-md);
+            border-radius: var(--radius);
+            margin-bottom: var(--spacing-md);
+            font-size: 0.875rem;
+        }
     </style>
 </head>
 <body>
-    {% include "partials/site_notice.html" %}
     <div class="container">
         <div class="login-wrap">
             <div class="card login-card">
@@ -44,6 +52,9 @@
                 <div class="card-body">
                     {% if error %}
                     <div class="login-error">{{ error }}</div>
+                    {% endif %}
+                    {% if notice %}
+                    <div class="login-notice">{{ notice }}</div>
                     {% endif %}
                     <form method="post" action="/login">
                         <input type="hidden" name="next" value="{{ next }}">

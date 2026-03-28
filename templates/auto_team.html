@@ -3,27 +3,836 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>自动进team - OpenAI 注册系统</title>
+    <title>team - OpenAI 注册系统</title>
     <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
     <style>
-        .feature-placeholder {
-            width: 100%;
-            min-height: 180px;
-            border: 2px dashed var(--border-color);
-            border-radius: var(--radius-lg);
-            background: var(--surface-hover);
+        .team-tabs {
             display: flex;
+            gap: var(--spacing-xs);
+            margin-bottom: var(--spacing-lg);
+            padding: var(--spacing-xs);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
+            background: var(--surface);
+        }
+
+        .team-tab-btn {
+            flex: 1;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            border-radius: var(--radius);
+            padding: var(--spacing-sm) var(--spacing-md);
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition);
+            min-height: var(--control-height);
+        }
+
+        .team-tab-btn.active {
+            color: var(--primary-color);
+            background: var(--primary-light);
+        }
+
+        .team-tab-btn:hover:not(.active) {
+            color: var(--text-primary);
+            background: var(--surface-hover);
+        }
+
+        .team-panel {
+            display: none;
+        }
+
+        .team-panel.active {
+            display: block;
+        }
+
+        .team-invite-layout {
+            display: grid;
+            grid-template-columns: 1.45fr 1fr;
+            gap: var(--spacing-lg);
+        }
+
+        .team-invite-log-card {
+            grid-column: 1 / -1;
+        }
+
+        .inviter-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 180px;
+            max-height: 260px;
+            overflow: auto;
+            padding-right: 4px;
+        }
+
+        .inviter-header-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-refresh-loading {
+            display: inline-flex !important;
             align-items: center;
             justify-content: center;
-            font-size: 2rem;
+            min-width: 74px;
+        }
+
+        .btn-refresh-loading .btn-refresh-icon {
+            display: inline-block;
+            font-size: 0.95rem;
+            line-height: 1;
+            animation: spin 0.9s linear infinite;
+        }
+
+        .btn-inviter-plus {
+            min-width: 36px;
+            width: 36px;
+            height: 36px;
+            padding: 0;
+            border-radius: 10px;
+            background: var(--primary-color);
+            color: #fff;
+            border: 1px solid var(--primary-color);
+            font-size: 1.1rem;
             font-weight: 700;
+            line-height: 1;
+        }
+
+        .btn-inviter-plus:hover:not(:disabled) {
+            background: var(--primary-hover);
+            border-color: var(--primary-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 8px 18px rgba(99, 102, 241, 0.35);
+        }
+
+        .inviter-item {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: var(--surface-hover);
+            padding: 10px 12px;
+        }
+
+        .inviter-email {
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+            word-break: break-all;
+        }
+
+        .inviter-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
             color: var(--text-secondary);
-            letter-spacing: 2px;
+            font-size: 0.82rem;
+        }
+
+        .badge-team,
+        .badge-member {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            border: 1px solid transparent;
+        }
+
+        .badge-team {
+            color: var(--primary-color);
+            background: rgba(99, 102, 241, 0.12);
+            border-color: rgba(99, 102, 241, 0.26);
+        }
+
+        .badge-member {
+            color: #0ea5a4;
+            background: rgba(14, 165, 164, 0.12);
+            border-color: rgba(14, 165, 164, 0.24);
+        }
+
+        .auto-team-tips {
+            padding: 10px 12px;
+            border-radius: var(--radius);
+            background: rgba(59, 130, 246, 0.12);
+            color: var(--info-color);
+            font-size: 0.82rem;
+            margin-bottom: var(--spacing-md);
+        }
+
+        .auto-team-actions {
+            display: flex;
+            gap: var(--spacing-sm);
+            flex-wrap: wrap;
+            margin-top: var(--spacing-sm);
+        }
+
+        .auto-team-actions .btn {
+            min-width: 116px;
+        }
+
+        .target-email-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .target-email-input {
+            min-height: 88px;
+            resize: vertical;
+            line-height: 1.5;
+        }
+
+        .btn-target-plus {
+            min-width: 42px;
+            width: 42px;
+            height: 42px;
+            padding: 0;
+            border-radius: 10px;
+            background: var(--primary-color);
+            color: #fff;
+            border: 1px solid var(--primary-color);
+            font-size: 1.15rem;
+            font-weight: 700;
+        }
+
+        .btn-target-plus:hover:not(:disabled) {
+            background: var(--primary-hover);
+            border-color: var(--primary-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 8px 18px rgba(99, 102, 241, 0.35);
+        }
+
+        .auto-team-log {
+            background: #0b1220;
+            color: #d5e2ff;
+            border-radius: var(--radius);
+            border: 1px solid #1f2b44;
+            min-height: 220px;
+            max-height: 360px;
+            padding: 12px;
+            overflow: auto;
+            font-family: var(--font-mono);
+            font-size: 0.82rem;
+            line-height: 1.5;
+        }
+
+        .auto-team-log .line {
+            margin-bottom: 4px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .result-box {
+            margin-top: var(--spacing-md);
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            background: var(--surface-hover);
+            padding: 12px;
+            font-size: 0.86rem;
+            color: var(--text-secondary);
+        }
+
+        .result-title {
+            font-weight: 700;
+            margin-bottom: 6px;
+            color: var(--text-primary);
+        }
+
+        .empty-tip {
+            color: var(--text-muted);
+            font-size: 0.86rem;
+            padding: 8px 2px;
+        }
+
+        .team-console-stats {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: var(--spacing-md);
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .team-stat-card {
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 20px 22px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            background: var(--surface);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .team-stat-icon {
+            width: 58px;
+            height: 58px;
+            border-radius: 14px;
+            background: #eef2ff;
+            color: var(--primary-color);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.55rem;
+            flex-shrink: 0;
+        }
+
+        .team-stat-value {
+            font-size: 2rem;
+            line-height: 1;
+            font-weight: 800;
+            color: #0b1b45;
+            margin-bottom: 6px;
+        }
+
+        .team-stat-label {
+            color: #64748b;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .team-console-section {
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 18px;
+            background: var(--surface);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .team-console-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .team-console-title {
+            margin: 0;
+            font-size: 2rem;
+            letter-spacing: -0.01em;
+        }
+
+        .team-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .team-toolbar .form-input,
+        .team-toolbar .form-select {
+            height: 44px;
+            min-width: 180px;
+            border: 1px solid #d6e0ef;
+            border-radius: 12px;
+            background: #f8fbff;
+            color: #41506a;
+            font-size: 0.94rem;
+            padding: 0 14px;
+        }
+
+        .team-toolbar .form-input:focus,
+        .team-toolbar .form-select:focus {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px var(--primary-light);
+            outline: none;
+        }
+
+        .btn-purple {
+            background: var(--primary-color);
+            color: #fff;
+            border: 1px solid var(--primary-color);
+        }
+
+        .btn-purple:hover:not(:disabled) {
+            background: var(--primary-hover);
+            border-color: var(--primary-hover);
+            box-shadow: 0 8px 18px rgba(99, 102, 241, 0.28);
+            transform: translateY(-1px);
+        }
+
+        .team-table-wrap {
+            overflow-x: auto;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+        }
+
+        .team-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            min-width: 1040px;
+        }
+
+        .team-table th,
+        .team-table td {
+            border-bottom: 1px solid var(--border);
+            padding: 12px 14px;
+            text-align: left;
+            font-size: 0.93rem;
+            white-space: nowrap;
+            vertical-align: middle;
+        }
+
+        .team-table th {
+            background: var(--surface-hover);
+            color: #64748b;
+            font-weight: 700;
+        }
+
+        .team-table tbody tr:hover {
+            background: rgba(99, 102, 241, 0.05);
+        }
+
+        .team-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            border: 1px solid transparent;
+        }
+
+        .status-pill::before {
+            content: "";
+            width: 7px;
+            height: 7px;
+            border-radius: 999px;
+            background: currentColor;
+            flex-shrink: 0;
+        }
+
+        .status-pill.active {
+            background: rgba(34, 197, 94, 0.14);
+            color: #16a34a;
+            border-color: rgba(22, 163, 74, 0.25);
+        }
+
+        .status-pill.full { background: rgba(239, 68, 68, 0.16); color: #ef4444; border-color: rgba(239, 68, 68, 0.3); }
+        .status-pill.expired,
+        .status-pill.error,
+        .status-pill.failed,
+        .status-pill.banned,
+        .status-pill.inactive,
+        .status-pill.locked,
+        .status-pill.frozen,
+        .status-pill.suspended,
+        .status-pill.deleted,
+        .status-pill.disabled,
+        .status-pill.invalid { background: rgba(239, 68, 68, 0.16); color: #ef4444; border-color: rgba(239, 68, 68, 0.3); }
+
+        .team-plan-badge,
+        .target-plan-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 62px;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 0.76rem;
+            font-weight: 700;
+            border: 1px solid transparent;
+            line-height: 1.1;
+        }
+        .team-plan-badge.plus,
+        .target-plan-badge.plus {
+            background: rgba(99, 102, 241, 0.14);
+            color: var(--primary-color);
+            border-color: rgba(99, 102, 241, 0.32);
+        }
+        .team-plan-badge.team,
+        .target-plan-badge.team {
+            background: rgba(99, 102, 241, 0.14);
+            color: var(--primary-color);
+            border-color: rgba(99, 102, 241, 0.32);
+        }
+        .team-plan-badge.free,
+        .target-plan-badge.free {
+            background: rgba(239, 68, 68, 0.12);
+            color: #dc2626;
+            border-color: rgba(239, 68, 68, 0.3);
+        }
+
+        .team-action-group {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .team-action-btn {
+            width: 32px;
+            height: 32px;
+            border: 1px solid #d6dfef;
+            border-radius: 10px;
+            background: #f8fbff;
+            color: #64748b;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all var(--transition);
+            font-size: 0.98rem;
+            line-height: 1;
+        }
+
+        .team-action-btn:hover:not(:disabled) {
+            background: #eef4ff;
+            border-color: #86b6ff;
+            color: #325181;
+            transform: translateY(-1px);
+        }
+
+        .team-action-btn.danger {
+            color: #ef4444;
+        }
+
+        .team-action-btn.danger:hover:not(:disabled) {
+            background: rgba(239, 68, 68, 0.1);
+            border-color: rgba(239, 68, 68, 0.35);
+            color: #dc2626;
+        }
+
+        .team-column-menu {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 6px);
+            min-width: 220px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: var(--shadow-lg);
+            padding: 10px 12px;
+            z-index: 20;
+            display: none;
+        }
+
+        .team-column-menu.show {
+            display: block;
+        }
+
+        .team-column-menu label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.84rem;
+            color: var(--text-secondary);
+            padding: 6px 2px;
+            cursor: pointer;
+        }
+
+        .team-column-menu-wrap {
+            position: relative;
+        }
+
+        .target-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.42);
+            backdrop-filter: blur(2px);
+            z-index: 1200;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .target-modal.show {
+            display: flex;
+        }
+
+        .target-modal-panel {
+            width: min(860px, 94vw);
+            max-height: 88vh;
+            background: var(--surface);
+            border: 1px solid #d8e0ec;
+            border-radius: 20px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+            overflow: hidden;
+        }
+
+        .target-modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 20px 28px;
+            border-bottom: 1px solid #e5ebf3;
+        }
+
+        .target-modal-title {
+            margin: 0;
+            font-size: 1.95rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .target-modal-subtitle {
+            margin-top: 6px;
+            color: #64748b;
+            font-size: 0.95rem;
+            word-break: break-all;
+        }
+
+        .target-modal-close {
+            width: 34px;
+            height: 34px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            color: #94a3b8;
+            font-size: 1.8rem;
+            line-height: 1;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: all var(--transition);
+        }
+
+        .target-modal-close:hover {
+            background: #eef3f9;
+            color: #64748b;
+        }
+
+        .target-modal-toolbar {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 16px 28px;
+            border-bottom: 1px solid #e5ebf3;
+            flex-wrap: wrap;
+        }
+
+        .target-modal-search {
+            flex: 1;
+            min-width: 220px;
+        }
+
+        .target-modal-search.form-input {
+            width: 100%;
+            height: 44px;
+            border: 1px solid #cfdbee;
+            border-radius: 12px;
+            padding: 0 14px;
+            background: #f6f9ff;
+            color: #32486d;
+            font-size: 0.95rem;
+        }
+
+        .target-modal-search.form-input:focus {
+            outline: none;
+            border-color: #7cb4ff;
+            box-shadow: 0 0 0 3px rgba(80, 133, 255, 0.16);
+        }
+
+        .target-modal-list {
+            overflow: auto;
+            padding: 12px 28px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .target-modal-item {
+            display: grid;
+            grid-template-columns: auto 1fr auto auto;
+            gap: 10px;
+            align-items: center;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface);
+            padding: 10px 12px;
+        }
+
+        .target-modal-item .email {
+            color: var(--text-primary);
+            font-weight: 600;
+            word-break: break-all;
+        }
+
+        .target-modal-item .meta {
+            color: var(--text-secondary);
+            font-size: 0.82rem;
+        }
+
+        .target-modal-footer {
+            padding: 14px 28px 18px;
+            border-top: 1px solid #e5ebf3;
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .member-section {
+            border: 1px solid #dbe3ef;
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+            background: var(--surface);
+        }
+
+        .member-section-title {
+            margin: 0 0 12px;
+            font-size: 1.9rem;
+            font-weight: 700;
+            color: var(--primary-color);
+        }
+
+        .member-section-title.pending {
+            color: #f59e0b;
+        }
+
+        .member-input-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .member-table-wrap {
+            border: 1px solid #dbe3ef;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .member-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .member-table th,
+        .member-table td {
+            padding: 11px 12px;
+            border-bottom: 1px solid #e7eef8;
+            text-align: left;
+            font-size: 0.9rem;
+        }
+
+        .member-table th {
+            background: var(--surface-hover);
+            color: #64748b;
+            font-weight: 700;
+        }
+
+        .member-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .member-role-badge {
+            display: inline-flex;
+            padding: 2px 10px;
+            border-radius: 999px;
+            font-size: 0.76rem;
+            font-weight: 700;
+            background: rgba(99, 102, 241, 0.12);
+            color: var(--primary-color);
+        }
+
+        .team-import-tabs {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            padding: 4px;
+            border: 1px solid #dbe3ef;
+            border-radius: 12px;
+            background: var(--surface-hover);
+            margin-bottom: 14px;
+        }
+
+        .team-import-tab-btn {
+            border: none;
+            border-radius: 10px;
+            background: transparent;
+            color: #64748b;
+            font-weight: 700;
+            font-size: 0.95rem;
+            padding: 10px 12px;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .team-import-tab-btn.active {
+            background: #fff;
+            color: var(--primary-color);
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+        }
+
+        .team-import-panel {
+            display: none;
+        }
+
+        .team-import-panel.active {
+            display: block;
+        }
+
+        .team-import-hint {
+            margin-top: 6px;
+            color: var(--text-secondary);
+            font-size: 0.86rem;
+        }
+
+        .team-import-batch-input {
+            min-height: 220px;
+            resize: vertical;
+            font-family: var(--font-mono);
+        }
+
+        @media (max-width: 1100px) {
+            .team-invite-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .team-console-stats {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .target-modal-panel {
+                border-radius: 14px;
+            }
+
+            .target-modal-header {
+                padding: 14px 16px;
+            }
+
+            .target-modal-title,
+            .member-section-title,
+            .team-console-title {
+                font-size: 1.18rem;
+            }
+
+            .target-modal-toolbar {
+                padding: 12px 16px;
+            }
+
+            .target-modal-list {
+                padding: 10px 16px 12px;
+            }
+
+            .target-modal-footer {
+                padding: 12px 16px 14px;
+            }
         }
     </style>
 </head>
 <body>
-    {% include "partials/site_notice.html" %}
     <div class="container">
         <nav class="navbar">
             <div class="nav-brand">
@@ -32,27 +841,342 @@
             <div class="nav-links">
                 <a href="/" class="nav-link">注册</a>
                 <a href="/accounts" class="nav-link">账号管理</a>
-                <a href="/accounts-overview" class="nav-link">账号总览</a>
                 <a href="/email-services" class="nav-link">邮箱服务</a>
                 <a href="/payment" class="nav-link">支付</a>
                 <a href="/card-pool" class="nav-link">卡池</a>
-                <a href="/auto-team" class="nav-link active">自动进team</a>
+                <a href="/auto-team" class="nav-link active">team</a>
                 <a href="/logs" class="nav-link">后台日志</a>
                 <a href="/settings" class="nav-link">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
+                        <div class="nav-actions">
+            <a href="/selfcheck" class="selfcheck-toggle" title="系统自检">⚙️</a>
             <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </div>
         </nav>
 
         <main class="main-content">
             <div class="page-header">
-                <h2>自动进team</h2>
-                <p class="subtitle">页面占位</p>
+                <h2>team</h2>
+                <p class="subtitle">Team 管理和自动邀请</p>
             </div>
-            <div class="feature-placeholder">功能未开发！</div>
+
+            <div class="team-tabs">
+                <button id="tabInvite" class="team-tab-btn active">team邀请</button>
+                <button id="tabManage" class="team-tab-btn">team管理</button>
+            </div>
+
+            <section id="panelInvite" class="team-panel active">
+                <div class="team-invite-layout">
+                    <section class="card">
+                        <div class="card-header">
+                            <h3>Team 自动邀请</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="auto-team-tips">
+                                流程：输入目标邮箱 -> 执行邀请（系统会自动进行轻量预检，仅使用 Team 管理账号作为母号发送邀请）。
+                            </div>
+
+                            <div class="form-group">
+                                <label for="targetEmail">目标邮箱</label>
+                                <div class="target-email-row">
+                                    <textarea id="targetEmail" class="target-email-input" placeholder="请输入要邀请进 Team 的邮箱；支持多行/逗号分隔"></textarea>
+                                    <button id="btnPickTargetEmail" class="btn btn-target-plus" title="从账号管理选择子号">+</button>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="inviterAccount">邀请账号（Team 母号）</label>
+                                <select id="inviterAccount">
+                                    <option value="">自动选择（默认第一个可用 Team 管理账号）</option>
+                                </select>
+                            </div>
+
+                            <div class="auto-team-actions">
+                                <button id="btnInvite" class="btn btn-primary">执行自动邀请</button>
+                                <button id="btnReloadAccounts" class="btn btn-secondary">刷新账号</button>
+                            </div>
+
+                            <div id="resultBox" class="result-box" style="display:none;"></div>
+                        </div>
+                    </section>
+
+                    <section class="card">
+                        <div class="card-header">
+                            <h3>Team 管理账号列表（自动入池）</h3>
+                            <div class="inviter-header-actions">
+                                <button id="btnManualPullInviter" class="btn btn-secondary btn-sm" type="button" title="手动拉入管理池">手动拉进</button>
+                                <button id="btnReloadInviterList" class="btn btn-secondary btn-sm" type="button" title="刷新可用管理账号">刷新</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div id="inviterList" class="inviter-list">
+                                <div class="empty-tip">正在加载可用 Team 邀请管理账号...</div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="card team-invite-log-card">
+                        <div class="card-header">
+                            <h3>执行日志</h3>
+                            <button id="btnClearLog" class="btn btn-secondary btn-sm">清空</button>
+                        </div>
+                        <div class="card-body">
+                            <div id="autoTeamLog" class="auto-team-log"></div>
+                        </div>
+                    </section>
+                </div>
+            </section>
+
+            <section id="panelManage" class="team-panel">
+                <div class="team-console-stats">
+                    <div class="team-stat-card">
+                        <div class="team-stat-icon">👥</div>
+                        <div>
+                            <div id="teamStatTotal" class="team-stat-value">0</div>
+                            <div class="team-stat-label">Team 总数</div>
+                        </div>
+                    </div>
+                    <div class="team-stat-card">
+                        <div class="team-stat-icon">✅</div>
+                        <div>
+                            <div id="teamStatAvailable" class="team-stat-value">0</div>
+                            <div class="team-stat-label">可用 Team</div>
+                        </div>
+                    </div>
+                </div>
+
+                <section class="team-console-section">
+                    <div class="team-console-header">
+                        <h3 class="team-console-title">Team 列表</h3>
+                        <div class="team-toolbar">
+                            <select id="teamStatusFilter" class="form-select">
+                                <option value="">状态筛选</option>
+                                <option value="active">可用</option>
+                                <option value="full">已满</option>
+                                <option value="expired">已过期</option>
+                                <option value="error">异常</option>
+                                <option value="banned">已封禁</option>
+                                <option value="failed">失败</option>
+                            </select>
+                            <input id="teamSearchInput" type="text" class="form-input" placeholder="搜索邮箱/Team 名称...">
+                            <div class="team-column-menu-wrap">
+                                <button id="btnToggleColumnMenu" class="btn btn-secondary" type="button">列设置</button>
+                                <div id="teamColumnMenu" class="team-column-menu">
+                                    <label><input type="checkbox" data-col-toggle="members" checked> 成员数</label>
+                                    <label><input type="checkbox" data-col-toggle="plan" checked> 订阅计划</label>
+                                    <label><input type="checkbox" data-col-toggle="expires" checked> 到期时间</label>
+                                </div>
+                            </div>
+                            <button id="btnImportTeam" class="btn btn-purple" type="button">⊕ 导入 Team</button>
+                            <button id="btnReloadTeamConsole" class="btn btn-secondary" type="button">刷新</button>
+                        </div>
+                    </div>
+
+                    <div class="team-table-wrap">
+                        <table class="team-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:38px;"><input id="teamSelectAll" type="checkbox"></th>
+                                    <th style="width:70px;">ID</th>
+                                    <th>邮箱</th>
+                                    <th>TEAM 名称</th>
+                                    <th class="col-members">成员数</th>
+                                    <th class="col-plan">订阅计划</th>
+                                    <th class="col-expires">到期时间</th>
+                                    <th>状态</th>
+                                    <th style="width:170px;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="teamTableBody">
+                                <tr>
+                                    <td colspan="9" class="empty-tip">正在加载...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </section>
         </main>
     </div>
 
+    <div id="targetModal" class="target-modal">
+        <div class="target-modal-panel">
+            <div class="target-modal-header">
+                <h3 class="target-modal-title">选择目标邮箱账号（仅 free）</h3>
+                <button id="btnCloseTargetModal" class="target-modal-close" type="button" aria-label="关闭">×</button>
+            </div>
+            <div class="target-modal-toolbar">
+                <input id="targetModalSearch" class="target-modal-search form-input" type="text" placeholder="搜索邮箱...">
+                <button id="btnTargetSelectAll" class="btn btn-secondary btn-sm" type="button">全选</button>
+                <button id="btnTargetClearAll" class="btn btn-secondary btn-sm" type="button">清空</button>
+            </div>
+            <div id="targetModalList" class="target-modal-list">
+                <div class="empty-tip">正在加载...</div>
+            </div>
+            <div class="target-modal-footer">
+                <span id="targetModalSelectedInfo" class="empty-tip" style="margin-right:auto;">已选 0 个</span>
+                <button id="btnAddSelectedTargets" class="btn btn-primary" type="button">添加所选</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="manualInviterModal" class="target-modal">
+        <div class="target-modal-panel">
+            <div class="target-modal-header">
+                <h3 class="target-modal-title">手动拉入 Team 管理池</h3>
+                <button id="btnCloseManualInviterModal" class="target-modal-close" type="button" aria-label="关闭">×</button>
+            </div>
+            <div class="target-modal-toolbar">
+                <input id="manualInviterSearch" class="target-modal-search form-input" type="text" placeholder="搜索邮箱/ID...">
+                <button id="btnManualInviterSelectAll" class="btn btn-secondary btn-sm" type="button">全选</button>
+                <button id="btnManualInviterClearAll" class="btn btn-secondary btn-sm" type="button">清空</button>
+            </div>
+            <div id="manualInviterList" class="target-modal-list">
+                <div class="empty-tip">正在加载候选账号...</div>
+            </div>
+            <div class="target-modal-footer">
+                <span id="manualInviterSelectedInfo" class="empty-tip" style="margin-right:auto;">已选 0 个</span>
+                <button id="btnSubmitManualInviter" class="btn btn-primary" type="button">拉入管理池</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="teamMemberModal" class="target-modal">
+        <div class="target-modal-panel" style="width:min(1040px,96vw);">
+            <div class="target-modal-header">
+                <div>
+                    <h3 class="target-modal-title">Team 成员管理</h3>
+                    <div id="teamMemberModalSub" class="target-modal-subtitle">-</div>
+                </div>
+                <button id="btnCloseTeamMemberModal" class="target-modal-close" type="button" aria-label="关闭">×</button>
+            </div>
+            <div class="target-modal-list" style="padding-top:16px;">
+                <div class="member-section">
+                    <div class="form-group" style="margin-bottom:0;">
+                        <label for="teamMemberInviteEmail">新增成员邮箱</label>
+                        <div class="member-input-row">
+                            <input id="teamMemberInviteEmail" type="email" class="form-input" placeholder="user@example.com">
+                            <button id="btnInviteMember" class="btn btn-purple" type="button">添加</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="member-section">
+                    <h4 class="member-section-title">已加入成员</h4>
+                    <div class="member-table-wrap">
+                        <table class="member-table">
+                            <thead>
+                                <tr>
+                                    <th>邮箱</th>
+                                    <th>角色</th>
+                                    <th>加入时间</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="teamJoinedMembersBody">
+                                <tr><td colspan="4" class="empty-tip">加载中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="member-section" style="margin-bottom:0;">
+                    <h4 class="member-section-title pending">待加入成员（邀请中）</h4>
+                    <div class="member-table-wrap">
+                        <table class="member-table">
+                            <thead>
+                                <tr>
+                                    <th>邮箱</th>
+                                    <th>角色</th>
+                                    <th>邀请时间</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="teamInvitedMembersBody">
+                                <tr><td colspan="4" class="empty-tip">加载中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="target-modal-footer">
+                <span id="teamMemberModalHint" class="empty-tip" style="margin-right:auto;">-</span>
+                <button id="btnReloadTeamMembers" class="btn btn-secondary" type="button">刷新成员</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="teamImportModal" class="target-modal">
+        <div class="target-modal-panel" style="width:min(760px,96vw);">
+            <div class="target-modal-header">
+                <h3 class="target-modal-title">导入 Team</h3>
+                <button id="btnCloseTeamImportModal" class="target-modal-close" type="button" aria-label="关闭">×</button>
+            </div>
+            <div class="target-modal-list" style="padding-top:16px;">
+                <div class="team-import-tabs">
+                    <button id="btnTeamImportSingleTab" type="button" class="team-import-tab-btn active">单个导入</button>
+                    <button id="btnTeamImportBatchTab" type="button" class="team-import-tab-btn">批量导入</button>
+                </div>
+
+                <div id="teamImportSinglePanel" class="team-import-panel active">
+                    <div class="form-group">
+                        <label for="teamImportAccessToken">Access Token (AT) *</label>
+                        <input id="teamImportAccessToken" class="form-input" type="text" placeholder="eyJ...">
+                        <div class="team-import-hint">必填项，以 eyJ 开头的 JWT Token</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="teamImportRefreshToken">Refresh Token (RT)</label>
+                        <input id="teamImportRefreshToken" class="form-input" type="text" placeholder="rt-...">
+                        <div class="team-import-hint">可选，用于自动刷新 AT</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="teamImportSessionToken">Session Token</label>
+                        <input id="teamImportSessionToken" class="form-input" type="text" placeholder="eyJ...">
+                        <div class="team-import-hint">可选，作为备选刷新方式</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="teamImportClientId">Client ID</label>
+                        <input id="teamImportClientId" class="form-input" type="text" placeholder="app_xxx">
+                        <div class="team-import-hint">使用 Refresh Token 时建议填写</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="teamImportEmail">邮箱</label>
+                        <input id="teamImportEmail" class="form-input" type="email" placeholder="admin@example.com">
+                        <div class="team-import-hint">可选，不填将尝试从 AT 中自动提取</div>
+                    </div>
+                    <div class="form-group" style="margin-bottom:0;">
+                        <label for="teamImportAccountId">Account ID</label>
+                        <input id="teamImportAccountId" class="form-input" type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                        <div class="team-import-hint">可选，不填将尝试从 AT 中自动提取</div>
+                    </div>
+                </div>
+
+                <div id="teamImportBatchPanel" class="team-import-panel">
+                    <div class="form-group" style="margin-bottom:0;">
+                        <label for="teamImportBatchText">批量导入文本</label>
+                        <textarea id="teamImportBatchText" class="form-input team-import-batch-input" placeholder='支持两种格式：
+1) JSON 数组：[{"email":"a@xx.com","access_token":"eyJ..."}, ...]
+2) JSONL：每行一个 JSON 对象'></textarea>
+                        <div class="team-import-hint">每条至少要有 email + access_token；可附带 refresh_token/session_token/client_id/account_id。</div>
+                    </div>
+                </div>
+            </div>
+            <div class="target-modal-footer">
+                <span id="teamImportModalHint" class="empty-tip" style="margin-right:auto;">-</span>
+                <button id="btnSubmitTeamImport" class="btn btn-purple" type="button">导入</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/static/js/auto_team.js?v={{ static_version }}"></script>
+    <script src="/static/js/auto_team_manage.js?v={{ static_version }}"></script>
 </body>
 </html>
+
+
+
+
+
+

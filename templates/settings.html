@@ -15,7 +15,6 @@
     </style>
 </head>
 <body>
-    {% include "partials/site_notice.html" %}
     <div class="container">
         <!-- 导航栏 -->
         <nav class="navbar">
@@ -25,18 +24,18 @@
             <div class="nav-links">
                 <a href="/" class="nav-link">注册</a>
                 <a href="/accounts" class="nav-link">账号管理</a>
-                <a href="/accounts-overview" class="nav-link">账号总览</a>
                 <a href="/email-services" class="nav-link">邮箱服务</a>
                 <a href="/payment" class="nav-link">支付</a>
                 <a href="/card-pool" class="nav-link">卡池</a>
-                <a href="/auto-team" class="nav-link">自动进team</a>
+                <a href="/auto-team" class="nav-link">team</a>
                 <a href="/logs" class="nav-link">后台日志</a>
                 <a href="/settings" class="nav-link active">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
-            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">
-                🌙
-            </button>
+                        <div class="nav-actions">
+            <a href="/selfcheck" class="selfcheck-toggle" title="系统自检">⚙️</a>
+            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </div>
         </nav>
 
         <!-- 主内容区 -->
@@ -49,7 +48,7 @@
             <!-- 设置标签页 -->
             <div class="tabs">
                 <button class="tab-btn active" data-tab="proxy">🌐 代理设置</button>
-                <button class="tab-btn" data-tab="webui">🔒 访问控制</button>
+                <button class="tab-btn" data-tab="system">🖥️ 系统设置</button>
                 <button class="tab-btn" data-tab="upload">☁️ 上传</button>
                 <button class="tab-btn" data-tab="outlook">📮 Outlook配置</button>
                 <button class="tab-btn" data-tab="registration">⚙️ 注册配置</button>
@@ -107,6 +106,7 @@
                         <h3>代理列表</h3>
                         <div style="display: flex; gap: var(--spacing-sm);">
                             <button class="btn btn-secondary btn-sm" id="test-all-proxies-btn">🔌 测试全部</button>
+                            <button class="btn btn-secondary btn-sm" id="proxy-batch-import-btn">📥 批量导入</button>
                             <button class="btn btn-primary btn-sm" id="add-proxy-btn">➕ 添加代理</button>
                         </div>
                     </div>
@@ -127,7 +127,7 @@
                                 </thead>
                                 <tbody id="proxies-table">
                                     <tr>
-                                        <td colspan="7">
+                                        <td colspan="8">
                                             <div class="empty-state">
                                                 <div class="empty-state-icon">🌐</div>
                                                 <div class="empty-state-title">暂无代理</div>
@@ -142,21 +142,26 @@
                 </div>
             </div>
 
-            <!-- 访问控制 -->
-            <div class="tab-content" id="webui-tab">
+            <!-- 系统设置 -->
+            <div class="tab-content" id="system-tab">
                 <div class="card">
                     <div class="card-header">
-                        <h3>Web UI 访问密码</h3>
-                        <span class="hint">用于访问页面的密码，留空表示不修改</span>
+                        <h3>系统设置</h3>
+                        <span class="hint">修改 WebUI 端口与访问控制配置</span>
                     </div>
                     <div class="card-body">
-                        <form id="webui-settings-form">
+                        <form id="system-settings-form">
+                            <div class="form-group">
+                                <label for="webui-port">WebUI 端口</label>
+                                <input type="number" id="webui-port" name="port" min="1" max="65535" placeholder="例如 1688">
+                                <small style="color: var(--text-muted);">修改端口后需重启服务生效</small>
+                            </div>
                             <div class="form-group">
                                 <label for="webui-access-password">访问密码</label>
                                 <input type="password" id="webui-access-password" name="access_password" placeholder="留空保持不变" autocomplete="new-password">
                             </div>
                             <div class="form-actions">
-                                <button type="submit" class="btn btn-primary">💾 保存设置</button>
+                                <button type="submit" class="btn btn-primary">💾 保存系统设置</button>
                             </div>
                         </form>
                     </div>
@@ -213,6 +218,57 @@
                 </div>
             </div>
 
+            <!-- 批量导入代理模态框 -->
+            <div class="modal" id="proxy-batch-import-modal">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3>批量导入代理</h3>
+                        <button class="modal-close" id="close-proxy-batch-import-modal">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="proxy-batch-import-form">
+                            <div class="form-group">
+                                <label for="proxy-batch-import-text">代理文本</label>
+                                <textarea id="proxy-batch-import-text" rows="10" placeholder="每行一个代理，支持格式：
+http://user:pass@127.0.0.1:7890
+socks5://127.0.0.1:1080
+user:pass@127.0.0.1:7890
+127.0.0.1:7890
+自定义名称,http://user:pass@127.0.0.1:7890
+名称,http,127.0.0.1,7890,user,pass"></textarea>
+                                <small style="color: var(--text-muted);">空行和以 # / // 开头的行会自动忽略</small>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="proxy-batch-default-type">默认协议</label>
+                                    <select id="proxy-batch-default-type">
+                                        <option value="http">HTTP</option>
+                                        <option value="socks5">SOCKS5</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="display:flex;align-items:flex-end;">
+                                    <label style="display:flex;gap:8px;align-items:center;cursor:pointer;">
+                                        <input type="checkbox" id="proxy-batch-import-enabled" checked>
+                                        <span>导入后启用</span>
+                                    </label>
+                                </div>
+                                <div class="form-group" style="display:flex;align-items:flex-end;">
+                                    <label style="display:flex;gap:8px;align-items:center;cursor:pointer;">
+                                        <input type="checkbox" id="proxy-batch-overwrite-existing">
+                                        <span>覆盖已存在代理</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div id="proxy-batch-import-result" class="alert alert-info" style="display:none;"></div>
+                            <div class="form-actions">
+                                <button type="button" class="btn btn-secondary" id="cancel-proxy-batch-import-btn">取消</button>
+                                <button type="submit" class="btn btn-primary" id="submit-proxy-batch-import-btn">📥 开始导入</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
             <!-- 上传服务设置（CPA + Sub2API + Team Manager） -->
             <div class="tab-content" id="upload-tab">
                 <!-- CPA 服务管理 -->
@@ -228,13 +284,14 @@
                                     <tr>
                                         <th style="width:150px;">名称</th>
                                         <th>API URL</th>
+                                        <th style="width:180px;">代理地址</th>
                                         <th style="width:80px;">状态</th>
                                         <th style="width:60px;text-align:center;">优先级</th>
                                         <th style="width:220px;">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="cpa-services-table">
-                                    <tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">加载中...</td></tr>
+                                    <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">加载中...</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -254,13 +311,14 @@
                                     <tr>
                                         <th style="width:150px;">名称</th>
                                         <th>API URL</th>
+                                        <th style="width:120px;">目标类型</th>
                                         <th style="width:80px;">状态</th>
                                         <th style="width:60px;text-align:center;">优先级</th>
                                         <th style="width:220px;">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="sub2api-services-table">
-                                    <tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">加载中...</td></tr>
+                                    <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">加载中...</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -361,6 +419,13 @@
                                 <label for="sub2api-service-key">API Key</label>
                                 <input type="password" id="sub2api-service-key" placeholder="编辑时留空则保持原值" autocomplete="new-password">
                             </div>
+                            <div class="form-group">
+                                <label for="sub2api-service-target-type">导入目标类型</label>
+                                <select id="sub2api-service-target-type">
+                                    <option value="sub2api">Sub2Api</option>
+                                    <option value="newapi">newApi</option>
+                                </select>
+                            </div>
                             <div class="form-row">
                                 <div class="form-group">
                                     <label for="sub2api-service-priority">优先级</label>
@@ -406,6 +471,11 @@
                             <div class="form-group">
                                 <label for="cpa-service-token">API Token</label>
                                 <input type="password" id="cpa-service-token" placeholder="编辑时留空则保持原值" autocomplete="new-password">
+                            </div>
+                            <div class="form-group">
+                                <label for="cpa-service-proxy-url">代理地址（可选）</label>
+                                <input type="text" id="cpa-service-proxy-url" placeholder="http://user:pass@host:port 或 socks5://host:port">
+                                <p class="hint">留空时使用全局代理配置</p>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
@@ -598,3 +668,10 @@
     <script src="/static/js/settings.js?v={{ static_version }}"></script>
 </body>
 </html>
+
+
+
+
+
+
+

@@ -6,24 +6,223 @@
     <title>卡池 - OpenAI 注册系统</title>
     <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
     <style>
+        .card-pool-panel {
+            display: none;
+        }
+
+        .card-pool-panel.active {
+            display: block;
+        }
+
+        .card-pool-stats .stat-card {
+            padding: 16px 18px;
+        }
+
+        .card-pool-toolbar-left {
+            flex-wrap: wrap;
+        }
+
+        .card-pool-status-tabs {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--surface-hover);
+        }
+
+        .status-chip {
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .status-chip:hover {
+            background: var(--surface);
+            color: var(--text-primary);
+        }
+
+        .status-chip.active {
+            color: var(--primary-color);
+            background: var(--primary-light);
+        }
+
+        .card-pool-search {
+            min-width: 220px;
+        }
+
+        .card-pool-search-group {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-pool-search-btn {
+            min-width: 72px;
+        }
+
+        .card-pool-supplier-filter {
+            min-width: 150px;
+        }
+
+        .card-pool-sort-select {
+            min-width: 145px;
+        }
+
+        .code-cell {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--font-mono);
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+
+        .status-badge-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 64px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            background: var(--surface-hover);
+            color: var(--text-secondary);
+        }
+
+        .status-badge-pill.unused {
+            color: var(--primary-color);
+            background: var(--primary-light);
+        }
+
+        .status-badge-pill.used {
+            color: var(--info-color);
+            background: var(--info-light);
+        }
+
+        .status-badge-pill.expired {
+            color: var(--danger-color);
+            background: var(--danger-light);
+        }
+
+        .card-pool-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .action-btn {
+            width: 30px;
+            height: 30px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-size: 0.875rem;
+        }
+
+        .action-btn:hover {
+            color: var(--text-primary);
+            border-color: var(--text-muted);
+            background: var(--surface-hover);
+        }
+
+        .action-btn.danger:hover {
+            color: var(--danger-color);
+            border-color: rgba(239, 68, 68, 0.4);
+            background: rgba(239, 68, 68, 0.08);
+        }
+
+        .card-pool-pagination {
+            justify-content: space-between;
+            gap: 8px;
+            padding: 12px 16px;
+            margin-top: 0;
+            border-top: 1px solid var(--border);
+            flex-wrap: wrap;
+        }
+
+        .pagination-controls {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .per-page {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .per-page select {
+            width: 80px;
+        }
+
+        .modal-footer {
+            padding: 14px 20px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        .import-help {
+            margin-top: 6px;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
         .feature-placeholder {
             width: 100%;
-            min-height: 180px;
-            border: 2px dashed var(--border-color);
+            min-height: 220px;
+            border: 2px dashed var(--border);
             border-radius: var(--radius-lg);
             background: var(--surface-hover);
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 2rem;
+            text-align: center;
+            font-size: 1.35rem;
             font-weight: 700;
             color: var(--text-secondary);
-            letter-spacing: 2px;
+            letter-spacing: 0.5px;
+            padding: 16px;
+        }
+
+        .empty-row {
+            text-align: center;
+            color: var(--text-secondary);
+            padding: 30px 12px;
+        }
+
+        @media (max-width: 860px) {
+            .card-pool-search {
+                min-width: 100%;
+            }
+
+            .card-pool-search-group {
+                width: 100%;
+            }
+
+            .card-pool-search-btn {
+                min-width: 80px;
+            }
         }
     </style>
 </head>
 <body>
-    {% include "partials/site_notice.html" %}
     <div class="container">
         <nav class="navbar">
             <div class="nav-brand">
@@ -32,27 +231,214 @@
             <div class="nav-links">
                 <a href="/" class="nav-link">注册</a>
                 <a href="/accounts" class="nav-link">账号管理</a>
-                <a href="/accounts-overview" class="nav-link">账号总览</a>
                 <a href="/email-services" class="nav-link">邮箱服务</a>
                 <a href="/payment" class="nav-link">支付</a>
                 <a href="/card-pool" class="nav-link active">卡池</a>
-                <a href="/auto-team" class="nav-link">自动进team</a>
+                <a href="/auto-team" class="nav-link">team</a>
                 <a href="/logs" class="nav-link">后台日志</a>
                 <a href="/settings" class="nav-link">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
+                        <div class="nav-actions">
+            <a href="/selfcheck" class="selfcheck-toggle" title="系统自检">⚙️</a>
             <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </div>
         </nav>
 
         <main class="main-content">
             <div class="page-header">
                 <h2>卡池</h2>
-                <p class="subtitle">页面占位</p>
+                <p class="subtitle">统一管理兑换码与后续卡片类型</p>
             </div>
-            <div class="feature-placeholder">功能未开发！</div>
+
+            <div class="tabs">
+                <button type="button" class="tab-btn active" id="pool-tab-redeem">兑换码</button>
+                <button type="button" class="tab-btn" id="pool-tab-credit">信用卡</button>
+            </div>
+
+            <section id="panel-redeem" class="card-pool-panel active">
+                <div class="stats-grid card-pool-stats">
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-total">0</div>
+                        <div class="stat-label">兑换码总数</div>
+                    </div>
+                    <div class="stat-card success">
+                        <div class="stat-value" id="stat-unused">0</div>
+                        <div class="stat-label">未使用</div>
+                    </div>
+                    <div class="stat-card info">
+                        <div class="stat-value" id="stat-used">0</div>
+                        <div class="stat-label">已使用</div>
+                    </div>
+                    <div class="stat-card danger">
+                        <div class="stat-value" id="stat-expired">0</div>
+                        <div class="stat-label">已过期</div>
+                    </div>
+                </div>
+
+                <div class="card toolbar-card">
+                    <div class="card-body toolbar">
+                        <div class="toolbar-left card-pool-toolbar-left">
+                            <div class="card-pool-status-tabs">
+                                <button type="button" class="status-chip active" data-status="">全部</button>
+                                <button type="button" class="status-chip" data-status="unused">未使用</button>
+                                <button type="button" class="status-chip" data-status="used">已使用</button>
+                                <button type="button" class="status-chip" data-status="expired">已过期</button>
+                            </div>
+                            <select id="supplier-filter" class="form-select card-pool-supplier-filter">
+                                <option value="">全部供应商</option>
+                            </select>
+                            <select id="sort-order" class="form-select card-pool-sort-select">
+                                <option value="created_desc">时间降序</option>
+                                <option value="created_asc">时间升序</option>
+                            </select>
+                            <div class="card-pool-search-group">
+                                <input id="redeem-search" type="text" class="form-input card-pool-search" placeholder="搜索">
+                                <button type="button" class="btn btn-secondary card-pool-search-btn" id="redeem-search-btn">搜索</button>
+                            </div>
+                        </div>
+                        <div class="toolbar-right">
+                            <button type="button" class="btn btn-primary" id="btn-import-codes">导入</button>
+                            <button type="button" class="btn btn-secondary" id="btn-export-codes">导出</button>
+                            <button type="button" class="btn btn-danger" id="btn-delete-selected" disabled>删除选中</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-body" style="padding: 0;">
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 40px;"><input type="checkbox" id="select-all-codes"></th>
+                                        <th>兑换码</th>
+                                        <th style="width: 140px;">供应商</th>
+                                        <th style="width: 100px;">状态</th>
+                                        <th style="width: 150px;">创建时间</th>
+                                        <th style="width: 130px;">过期时间</th>
+                                        <th>使用者邮箱</th>
+                                        <th style="width: 150px;">使用时间</th>
+                                        <th style="width: 120px; text-align: right;">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="redeem-codes-body">
+                                    <tr>
+                                        <td colspan="9" class="empty-row">暂无兑换码，请点击「导入」添加。</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="pagination card-pool-pagination">
+                            <div class="per-page">
+                                每页
+                                <select id="page-size" class="form-select">
+                                    <option value="20">20</option>
+                                    <option value="50" selected>50</option>
+                                    <option value="100">100</option>
+                                </select>
+                            </div>
+                            <div class="pagination-controls">
+                                <button type="button" class="btn btn-secondary btn-sm" id="page-prev" disabled>上一页</button>
+                                <span id="page-info">第 1 页 / 共 1 页</span>
+                                <button type="button" class="btn btn-secondary btn-sm" id="page-next" disabled>下一页</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="panel-credit" class="card-pool-panel">
+                <div class="feature-placeholder">
+                    信用卡分类已预留，暂不启用功能。
+                </div>
+            </section>
         </main>
     </div>
 
+    <div class="modal" id="import-modal">
+        <div class="modal-content" style="max-width: 620px;">
+            <div class="modal-header">
+                <h3>导入兑换码</h3>
+                <button class="modal-close" id="import-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="import-supplier-input">供应商（可选）</label>
+                    <select id="import-supplier-input" class="form-select">
+                        <option value="">未设置供应商</option>
+                        <option value="EFun">EFun</option>
+                    </select>
+                    <div class="import-help">导入时可直接从下拉选择供应商（已包含 EFun）。</div>
+                </div>
+                <div class="form-group">
+                    <label for="import-codes-input">兑换码列表</label>
+                    <textarea id="import-codes-input" class="form-input" rows="8" placeholder="每行一个或使用空格/逗号分隔，例如：
+UK-UVYUD-J7BMB-5PZFE-Z8V5G-4Y5FJ
+UK-ABCDE-12345-FGHIJ-67890-KLMNO"></textarea>
+                    <div class="import-help">支持换行、空格、英文逗号、中文逗号分隔，自动去重。</div>
+                </div>
+                <div class="form-group">
+                    <label for="import-expire-days">有效期（天，可选）</label>
+                    <input id="import-expire-days" class="form-input" type="number" min="1" step="1" placeholder="留空则永久有效">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="import-modal-cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="import-modal-confirm">开始导入</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="edit-modal">
+        <div class="modal-content" style="max-width: 520px;">
+            <div class="modal-header">
+                <h3>修改兑换码</h3>
+                <button class="modal-close" id="edit-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="edit-code-display">兑换码</label>
+                    <input id="edit-code-display" class="form-input" type="text" readonly>
+                </div>
+                <div class="form-group">
+                    <label for="edit-supplier-input">供应商（可选）</label>
+                    <input id="edit-supplier-input" class="form-input" type="text" list="supplier-options" placeholder="例如 A供应商">
+                </div>
+                <div class="form-group">
+                    <label for="edit-status-select">状态</label>
+                    <select id="edit-status-select" class="form-select">
+                        <option value="unused">未使用</option>
+                        <option value="used">已使用</option>
+                        <option value="expired">已过期</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="edit-used-email">使用者邮箱（可选）</label>
+                    <input id="edit-used-email" class="form-input" type="text" placeholder="例如 user@example.com">
+                </div>
+                <div class="form-group">
+                    <label for="edit-expires-at">过期时间（可选）</label>
+                    <input id="edit-expires-at" class="form-input" type="datetime-local">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="edit-modal-cancel">取消</button>
+                <button type="button" class="btn btn-primary" id="edit-modal-confirm">保存修改</button>
+            </div>
+        </div>
+    </div>
+
+    <datalist id="supplier-options"></datalist>
+
     <script src="/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/static/js/card_pool.js?v={{ static_version }}"></script>
 </body>
 </html>
+
+
+
+
+
+
+

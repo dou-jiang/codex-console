@@ -8,7 +8,6 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📧</text></svg>">
 </head>
 <body>
-    {% include "partials/site_notice.html" %}
     <div class="container">
         <!-- 导航栏 -->
         <nav class="navbar">
@@ -18,18 +17,18 @@
             <div class="nav-links">
                 <a href="/" class="nav-link">注册</a>
                 <a href="/accounts" class="nav-link">账号管理</a>
-                <a href="/accounts-overview" class="nav-link">账号总览</a>
                 <a href="/email-services" class="nav-link active">邮箱服务</a>
                 <a href="/payment" class="nav-link">支付</a>
                 <a href="/card-pool" class="nav-link">卡池</a>
-                <a href="/auto-team" class="nav-link">自动进team</a>
+                <a href="/auto-team" class="nav-link">team</a>
                 <a href="/logs" class="nav-link">后台日志</a>
                 <a href="/settings" class="nav-link">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
-            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">
-                🌙
-            </button>
+                        <div class="nav-actions">
+            <a href="/selfcheck" class="selfcheck-toggle" title="系统自检">⚙️</a>
+            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </div>
         </nav>
 
         <!-- 主内容区 -->
@@ -98,7 +97,7 @@
                 </div>
             </div>
 
-            <!-- 自定义邮箱管理（含 MoeMail / YYDS Mail / TempMail / DuckMail） -->
+            <!-- 自定义邮箱管理（含 MoeMail / TempMail / CloudMail / DuckMail） -->
             <div class="card custom-email-services-card">
                 <div class="card-header">
                     <h3>🔗 自定义邮箱服务</h3>
@@ -177,60 +176,22 @@
                     <h3>🌐 临时邮箱配置</h3>
                 </div>
                 <div class="card-body">
-                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:var(--spacing-lg);">
-                        <form id="tempmail-form" class="card" style="margin:0;border:1px solid var(--border-light);">
-                            <div class="card-header">
-                                <h4 style="margin:0;">Tempmail.lol</h4>
-                            </div>
-                            <div class="card-body">
-                                <div class="form-group">
-                                    <label for="tempmail-api">API 地址</label>
-                                    <input type="text" id="tempmail-api" name="api_url" placeholder="https://api.tempmail.lol/v2">
-                                </div>
-                                <div class="form-group">
-                                    <label>
-                                        <input type="checkbox" id="tempmail-enabled" checked>
-                                        启用 Tempmail.lol
-                                    </label>
-                                </div>
-                                <div class="form-actions">
-                                    <button type="submit" class="btn btn-primary">💾 保存设置</button>
-                                    <button type="button" class="btn btn-secondary" id="test-tempmail-btn">🔌 测试连接</button>
-                                </div>
-                            </div>
-                        </form>
-
-                        <form id="yyds-mail-form" class="card" style="margin:0;border:1px solid var(--border-light);">
-                            <div class="card-header">
-                                <h4 style="margin:0;">YYDS Mail</h4>
-                            </div>
-                            <div class="card-body">
-                                <div class="form-group">
-                                    <label for="yyds-mail-api">API 地址</label>
-                                    <input type="text" id="yyds-mail-api" name="yyds_api_url" placeholder="https://maliapi.215.im/v1">
-                                </div>
-                                <div class="form-group">
-                                    <label for="yyds-mail-api-key">API Key</label>
-                                    <input type="password" id="yyds-mail-api-key" name="yyds_api_key" placeholder="AC-your_api_key">
-                                    <small style="color: var(--text-muted);">使用文档中的 `X-API-Key` 调用方式</small>
-                                </div>
-                                <div class="form-group">
-                                    <label for="yyds-mail-domain">默认域名（可选）</label>
-                                    <input type="text" id="yyds-mail-domain" name="yyds_default_domain" placeholder="public.example.com">
-                                </div>
-                                <div class="form-group">
-                                    <label>
-                                        <input type="checkbox" id="yyds-mail-enabled">
-                                        启用 YYDS Mail
-                                    </label>
-                                </div>
-                                <div class="form-actions">
-                                    <button type="submit" class="btn btn-primary">💾 保存设置</button>
-                                    <button type="button" class="btn btn-secondary" id="test-yyds-mail-btn">🔌 测试连接</button>
-                                </div>
-                            </div>
-                        </form>
-                    </div>
+                    <form id="tempmail-form">
+                        <div class="form-group">
+                            <label for="tempmail-api">Tempmail.lol API 地址</label>
+                            <input type="text" id="tempmail-api" name="api_url" placeholder="https://tempmail.lol/api">
+                        </div>
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="tempmail-enabled" checked>
+                                启用临时邮箱
+                            </label>
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">💾 保存设置</button>
+                            <button type="button" class="btn btn-secondary" id="test-tempmail-btn">🔌 测试连接</button>
+                        </div>
+                    </form>
                 </div>
             </div>
         </main>
@@ -253,8 +214,8 @@
                         <label for="custom-sub-type">服务类型</label>
                         <select id="custom-sub-type" name="sub_type">
                             <option value="moemail">MoeMail（自定义域名 API）</option>
-                            <option value="yydsmail">YYDS Mail (YYDS Mail API)</option>
                             <option value="tempmail">TempMail（自部署 Cloudflare Worker）</option>
+                            <option value="cloudmail">CloudMail（自部署 Cloudflare Worker）</option>
                             <option value="duckmail">DuckMail（DuckMail API）</option>
                             <option value="freemail">Freemail（自部署 Cloudflare Worker）</option>
                             <option value="imap">标准 IMAP（Gmail/QQ/163等）</option>
@@ -275,21 +236,7 @@
                             <input type="text" id="custom-domain" name="domain" placeholder="example.com">
                         </div>
                     </div>
-                    <!-- YYDS Mail 字段 -->
-                    <div id="add-yydsmail-fields" style="display:none;">
-                        <div class="form-group">
-                            <label for="custom-yyds-base-url">API URL</label>
-                            <input type="text" id="custom-yyds-base-url" name="yyds_base_url" placeholder="https://maliapi.215.im/v1">
-                        </div>
-                        <div class="form-group">
-                            <label for="custom-yyds-api-key">API Key</label>
-                            <input type="password" id="custom-yyds-api-key" name="yyds_api_key" placeholder="AC-your_api_key">
-                        </div>
-                        <div class="form-group">
-                            <label for="custom-yyds-domain">Default Domain (Optional)</label>
-                            <input type="text" id="custom-yyds-domain" name="yyds_domain" placeholder="public.example.com">
-                        </div>
-                    </div>
+                    <!-- TempMail 字段 -->
                     <div id="add-tempmail-fields" style="display:none;">
                         <div class="form-group">
                             <label for="custom-tm-base-url">Worker 地址</label>
@@ -424,22 +371,7 @@
                             <input type="text" id="edit-custom-domain" name="domain" placeholder="example.com">
                         </div>
                     </div>
-                    <!-- YYDS Mail 字段 -->
-                    <div id="edit-yydsmail-fields" style="display:none;">
-                        <div class="form-group">
-                            <label for="edit-yyds-base-url">API URL</label>
-                            <input type="text" id="edit-yyds-base-url" name="yyds_base_url" placeholder="https://maliapi.215.im/v1">
-                        </div>
-                        <div class="form-group">
-                            <label for="edit-yyds-api-key">API Key</label>
-                            <input type="password" id="edit-yyds-api-key" name="yyds_api_key" placeholder="Leave blank to keep unchanged">
-                            <small style="color: var(--text-muted);">Leave blank to keep the existing value</small>
-                        </div>
-                        <div class="form-group">
-                            <label for="edit-yyds-domain">Default Domain (Optional)</label>
-                            <input type="text" id="edit-yyds-domain" name="yyds_domain" placeholder="public.example.com">
-                        </div>
-                    </div>
+                    <!-- TempMail 字段 -->
                     <div id="edit-tempmail-fields" style="display:none;">
                         <div class="form-group">
                             <label for="edit-tm-base-url">Worker 地址</label>
@@ -595,3 +527,10 @@
     <script src="/static/js/email_services.js?v={{ static_version }}"></script>
 </body>
 </html>
+
+
+
+
+
+
+

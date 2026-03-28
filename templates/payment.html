@@ -25,8 +25,8 @@
             border-color: var(--primary-color);
         }
         .plan-card.selected {
-            border-color: #8b5cf6;
-            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.42);
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.42);
         }
         .plan-card h3 { margin: 0 0 8px; font-size: 1.2rem; }
         .plan-card p  { margin: 0; color: var(--text-secondary); font-size: 0.9rem; }
@@ -112,9 +112,9 @@
         .bind-task-badge.link_ready { background: #dbeafe; color: #1d4ed8; }
         .bind-task-badge.opened { background: #fef3c7; color: #92400e; }
         .bind-task-badge.waiting_user_action { background: #e0e7ff; color: #3730a3; }
-        .bind-task-badge.paid_pending_sync { background: #dcfce7; color: #166534; }
-        .bind-task-badge.verifying { background: #ede9fe; color: #6d28d9; }
-        .bind-task-badge.completed { background: #dcfce7; color: #166534; }
+        .bind-task-badge.paid_pending_sync { background: #dbeafe; color: #1e40af; }
+        .bind-task-badge.verifying { background: #ede9fe; color: var(--primary-color); }
+        .bind-task-badge.completed { background: #ede9fe; color: var(--primary-color); }
         .bind-task-badge.failed { background: #fee2e2; color: #991b1b; }
         .bind-data-panel {
             margin-top: 10px;
@@ -156,7 +156,7 @@
             min-width: 122px;
         }
         .btn-purple {
-            background: linear-gradient(120deg, #7c3aed, #a855f7);
+            background: var(--brand-gradient);
             color: #fff;
             border: 0;
         }
@@ -211,6 +211,12 @@
         }
         .bind-mode-panel .form-row:last-child {
             margin-bottom: 0;
+        }
+        #create-bind-task-btn.efun-subscribe-wide {
+            min-width: 220px;
+            padding-left: 36px;
+            padding-right: 36px;
+            font-size: 16px;
         }
         .bind-card-inline-row {
             display: grid;
@@ -267,7 +273,134 @@
             line-height: 1.45;
             color: var(--text-secondary);
         }
+        .vendor-mode-panel {
+            margin-top: 10px;
+            padding: 10px;
+            border: 1px dashed var(--border-color);
+            border-radius: 8px;
+            background: var(--bg-secondary);
+        }
+        #vendor-efun-config {
+            margin-top: 14px;
+            padding: 14px;
+        }
+        #vendor-efun-config .form-row {
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+        #vendor-efun-config .form-row:last-of-type {
+            margin-bottom: 6px;
+        }
+        #vendor-efun-config .form-group {
+            margin-bottom: 0;
+        }
+        #vendor-efun-config .hint {
+            display: block;
+            margin-top: 6px;
+            line-height: 1.5;
+        }
+        #vendor-efun-config > .hint {
+            margin-top: 10px;
+        }
+        .efun-result {
+            margin-top: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: #0f172a;
+            color: #c7d2fe;
+            padding: 10px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            max-height: 220px;
+            overflow: auto;
+            display: none;
+        }
+        .efun-result.show {
+            display: block;
+        }
+        .vendor-progress-panel {
+            margin-top: 12px;
+            display: none;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 12px;
+            background: var(--bg-secondary);
+            grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+            gap: 10px 14px;
+            align-items: start;
+        }
+        .vendor-progress-panel.show {
+            display: grid;
+        }
+        .vendor-progress-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            grid-column: 1;
+        }
+        .vendor-progress-track {
+            width: 100%;
+            height: 10px;
+            border-radius: 999px;
+            background: var(--surface-hover);
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+            grid-column: 1;
+        }
+        .vendor-progress-bar {
+            height: 100%;
+            width: 0%;
+            background: var(--brand-gradient);
+            transition: width 0.25s ease;
+        }
+        .vendor-progress-body {
+            margin-top: 0;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 10px;
+            grid-column: 2;
+            grid-row: 1 / span 2;
+        }
+        .vendor-progress-log {
+            margin: 0;
+            white-space: pre-wrap;
+            max-height: 220px;
+            overflow: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: #0f172a;
+            color: #c7d2fe;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            line-height: 1.45;
+            padding: 10px;
+        }
+        .vendor-progress-runtime {
+            margin: 0;
+            color: var(--text-secondary);
+            font-size: 12px;
+            line-height: 1.45;
+        }
         @media (max-width: 768px) {
+            #create-bind-task-btn.efun-subscribe-wide {
+                min-width: 0;
+                width: 100%;
+                font-size: 15px;
+            }
+            .vendor-progress-panel.show {
+                grid-template-columns: 1fr;
+            }
+            .vendor-progress-head,
+            .vendor-progress-track,
+            .vendor-progress-body {
+                grid-column: 1;
+                grid-row: auto;
+            }
             .bind-task-url {
                 max-width: 140px;
             }
@@ -291,7 +424,6 @@
     </style>
 </head>
 <body>
-    {% include "partials/site_notice.html" %}
     <div class="container">
         <!-- 导航栏 -->
         <nav class="navbar">
@@ -301,16 +433,18 @@
             <div class="nav-links">
                 <a href="/" class="nav-link">注册</a>
                 <a href="/accounts" class="nav-link">账号管理</a>
-                <a href="/accounts-overview" class="nav-link">账号总览</a>
                 <a href="/email-services" class="nav-link">邮箱服务</a>
                 <a href="/payment" class="nav-link active">支付</a>
                 <a href="/card-pool" class="nav-link">卡池</a>
-                <a href="/auto-team" class="nav-link">自动进team</a>
+                <a href="/auto-team" class="nav-link">team</a>
                 <a href="/logs" class="nav-link">后台日志</a>
                 <a href="/settings" class="nav-link">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
+                        <div class="nav-actions">
+            <a href="/selfcheck" class="selfcheck-toggle" title="系统自检">⚙️</a>
             <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </div>
         </nav>
 
         <!-- 主内容区 -->
@@ -426,7 +560,7 @@
                                         <select id="bind-mode-select" onchange="onBindModeChange()">
                                             <option value="semi_auto" selected>半自动绑卡（本地打开页面手动提交）</option>
                                             <option value="local_auto">全自动绑卡（本地执行，ABCard 参考）</option>
-                                            <option value="third_party">第三方自动绑卡（调用外部 API）</option>
+                                            <option value="vendor_efun">卡商EFun</option>
                                         </select>
                                     </div>
                                 </div>
@@ -448,8 +582,47 @@
                                         <code>BIND_CARD_API_URL</code>/<code>BIND_CARD_API_KEY</code>。
                                     </small>
                                 </div>
+                                <div id="vendor-auto-config" class="vendor-mode-panel" style="display:none;">
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="vendor-checkout-input">自定义 Checkout（可选）</label>
+                                            <input id="vendor-checkout-input" type="text" placeholder="留空则按账号套餐自动生成官方 Checkout">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="vendor-redeem-input">兑换码（必填）</label>
+                                            <input id="vendor-redeem-input" type="text" autocomplete="off" maxlength="19" placeholder="例如 ZVDL-59UK-XC83-ET33">
+                                        </div>
+                                    </div>
+                                    <small class="hint">
+                                        兑换码格式：<code>XXXX-XXXX-XXXX-XXXX</code>。
+                                        若首次订阅失败，可直接再次点击“订阅”重试。
+                                    </small>
+                                </div>
+                                <div id="vendor-efun-config" class="vendor-mode-panel" style="display:none;">
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="efun-base-url-input">卡商接口地址（可选）</label>
+                                            <input id="efun-base-url-input" type="text" placeholder="https://card.aimizy.com/api/v1/bindcard">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="efun-api-key-input">卡商 API Key（可选）</label>
+                                            <input id="efun-api-key-input" type="password" autocomplete="off" placeholder="Bearer sk-...">
+                                        </div>
+                                    </div>
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label for="efun-code-input">兑换码</label>
+                                            <input id="efun-code-input" type="text" autocomplete="off" placeholder="例如 UK-UVYUD-J7BMB-5PZFE-Z8V5G-4Y5FJ">
+                            <small id="efun-pool-hint" class="hint">卡池可用（供应商=EFun）：0，请手动输入兑换码</small>
+                                        </div>
+                                    </div>
+                                    <div id="efun-result-box" class="efun-result"></div>
+                                    <small class="hint">说明：点击“订阅”后将走接口流程：强制生成 Checkout（代理）→ EFun 开卡 → 调用 bindcard 接口 → 同步订阅。</small>
+                                </div>
                             </div>
 
+                            <div id="bind-common-fields">
+                            <div id="bind-paste-section">
                             <div class="form-group">
                                 <label for="billing-paste-text">粘贴卡片/账单文本</label>
                                 <textarea id="billing-paste-text" class="bind-parse-textarea" placeholder="示例1（键值对）:
@@ -497,8 +670,9 @@ CVV 123
                                     </table>
                                 </div>
                             </div>
+                            </div>
 
-                            <div class="bind-form-grid">
+                            <div id="bind-card-address-section" class="bind-form-grid">
                                 <div class="form-row bind-card-inline-row">
                                     <div class="form-group bind-card-col-number">
                                         <label for="card-number-input">卡号</label>
@@ -565,15 +739,31 @@ CVV 123
                                     </div>
                                 </div>
                             </div>
+                            </div>
                         </div>
 
                         <!-- 操作区 -->
                         <div class="form-actions">
                             <button id="generate-link-btn" class="btn btn-primary" type="button" onclick="generateLink()">生成支付链接</button>
                             <button id="create-bind-task-btn" class="btn btn-secondary" type="button" onclick="createBindCardTask()">生成并加入绑卡任务（半自动）</button>
-                            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);margin-left:6px;">
+                            <button id="vendor-stop-btn" class="btn btn-danger" type="button" style="display:none" onclick="stopVendorAutoTask()">停止</button>
+                            <button id="vendor-retry-btn" class="btn btn-secondary" type="button" style="display:none" onclick="retryVendorAutoTask()">重新测试</button>
+                            <label id="bind-auto-open-wrap" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);margin-left:6px;">
                                 <input id="bind-auto-open" type="checkbox" checked style="width:auto;">创建任务后自动打开支付页
                             </label>
+                        </div>
+                        <div id="vendor-progress-panel" class="vendor-progress-panel">
+                            <div class="vendor-progress-head">
+                                <span id="vendor-progress-title">卡商订阅进度</span>
+                                <span id="vendor-progress-percent">0%</span>
+                            </div>
+                            <div class="vendor-progress-track">
+                                <div id="vendor-progress-bar" class="vendor-progress-bar"></div>
+                            </div>
+                            <div class="vendor-progress-body">
+                                <pre id="vendor-progress-log" class="vendor-progress-log">等待执行...</pre>
+                                <p id="vendor-progress-runtime" class="vendor-progress-runtime">已运行 0 秒 / 120 秒后可强制停止</p>
+                            </div>
                         </div>
 
                         <!-- 链接结果 -->
@@ -640,8 +830,9 @@ CVV 123
                             </table>
                         </div>
                         <p class="hint" style="margin-top: 10px;">
-                            说明：支持三种流程：半自动（人工提交）、全自动绑卡（本地浏览器执行）、
-                            第三方自动绑卡（外部 API 提交）；系统会在任务列表中自动跟踪订阅回调状态。
+                            说明：支持五种流程：半自动（人工提交）、全自动订阅（本地浏览器执行）、
+                            第三方订阅（外部 API 提交）、卡商全自动（接口提交）、卡商EFun（CDK 开卡 + bindcard 接口提交）；
+                            系统会在任务列表中自动跟踪订阅同步状态。
                         </p>
                     </div>
                 </div>
@@ -653,3 +844,10 @@ CVV 123
     <script src="/static/js/payment.js?v={{ static_version }}"></script>
 </body>
 </html>
+
+
+
+
+
+
+

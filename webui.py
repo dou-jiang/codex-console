@@ -25,13 +25,6 @@ from src.core.timezone_utils import apply_process_timezone
 from src.core.db_logs import install_database_log_handler
 from src.database.init_db import initialize_database
 from src.config.settings import get_settings
-from src.config.project_notice import build_terminal_notice_lines
-
-
-def _print_project_notice():
-    """Print the project notice to the terminal on startup."""
-    for line in build_terminal_notice_lines():
-        print(line)
 
 
 def _load_dotenv():
@@ -49,6 +42,30 @@ def _load_dotenv():
             value = value.strip().strip('"').strip("'")
             if key and key not in os.environ:
                 os.environ[key] = value
+
+
+def _can_bind_port(host: str, port: int) -> bool:
+    """检测端口是否可用（可绑定）。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+        return True
+    except OSError:
+        return False
+
+
+def _find_available_port(host: str, preferred_port: int, max_scan: int = 100) -> int:
+    """
+    从首选端口开始向后查找可用端口。
+    host 为 0.0.0.0/:: 时，使用 127.0.0.1 做本地可用性检测。
+    """
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    for offset in range(max_scan):
+        candidate = preferred_port + offset
+        if _can_bind_port(probe_host, candidate):
+            return candidate
+    return preferred_port
 
 
 def setup_application():
@@ -97,7 +114,6 @@ def setup_application():
 
 
 def start_webui():
-    _print_project_notice()
     """启动 Web UI"""
     # 设置应用程序
     settings = setup_application()
@@ -105,19 +121,33 @@ def start_webui():
     # 导入 FastAPI 应用（延迟导入以避免循环依赖）
     from src.web.app import app
 
+    # 端口占用时自动切换到可用端口，避免启动失败
+    bind_host = settings.webui_host
+    bind_port = int(settings.webui_port)
+    selected_port = _find_available_port(bind_host, bind_port, max_scan=100)
+
+    logger = logging.getLogger(__name__)
+    if selected_port != bind_port:
+        logger.warning(
+            "检测到端口占用，自动切换: %s:%s -> %s:%s",
+            bind_host,
+            bind_port,
+            bind_host,
+            selected_port,
+        )
+
     # 配置 uvicorn
     uvicorn_config = {
         "app": "src.web.app:app",
-        "host": settings.webui_host,
-        "port": settings.webui_port,
+        "host": bind_host,
+        "port": selected_port,
         "reload": settings.debug,
         "log_level": "info" if settings.debug else "warning",
         "access_log": settings.debug,
         "ws": "websockets",
     }
 
-    logger = logging.getLogger(__name__)
-    logger.info(f"Web UI 已就位，请走这边: http://{settings.webui_host}:{settings.webui_port}")
+    logger.info(f"Web UI 已就位，请走这边: http://{bind_host}:{selected_port}")
     logger.info(f"调试模式: {settings.debug}")
 
     # 启动服务器
@@ -172,9 +202,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # PyInstaller 打包后 Windows 上 uvicorn 可能拉起多进程，
-    # 这里先做 freeze_support，避免 multiprocessing-fork 参数报错。
-    import multiprocessing
-
-    multiprocessing.freeze_support()
     main()

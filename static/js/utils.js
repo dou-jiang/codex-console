@@ -175,10 +175,121 @@ const loading = new LoadingManager();
 class ApiClient {
     constructor(baseUrl = '/api') {
         this.baseUrl = baseUrl;
+        this.inflightRequests = new Map();
+        this.activeRequestCount = 0;
+        this.maxConcurrentRequests = 6;
+        this.requestQueue = [];
+        this.networkOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+        this._networkToastState = { type: '', at: 0 };
+        this.defaultTimeoutMs = 20000;
+        this.defaultRetryCount = 1;
+        this.defaultRetryDelayMs = 900;
+        this.setupNetworkListeners();
+    }
+
+    getAdaptiveTimeoutMs() {
+        const connection = navigator?.connection || navigator?.mozConnection || navigator?.webkitConnection;
+        const effectiveType = String(connection?.effectiveType || '').toLowerCase();
+        if (effectiveType === 'slow-2g' || effectiveType === '2g') return 45000;
+        if (effectiveType === '3g') return 30000;
+        return this.defaultTimeoutMs;
+    }
+
+    cleanupInflightRequest(requestKey, controller) {
+        if (!requestKey) return;
+        const current = this.inflightRequests.get(requestKey);
+        if (current === controller) {
+            this.inflightRequests.delete(requestKey);
+        }
+    }
+
+    setupNetworkListeners() {
+        if (typeof window === 'undefined' || !window.addEventListener) return;
+        window.addEventListener('online', () => {
+            this.networkOnline = true;
+            this.notifyNetworkState('网络已恢复', 'success', 2000);
+        });
+        window.addEventListener('offline', () => {
+            this.networkOnline = false;
+            this.notifyNetworkState('网络已断开，后台轮询将自动降频', 'warning', 6000);
+        });
+    }
+
+    notifyNetworkState(message, type, throttleMs = 3000) {
+        const now = Date.now();
+        if (
+            this._networkToastState.type === type &&
+            now - Number(this._networkToastState.at || 0) < throttleMs
+        ) {
+            return;
+        }
+        this._networkToastState = { type, at: now };
+        if (type === 'warning') {
+            toast.warning(message, 2500);
+            return;
+        }
+        if (type === 'success') {
+            toast.success(message, 1800);
+            return;
+        }
+        toast.info(message, 2000);
+    }
+
+    runWithConcurrency(task, priority = 'normal') {
+        return new Promise((resolve, reject) => {
+            const run = async () => {
+                this.activeRequestCount += 1;
+                try {
+                    const result = await task();
+                    resolve(result);
+                } catch (error) {
+                    reject(error);
+                } finally {
+                    this.activeRequestCount = Math.max(0, this.activeRequestCount - 1);
+                    this.flushQueue();
+                }
+            };
+
+            if (this.activeRequestCount < this.maxConcurrentRequests) {
+                run();
+                return;
+            }
+
+            if (priority === 'high') {
+                this.requestQueue.unshift(run);
+            } else {
+                this.requestQueue.push(run);
+            }
+        });
+    }
+
+    flushQueue() {
+        while (this.activeRequestCount < this.maxConcurrentRequests && this.requestQueue.length > 0) {
+            const next = this.requestQueue.shift();
+            if (typeof next === 'function') {
+                next();
+            }
+        }
+    }
+
+    sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     async request(path, options = {}) {
         const url = `${this.baseUrl}${path}`;
+        const {
+            timeoutMs,
+            retry,
+            retryDelayMs,
+            requestKey,
+            cancelPrevious,
+            priority,
+            silentNetworkError,
+            silentTimeoutError,
+            signal: externalSignal,
+            ...rawFetchOptions
+        } = options;
 
         const defaultOptions = {
             headers: {
@@ -186,31 +297,111 @@ class ApiClient {
             },
         };
 
-        const finalOptions = { ...defaultOptions, ...options };
+        const finalOptions = { ...defaultOptions, ...rawFetchOptions };
+        const mergedHeaders = {
+            ...(defaultOptions.headers || {}),
+            ...(rawFetchOptions.headers || {}),
+        };
+        if (Object.keys(mergedHeaders).length) {
+            finalOptions.headers = mergedHeaders;
+        }
+
+        const effectiveTimeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : this.getAdaptiveTimeoutMs();
+        const retryCount = Number.isInteger(retry) ? retry : this.defaultRetryCount;
+        const retryWaitMs = Number(retryDelayMs) > 0 ? Number(retryDelayMs) : this.defaultRetryDelayMs;
+        const requestPriority = String(priority || '').toLowerCase() || 'normal';
+        const allowSilentNetworkError = Boolean(silentNetworkError);
+        const allowSilentTimeoutError = Boolean(silentTimeoutError);
 
         if (finalOptions.body && typeof finalOptions.body === 'object') {
             finalOptions.body = JSON.stringify(finalOptions.body);
         }
 
-        try {
-            const response = await fetch(url, finalOptions);
-            const data = await response.json().catch(() => ({}));
+        const runner = async () => {
+            for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+                let timedOut = false;
+                let timeoutId = null;
+                const controller = new AbortController();
 
-            if (!response.ok) {
-                const error = new Error(data.detail || `HTTP ${response.status}`);
-                error.response = response;
-                error.data = data;
-                throw error;
-            }
+                if (requestKey && cancelPrevious) {
+                    const previousController = this.inflightRequests.get(requestKey);
+                    if (previousController) {
+                        previousController.__cancelReason = 'request_replaced';
+                        previousController.abort();
+                    }
+                }
+                if (requestKey) {
+                    this.inflightRequests.set(requestKey, controller);
+                }
 
-            return data;
-        } catch (error) {
-            // 网络错误处理
-            if (!error.response) {
-                toast.error('网络连接失败，请检查网络');
+                if (externalSignal) {
+                    if (externalSignal.aborted) {
+                        controller.abort();
+                    } else {
+                        externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+                    }
+                }
+
+                if (effectiveTimeoutMs > 0) {
+                    timeoutId = setTimeout(() => {
+                        timedOut = true;
+                        controller.__cancelReason = 'timeout';
+                        controller.abort();
+                    }, effectiveTimeoutMs);
+                }
+
+                try {
+                    if (!this.networkOnline && requestPriority === 'low') {
+                        const offlineError = new Error('网络离线，后台请求已跳过');
+                        offlineError.name = 'NetworkOfflineError';
+                        throw offlineError;
+                    }
+
+                    const response = await fetch(url, { ...finalOptions, signal: controller.signal });
+                    const data = await response.json().catch(() => ({}));
+
+                    if (!response.ok) {
+                        const error = new Error(data.detail || `HTTP ${response.status}`);
+                        error.response = response;
+                        error.data = data;
+                        throw error;
+                    }
+
+                    return data;
+                } catch (error) {
+                    const isAbortError = error?.name === 'AbortError';
+                    const cancelReason = controller.__cancelReason || '';
+                    const isExpectedAbort = isAbortError && (cancelReason === 'request_replaced' || externalSignal?.aborted);
+                    const isTimeoutError = isAbortError && (timedOut || cancelReason === 'timeout');
+                    const isOfflineError = error?.name === 'NetworkOfflineError';
+                    const isNetworkError = !error.response && !isAbortError && !isOfflineError;
+                    const canRetry = attempt < retryCount && (isTimeoutError || isNetworkError || (error?.response?.status >= 500));
+                    if (isAbortError) {
+                        error.cancelReason = cancelReason || (externalSignal?.aborted ? 'external_abort' : '');
+                    }
+
+                    if (canRetry) {
+                        await this.sleep(retryWaitMs * (attempt + 1));
+                        continue;
+                    }
+
+                    if (isTimeoutError && !allowSilentTimeoutError) {
+                        this.notifyNetworkState('请求超时，请检查网络后重试', 'warning', 3500);
+                    } else if ((isNetworkError || isOfflineError) && !allowSilentNetworkError) {
+                        this.notifyNetworkState('网络连接异常，请检查网络', 'warning', 3500);
+                    } else if (isExpectedAbort) {
+                        // 同类请求被新请求替代，属于预期行为，不提示错误
+                    }
+
+                    throw error;
+                } finally {
+                    if (timeoutId) clearTimeout(timeoutId);
+                    this.cleanupInflightRequest(requestKey, controller);
+                }
             }
-            throw error;
-        }
+        };
+
+        return this.runWithConcurrency(runner, requestPriority);
     }
 
     get(path, options = {}) {
@@ -235,6 +426,131 @@ class ApiClient {
 }
 
 const api = new ApiClient();
+
+// ============================================
+// 弱网轮询与筛选协议
+// ============================================
+
+class AdaptivePoller {
+    constructor(options = {}) {
+        const base = Number(options.baseIntervalMs ?? options.baseMs ?? 1200);
+        const max = Number(options.maxIntervalMs ?? options.maxMs ?? 12000);
+        this.baseIntervalMs = Math.max(300, Number.isFinite(base) ? base : 1200);
+        this.maxIntervalMs = Math.max(this.baseIntervalMs, Number.isFinite(max) ? max : 12000);
+        this.minIntervalMs = Math.max(250, Math.min(this.baseIntervalMs, Number(options.minIntervalMs || this.baseIntervalMs)));
+        this.jitterRatio = Math.min(0.2, Math.max(0, Number(options.jitterRatio || 0.08)));
+        this.failureCount = 0;
+        this.successCount = 0;
+        this.lastDelayMs = this.baseIntervalMs;
+    }
+
+    getConnectionMultiplier() {
+        const connection = navigator?.connection || navigator?.mozConnection || navigator?.webkitConnection;
+        const effectiveType = String(connection?.effectiveType || '').toLowerCase();
+        if (effectiveType === 'slow-2g' || effectiveType === '2g') return 3.0;
+        if (effectiveType === '3g') return 1.8;
+        if (connection?.saveData) return 1.5;
+        return 1.0;
+    }
+
+    recordSuccess() {
+        this.failureCount = Math.max(0, this.failureCount - 1);
+        this.successCount = Math.min(8, this.successCount + 1);
+    }
+
+    recordError() {
+        this.failureCount = Math.min(8, this.failureCount + 1);
+        this.successCount = 0;
+    }
+
+    nextDelay(options = {}) {
+        const forceSlow = Boolean(options.forceSlow);
+        let delay = this.baseIntervalMs * this.getConnectionMultiplier();
+        if (!api.networkOnline || forceSlow) {
+            delay = Math.max(delay, this.baseIntervalMs * 2.5);
+        }
+        if (this.failureCount > 0) {
+            delay *= Math.pow(1.55, Math.min(this.failureCount, 5));
+        } else if (this.successCount >= 3) {
+            delay *= 0.88;
+        }
+        delay = Math.max(this.minIntervalMs, Math.min(this.maxIntervalMs, Math.round(delay)));
+        const jitter = Math.round(delay * this.jitterRatio * (Math.random() * 2 - 1));
+        this.lastDelayMs = Math.max(this.minIntervalMs, Math.min(this.maxIntervalMs, delay + jitter));
+        return this.lastDelayMs;
+    }
+}
+
+function createAdaptivePoller(options = {}) {
+    return new AdaptivePoller(options);
+}
+
+const filterProtocol = {
+    normalizeValue(value) {
+        if (value === null || value === undefined) return null;
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            return trimmed ? trimmed : null;
+        }
+        if (typeof value === 'number') {
+            return Number.isFinite(value) ? value : null;
+        }
+        if (typeof value === 'boolean') {
+            return value;
+        }
+        if (Array.isArray(value)) {
+            const normalized = value
+                .map((item) => this.normalizeValue(item))
+                .filter((item) => item !== null);
+            return normalized.length ? normalized : null;
+        }
+        return value;
+    },
+
+    normalize(filters = {}) {
+        const result = {};
+        Object.entries(filters || {}).forEach(([key, raw]) => {
+            const value = this.normalizeValue(raw);
+            if (value === null) return;
+            result[key] = value;
+        });
+        return result;
+    },
+
+    toQuery(filters = {}, mapping = {}) {
+        const normalized = this.normalize(filters);
+        const params = new URLSearchParams();
+        Object.entries(normalized).forEach(([key, value]) => {
+            const targetKey = String(mapping[key] || key);
+            if (!targetKey) return;
+            if (Array.isArray(value)) {
+                value.forEach((item) => params.append(targetKey, String(item)));
+                return;
+            }
+            params.set(targetKey, String(value));
+        });
+        return params;
+    },
+
+    toPayload(filters = {}, mapping = {}) {
+        const normalized = this.normalize(filters);
+        const payload = {};
+        Object.entries(normalized).forEach(([key, value]) => {
+            const targetKey = String(mapping[key] || key);
+            if (!targetKey) return;
+            payload[targetKey] = value;
+        });
+        return payload;
+    },
+
+    pickSort(value, allowed = [], fallback = '') {
+        const candidate = String(value || '').trim();
+        return allowed.includes(candidate) ? candidate : fallback;
+    },
+};
+
+window.createAdaptivePoller = createAdaptivePoller;
+window.filterProtocol = filterProtocol;
 
 // ============================================
 // 事件委托助手
@@ -350,7 +666,6 @@ const statusMap = {
     },
     service: {
         tempmail: 'Tempmail.lol',
-        yyds_mail: 'YYDS Mail',
         outlook: 'Outlook',
         moe_mail: 'MoeMail',
         temp_mail: 'Temp-Mail（自部署）',

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from curl_cffi import requests as cffi_requests
 
 from ...config.settings import get_settings
-from ...config.constants import AccountStatus
+from ...config.constants import AccountStatus, OAUTH_CLIENT_ID
 from ...database.session import get_db
 from ...database import crud
 from ...database.models import Account
@@ -78,12 +78,19 @@ class TokenRefreshManager:
         """创建直连会话（不走代理）。"""
         return cffi_requests.Session(impersonate="chrome120")
 
-    def refresh_by_session_token(self, session_token: str) -> TokenRefreshResult:
+    def refresh_by_session_token(
+        self,
+        session_token: str,
+        refresh_token: Optional[str] = None,
+        client_id: Optional[str] = None,
+    ) -> TokenRefreshResult:
         """
         使用 Session Token 刷新
 
         Args:
             session_token: 会话令牌
+            refresh_token: 可选 OAuth Refresh Token（用于一次性会话令牌场景兜底）
+            client_id: 可选 OAuth Client ID
 
         Returns:
             TokenRefreshResult: 刷新结果
@@ -110,6 +117,7 @@ class TokenRefreshManager:
             session = self._create_session()
             response = _request_once(session)
 
+            # 某些一次性/异常 session_token 链路会返回 grant 错误，若提供了 refresh_token 则兜底走 OAuth 刷新
             if response.status_code >= 400:
                 try:
                     error_payload = response.json()
@@ -117,16 +125,19 @@ class TokenRefreshManager:
                     error_payload = {}
 
                 error_text = str(error_payload.get("error") or "").lower()
-                error_description = str(error_payload.get("error_description") or response.text or "")
-                if response.status_code == 400 and error_text in {"invalid_grant", "unsupported_grant_type", "invalid_request"}:
-                    fallback_data = {
-                        "client_id": client_id,
-                        "grant_type": "refresh_token",
-                        "refresh_token": refresh_token,
-                    }
+                if (
+                    response.status_code == 400
+                    and refresh_token
+                    and error_text in {"invalid_grant", "unsupported_grant_type", "invalid_request"}
+                ):
+                    oauth_client_id = client_id or self.settings.openai_client_id or OAUTH_CLIENT_ID
                     response = session.post(
                         self.TOKEN_URL,
-                        data=fallback_data,
+                        data={
+                            "client_id": oauth_client_id,
+                            "grant_type": "refresh_token",
+                            "refresh_token": refresh_token,
+                        },
                         headers={
                             "Content-Type": "application/x-www-form-urlencoded",
                             "Accept": "application/json",
@@ -282,7 +293,11 @@ class TokenRefreshManager:
         # 优先尝试 Session Token
         if account.session_token:
             logger.info(f"尝试使用 Session Token 刷新账号 {account.email}")
-            result = self.refresh_by_session_token(account.session_token)
+            result = self.refresh_by_session_token(
+                account.session_token,
+                refresh_token=account.refresh_token,
+                client_id=account.client_id
+            )
             if result.success:
                 return result
             logger.warning(f"Session Token 刷新失败，尝试 OAuth 刷新")
@@ -291,7 +306,11 @@ class TokenRefreshManager:
         cookie_session_token = self._extract_session_token_from_cookies(getattr(account, "cookies", None))
         if cookie_session_token:
             logger.info(f"尝试使用 Cookies 中的 Session Token 刷新账号 {account.email}")
-            result = self.refresh_by_session_token(cookie_session_token)
+            result = self.refresh_by_session_token(
+                cookie_session_token,
+                refresh_token=account.refresh_token,
+                client_id=account.client_id
+            )
             if result.success:
                 return result
             logger.warning("Cookies Session Token 刷新失败，尝试 OAuth 刷新")
@@ -311,12 +330,13 @@ class TokenRefreshManager:
             error_message="账号没有可用的刷新方式（缺少 session_token 和 refresh_token）"
         )
 
-    def validate_token(self, access_token: str) -> Tuple[bool, Optional[str]]:
+    def validate_token(self, access_token: str, timeout_seconds: int = 30) -> Tuple[bool, Optional[str]]:
         """
         验证 Access Token 是否有效
 
         Args:
             access_token: 访问令牌
+            timeout_seconds: 请求超时（秒）
 
         Returns:
             Tuple[bool, Optional[str]]: (是否有效, 错误信息)
@@ -331,15 +351,18 @@ class TokenRefreshManager:
                     "authorization": f"Bearer {access_token}",
                     "accept": "application/json"
                 },
-                timeout=30
+                timeout=max(5, int(timeout_seconds or 30))
             )
 
             if response.status_code == 200:
                 return True, None
             elif response.status_code == 401:
-                return False, "Token 无效或已过期"
+                return False, "Token 无效（401）"
+            elif response.status_code == 402:
+                return False, "订阅受限（402）"
             elif response.status_code == 403:
-                return False, "账号可能被封禁"
+                # 403 在当前业务里通常代表工作区/权限受限，但账号可继续使用。
+                return True, None
             else:
                 return False, f"验证失败: HTTP {response.status_code}"
 
@@ -384,13 +407,18 @@ def refresh_account_token(account_id: int, proxy_url: Optional[str] = None) -> T
         return result
 
 
-def validate_account_token(account_id: int, proxy_url: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+def validate_account_token(
+    account_id: int,
+    proxy_url: Optional[str] = None,
+    timeout_seconds: int = 30,
+) -> Tuple[bool, Optional[str]]:
     """
     验证指定账号的 Token 是否有效
 
     Args:
         account_id: 账号 ID
         proxy_url: 代理 URL
+        timeout_seconds: 验证请求超时（秒）
 
     Returns:
         Tuple[bool, Optional[str]]: (是否有效, 错误信息)
@@ -401,30 +429,41 @@ def validate_account_token(account_id: int, proxy_url: Optional[str] = None) -> 
             return False, "账号不存在"
 
         if not account.access_token:
-            # 无 Token 直接归类为 failed，便于账号管理按“失败”筛选定位问题账号。
+            # 无 Token 直接标记为 failed，便于账号管理筛选定位。
             if account.status != AccountStatus.FAILED.value:
                 crud.update_account(db, account_id, status=AccountStatus.FAILED.value)
             return False, "账号没有 access_token"
 
         manager = TokenRefreshManager(proxy_url=proxy_url)
-        is_valid, error = manager.validate_token(account.access_token)
+        is_valid, error = manager.validate_token(
+            account.access_token,
+            timeout_seconds=max(5, int(timeout_seconds or 30)),
+        )
 
-        # 验证后回写账号状态，确保前端筛选（active/expired/banned/failed）与验证结果一致。
+        # 验证后回写账号状态，确保列表状态与验证结果一致。
         error_text = str(error or "").lower()
         if is_valid:
             next_status = AccountStatus.ACTIVE.value
         elif (
-            "过期" in error_text
-            or "expired" in error_text
-            or "401" in error_text
-            or "invalid" in error_text
+            "402" in error_text
+            or "payment required" in error_text
+            or "订阅受限" in error_text
         ):
+            # 402 -> 黄色（expired）
             next_status = AccountStatus.EXPIRED.value
+        elif (
+            "401" in error_text
+            or "invalid" in error_text
+            or "unauthorized" in error_text
+            or "过期" in error_text
+            or "expired" in error_text
+        ):
+            # 401 -> 红色（failed）
+            next_status = AccountStatus.FAILED.value
         elif (
             "封禁" in error_text
             or "banned" in error_text
             or "forbidden" in error_text
-            or "403" in error_text
         ):
             next_status = AccountStatus.BANNED.value
         else:

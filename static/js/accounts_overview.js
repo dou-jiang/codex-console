@@ -5,6 +5,60 @@
  */
 
 const VIEW_MODE_STORAGE_KEY = 'accounts_overview_view_mode';
+const AUTO_REFRESH_SCOPE_STORAGE_KEY = 'accounts_overview_auto_refresh_scope_v1';
+
+const overviewApi = {
+    loadStats() {
+        return api.get('/accounts/stats/overview', {
+            requestKey: 'overview:stats',
+            cancelPrevious: true,
+            retry: 1,
+        });
+    },
+    loadCards() {
+        return api.get('/accounts/overview/cards', {
+            requestKey: 'overview:cards',
+            cancelPrevious: true,
+            retry: 1,
+            timeoutMs: 15000,
+        });
+    },
+    startRefreshTask(payload) {
+        return api.post('/accounts/overview/refresh/async', payload, {
+            timeoutMs: 20000,
+            retry: 0,
+            requestKey: 'overview:refresh-task',
+            cancelPrevious: true,
+        });
+    },
+    refreshSingle(payload) {
+        return api.post('/accounts/overview/refresh', payload, {
+            timeoutMs: 60000,
+            retry: 0,
+            requestKey: `overview:refresh-single:${Number(payload?.ids?.[0] || 0)}`,
+            cancelPrevious: true,
+        });
+    },
+    loadSelectable() {
+        return api.get('/accounts/overview/cards/selectable', {
+            requestKey: 'overview:addable',
+            cancelPrevious: true,
+            retry: 1,
+        });
+    },
+    removeCards(payload) {
+        return api.post('/accounts/overview/cards/remove', payload, {
+            timeoutMs: 20000,
+            retry: 0,
+        });
+    },
+    attachCard(id) {
+        return api.post(`/accounts/overview/cards/${id}/attach`, {}, {
+            timeoutMs: 15000,
+            retry: 0,
+        });
+    },
+};
 
 const overviewState = {
     summary: null,
@@ -19,7 +73,36 @@ const overviewState = {
     cardRefreshTimer: null,
     cardCountdownTimer: null,
     cardNextRefreshAt: null,
+    isBulkRefreshing: false,
+    cardAutoRefreshScope: storage.get(AUTO_REFRESH_SCOPE_STORAGE_KEY, 'stale_failed') || 'stale_failed',
 };
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function watchOverviewTask(taskId, onUpdate, maxWaitMs = 20 * 60 * 1000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < maxWaitMs) {
+        const task = await api.get(`/accounts/tasks/${taskId}`, {
+            requestKey: `overview:task:${taskId}`,
+            cancelPrevious: true,
+            retry: 0,
+            timeoutMs: 30000,
+        });
+
+        if (typeof onUpdate === 'function') {
+            onUpdate(task);
+        }
+
+        const status = String(task?.status || '').toLowerCase();
+        if (['completed', 'failed', 'cancelled'].includes(status)) {
+            return task;
+        }
+        await sleep(1200);
+    }
+    throw new Error('任务等待超时，请稍后刷新查看结果');
+}
 
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -38,13 +121,12 @@ function toSortedEntries(data) {
 
 const SERVICE_DIST_PALETTE = [
     '#3b82f6', // blue
-    '#10b981', // emerald
-    '#f59e0b', // amber
+    '#2563eb', // deep blue
+    '#4f46e5', // indigo
     '#8b5cf6', // violet
-    '#ef4444', // red
     '#06b6d4', // cyan
-    '#84cc16', // lime
-    '#f97316', // orange
+    '#2f80ff', // azure
+    '#7c3aed', // purple
 ];
 
 function hashText(text) {
@@ -62,7 +144,7 @@ function getDistributionBarColor(containerId, key, index) {
 
     if (containerId === 'dist-subscription') {
         if (value.includes('team')) return '#8b5cf6'; // team: purple
-        if (value.includes('plus')) return '#10b981';
+        if (value.includes('plus')) return '#2f80ff';
         if (value.includes('pro')) return '#0ea5e9';
         if (value.includes('free')) return '#94a3b8';
     }
@@ -81,7 +163,7 @@ function getDistributionBarColor(containerId, key, index) {
 
     if (containerId === 'dist-source') {
         if (value === 'register') return '#3b82f6';
-        if (value === 'login') return '#10b981';
+        if (value === 'login') return '#8b5cf6';
     }
 
     return '#3b82f6';
@@ -255,9 +337,17 @@ function renderRecentAccounts(accounts) {
     `).join('');
 }
 
+function setToolbarRefreshLoading(loading) {
+    const button = document.getElementById('card-refresh-btn');
+    if (!button) return;
+    button.disabled = Boolean(loading);
+    button.classList.toggle('is-loading', Boolean(loading));
+    button.setAttribute('aria-busy', loading ? 'true' : 'false');
+}
+
 async function loadLegacyOverview() {
     try {
-        const data = await api.get('/accounts/stats/overview');
+        const data = await overviewApi.loadStats();
         overviewState.summary = data;
 
         setText('ov-total', data.total);
@@ -446,8 +536,9 @@ function renderPlanCards() {
 }
 
 async function loadPlanCards(forceRefresh = false) {
+    void forceRefresh;
     try {
-        const data = await api.get('/accounts/overview/cards');
+        const data = await overviewApi.loadCards();
         overviewState.cards = Array.isArray(data?.accounts) ? data.accounts : [];
         syncSelectedCardIds();
         updatePlanFilterOptions();
@@ -463,28 +554,88 @@ async function loadPlanCards(forceRefresh = false) {
     }
 }
 
-async function refreshSelectedOrAll(force = true, silent = false) {
+function getCardsForRefresh(mode = 'visible') {
+    const source = Array.isArray(overviewState.filteredCards) && overviewState.filteredCards.length
+        ? overviewState.filteredCards
+        : overviewState.cards;
+    if (mode !== 'stale_failed') return source;
+    return source.filter((item) => {
+        const stale = Boolean(item?.overview_stale);
+        const hasError = Boolean(item?.overview_error);
+        const hourlyUnknown = String(item?.hourly_quota?.status || '').toLowerCase() === 'unknown';
+        const weeklyUnknown = String(item?.weekly_quota?.status || '').toLowerCase() === 'unknown';
+        return stale || hasError || (hourlyUnknown && weeklyUnknown);
+    });
+}
+
+function pickRefreshTargetIds(options = {}) {
+    const mode = String(options?.targetMode || 'visible');
+    const preferSelected = options?.preferSelected !== false;
     const selectedIds = Array.from(overviewState.selectedCardIds);
-    const visibleIds = overviewState.filteredCards
+    if (preferSelected && selectedIds.length) {
+        return selectedIds.filter((id) => Number.isFinite(Number(id)));
+    }
+    return getCardsForRefresh(mode)
         .map((item) => Number(item.id))
         .filter((id) => Number.isFinite(id));
-    const targetIds = selectedIds.length ? selectedIds : visibleIds;
+}
+
+async function refreshSelectedOrAll(force = true, silent = false, options = {}) {
+    if (overviewState.isBulkRefreshing) {
+        if (!silent) toast.info('刷新任务仍在执行，请稍候');
+        return;
+    }
+
+    const targetIds = pickRefreshTargetIds(options);
+
+    overviewState.isBulkRefreshing = true;
+    setToolbarRefreshLoading(true);
     try {
         if (!targetIds.length) {
             await loadPlanCards(false);
             if (!silent) toast.info('当前没有可刷新的卡片');
             return;
         }
-
-        await api.post('/accounts/overview/refresh', {
+        const task = await overviewApi.startRefreshTask({
             ids: targetIds,
             force,
             select_all: false,
         });
+        const taskId = task?.id;
+        if (!taskId) {
+            throw new Error('任务创建失败：未返回任务 ID');
+        }
+
+        if (!silent) toast.info(`总览刷新任务已启动（${taskId.slice(0, 8)}）`);
+        const finalTask = await watchOverviewTask(taskId, (progressTask) => {
+            const progress = progressTask?.progress || {};
+            const completed = Number(progress.completed || 0);
+            const total = Number(progress.total || targetIds.length);
+            if (!silent && total > 0) {
+                const text = `刷新中 ${completed}/${total}`;
+                const el = document.getElementById('card-selection-info');
+                if (el) el.textContent = text;
+            }
+        });
+
+        const status = String(finalTask?.status || '').toLowerCase();
+        const result = finalTask?.result || {};
         await loadPlanCards(false);
-        if (!silent) toast.success(`已刷新 ${targetIds.length} 个账号配额`);
+        updateSelectionInfo();
+        if (!silent) {
+            if (status === 'completed') {
+                toast.success(`刷新完成：成功 ${result.success_count || 0}，失败 ${result.failed_count || 0}`);
+            } else if (status === 'cancelled') {
+                toast.warning(`任务已取消（成功 ${result.success_count || 0}，失败 ${result.failed_count || 0}）`, 5000);
+            } else {
+                toast.error(`刷新失败: ${finalTask?.error || finalTask?.message || '未知错误'}`);
+            }
+        }
     } catch (error) {
         if (!silent) toast.error(`刷新失败: ${error.message || '未知错误'}`);
+    } finally {
+        overviewState.isBulkRefreshing = false;
+        setToolbarRefreshLoading(false);
     }
 }
 
@@ -499,10 +650,14 @@ function setCardRefreshLoading(button, loading) {
 async function refreshSingleCard(accountId, button = null) {
     if (!Number.isFinite(Number(accountId))) return;
     if (button?.classList.contains('is-loading')) return;
+    if (overviewState.isBulkRefreshing) {
+        toast.info('批量刷新进行中，请稍后再刷新单卡');
+        return;
+    }
     setCardRefreshLoading(button, true);
     toast.info(`正在刷新账号 #${accountId} 配额...`, 1500);
     try {
-        const result = await api.post('/accounts/overview/refresh', {
+        const result = await overviewApi.refreshSingle({
             ids: [accountId],
             force: true,
             select_all: false,
@@ -531,7 +686,7 @@ async function removeSingleCard(accountId) {
     if (!Number.isFinite(id)) return;
     const ok = await confirm('确认从卡片列表删除该账号吗？（不会删除账号管理数据）', '删除卡片');
     if (!ok) return;
-    await api.post('/accounts/overview/cards/remove', {
+    await overviewApi.removeCards({
         ids: [id],
         select_all: false,
     });
@@ -543,7 +698,7 @@ async function removeSingleCard(accountId) {
 
 async function loadAddableAccounts() {
     try {
-        const data = await api.get('/accounts/overview/cards/selectable');
+        const data = await overviewApi.loadSelectable();
         overviewState.addableCards = Array.isArray(data?.accounts) ? data.accounts : [];
     } catch (error) {
         overviewState.addableCards = [];
@@ -591,7 +746,7 @@ async function restoreSelectedAddableAccount() {
         toast.warning('请先选择一个账号');
         return;
     }
-    await api.post(`/accounts/overview/cards/${id}/attach`, {});
+    await overviewApi.attachCard(id);
     await loadAddableAccounts();
     await loadPlanCards(false);
     await loadLegacyOverview();
@@ -672,7 +827,7 @@ function setFieldValue(id, value) {
 async function submitAddAccount() {
     const selectedExisting = getSelectedExistingAccount();
     if (selectedExisting) {
-        await api.post(`/accounts/overview/cards/${Number(selectedExisting.id)}/attach`, {});
+        await overviewApi.attachCard(Number(selectedExisting.id));
         closeModalById('overview-add-modal');
         resetAddModalFields();
         await loadAddableAccounts();
@@ -767,7 +922,7 @@ async function removeSelectedAccounts() {
     const ok = await confirm(`确认从卡片列表删除 ${ids.length} 个账号吗？（不会删除账号管理数据）`, '批量删除卡片');
     if (!ok) return;
 
-    const result = await api.post('/accounts/overview/cards/remove', { ids, select_all: false });
+    const result = await overviewApi.removeCards({ ids, select_all: false });
     const removedCount = Number(result?.removed_count || 0);
     toast.success(`删除完成：${removedCount} 个卡片`);
     overviewState.selectedCardIds.clear();
@@ -822,7 +977,11 @@ function restartCardAutoRefresh() {
     updateCardNextRefreshText();
 
     overviewState.cardRefreshTimer = setInterval(async () => {
-        await refreshSelectedOrAll(true, true);
+        if (document.hidden) return;
+        await refreshSelectedOrAll(true, true, {
+            targetMode: overviewState.cardAutoRefreshScope,
+            preferSelected: false,
+        });
         overviewState.cardNextRefreshAt = Date.now() + intervalMs;
         updateCardNextRefreshText();
     }, intervalMs);
@@ -838,14 +997,6 @@ function restartCardAutoRefresh() {
 }
 
 function bindEvents() {
-    const legacyRefreshBtn = document.getElementById('legacy-refresh-btn');
-    if (legacyRefreshBtn) {
-        legacyRefreshBtn.addEventListener('click', async () => {
-            await loadLegacyOverview();
-            await loadPlanCards(true);
-        });
-    }
-
     const cardSearchInput = document.getElementById('card-search-input');
     if (cardSearchInput) {
         cardSearchInput.addEventListener('input', debounce(applyCardFilters, 240));
@@ -891,6 +1042,22 @@ function bindEvents() {
             restartCardAutoRefresh();
         });
     }
+    const cardRefreshScope = document.getElementById('card-refresh-scope');
+    if (cardRefreshScope) {
+        const nextScope = ['stale_failed', 'visible'].includes(overviewState.cardAutoRefreshScope)
+            ? overviewState.cardAutoRefreshScope
+            : 'stale_failed';
+        overviewState.cardAutoRefreshScope = nextScope;
+        cardRefreshScope.value = nextScope;
+        cardRefreshScope.addEventListener('change', () => {
+            const value = ['stale_failed', 'visible'].includes(cardRefreshScope.value)
+                ? cardRefreshScope.value
+                : 'stale_failed';
+            overviewState.cardAutoRefreshScope = value;
+            storage.set(AUTO_REFRESH_SCOPE_STORAGE_KEY, value);
+            restartCardAutoRefresh();
+        });
+    }
 
     const addBtn = document.getElementById('card-add-btn');
     if (addBtn) {
@@ -905,12 +1072,32 @@ function bindEvents() {
     if (toolbarRefreshBtn) {
         toolbarRefreshBtn.addEventListener('click', async () => {
             try {
-                await refreshSelectedOrAll(true, true);
+                await refreshSelectedOrAll(true, true, {
+                    targetMode: 'visible',
+                    preferSelected: true,
+                });
                 await Promise.all([
                     loadLegacyOverview(),
                     loadAddableAccounts(),
                 ]);
                 toast.success('账号总览已刷新');
+            } catch (error) {
+                toast.error(`刷新失败: ${error?.message || '未知错误'}`);
+            }
+        });
+    }
+    const toolbarRefreshFailedBtn = document.getElementById('card-refresh-failed-btn');
+    if (toolbarRefreshFailedBtn) {
+        toolbarRefreshFailedBtn.addEventListener('click', async () => {
+            try {
+                await refreshSelectedOrAll(true, false, {
+                    targetMode: 'stale_failed',
+                    preferSelected: false,
+                });
+                await Promise.all([
+                    loadLegacyOverview(),
+                    loadAddableAccounts(),
+                ]);
             } catch (error) {
                 toast.error(`刷新失败: ${error?.message || '未知错误'}`);
             }
@@ -1042,7 +1229,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     ]);
     initResults.forEach((item, index) => {
         if (item.status === 'rejected') {
-            const target = index === 0 ? '总览统计' : '卡片列表';
+            const target = index === 0 ? '总览统计' : (index === 1 ? '卡片列表' : '可选账号');
             toast.warning(`${target}初始化失败，已降级显示`);
         }
     });

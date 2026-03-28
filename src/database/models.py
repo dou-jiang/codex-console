@@ -10,6 +10,8 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import relationship
 
+from ..config.constants import AccountLabel, PoolState, RoleTag
+
 Base = declarative_base()
 
 
@@ -53,12 +55,21 @@ class Account(Base):
     cpa_uploaded = Column(Boolean, default=False)  # 是否已上传到 CPA
     cpa_uploaded_at = Column(DateTime)  # 上传时间
     source = Column(String(20), default='register')  # 'register' 或 'login'，区分账号来源
+    account_label = Column(String(20), default=AccountLabel.NONE.value)  # none / mother / child
+    role_tag = Column(String(20), default=RoleTag.NONE.value, index=True)  # none / parent / child
+    biz_tag = Column(String(80), index=True)  # 业务标签（可选）
+    pool_state = Column(String(30), default=PoolState.CANDIDATE_POOL.value, index=True)  # team_pool / candidate_pool / blocked
+    pool_state_manual = Column(String(30), index=True)  # 手工覆盖池状态（可空）
+    last_pool_sync_at = Column(DateTime, index=True)  # 最近一次池状态同步
+    priority = Column(Integer, default=50, index=True)  # 账号优先级
+    last_used_at = Column(DateTime, index=True)  # 最近用于邀请/绑卡等任务的时间
     subscription_type = Column(String(20))  # None / 'plus' / 'team'
     subscription_at = Column(DateTime)  # 订阅开通时间
     cookies = Column(Text)  # 完整 cookie 字符串，用于支付请求
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     bind_card_tasks = relationship("BindCardTask", back_populates="account")
+    team_invite_records = relationship("TeamInviteRecord", back_populates="inviter_account")
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -78,6 +89,14 @@ class Account(Base):
             'cpa_uploaded': self.cpa_uploaded,
             'cpa_uploaded_at': self.cpa_uploaded_at.isoformat() if self.cpa_uploaded_at else None,
             'source': self.source,
+            'account_label': self.account_label,
+            'role_tag': self.role_tag,
+            'biz_tag': self.biz_tag,
+            'pool_state': self.pool_state,
+            'pool_state_manual': self.pool_state_manual,
+            'last_pool_sync_at': self.last_pool_sync_at.isoformat() if self.last_pool_sync_at else None,
+            'priority': self.priority,
+            'last_used_at': self.last_used_at.isoformat() if self.last_used_at else None,
             'subscription_type': self.subscription_type,
             'subscription_at': self.subscription_at.isoformat() if self.subscription_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -125,7 +144,9 @@ class BindCardTask(Base):
     __tablename__ = "bind_card_tasks"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    # 允许账号删除后保留任务记录：删除账号时将 account_id 置空，邮箱使用快照字段展示
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True)
+    account_email = Column(String(255))  # 账号邮箱快照（历史记录展示用）
     plan_type = Column(String(20), nullable=False)  # plus / team
     workspace_name = Column(String(255))
     price_interval = Column(String(20))
@@ -148,6 +169,27 @@ class BindCardTask(Base):
 
     # 关系
     account = relationship("Account", back_populates="bind_card_tasks")
+
+
+class TeamInviteRecord(Base):
+    """Team 邀请记录表（用于目标邮箱候选去重与异步状态收敛）"""
+    __tablename__ = "team_invite_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    inviter_account_id = Column(Integer, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True)
+    inviter_email = Column(String(255))  # 邀请人邮箱快照（账号删除后仍可追溯）
+    target_email = Column(String(255), nullable=False, index=True)
+    workspace_id = Column(String(255), index=True)
+    state = Column(String(20), default="pending", index=True)  # pending / invited / joined / expired / failed
+    invite_attempts = Column(Integer, default=1)
+    last_error = Column(Text)
+    invited_at = Column(DateTime, default=datetime.utcnow)
+    accepted_at = Column(DateTime)
+    expires_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    inviter_account = relationship("Account", back_populates="team_invite_records")
 
 
 class AppLog(Base):
@@ -178,6 +220,78 @@ class AppLog(Base):
         }
 
 
+class OperationAuditLog(Base):
+    """操作审计日志（记录关键管理动作）"""
+    __tablename__ = "operation_audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    actor = Column(String(120), index=True)  # 谁触发（admin/api/system）
+    action = Column(String(120), nullable=False, index=True)  # 做了什么
+    target_type = Column(String(80), nullable=False, index=True)  # 作用对象类型
+    target_id = Column(String(120), index=True)  # 作用对象 ID（字符串兼容多类型）
+    target_email = Column(String(255), index=True)  # 账号邮箱快照
+    payload = Column(JSONEncodedDict)  # 变更前后与附加信息
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "actor": self.actor,
+            "action": self.action,
+            "target_type": self.target_type,
+            "target_id": self.target_id,
+            "target_email": self.target_email,
+            "payload": self.payload or {},
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class SelfCheckRun(Base):
+    """系统自检运行记录"""
+    __tablename__ = "selfcheck_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_uuid = Column(String(64), unique=True, nullable=False, index=True)
+    mode = Column(String(20), nullable=False, default="quick")  # quick / full
+    source = Column(String(40), nullable=False, default="manual")  # manual / scheduler / api
+    status = Column(String(20), nullable=False, default="pending")  # pending / running / completed / failed / cancelled
+    score = Column(Integer, default=0)
+    total_checks = Column(Integer, default=0)
+    passed_checks = Column(Integer, default=0)
+    warning_checks = Column(Integer, default=0)
+    failed_checks = Column(Integer, default=0)
+    duration_ms = Column(Integer, default=0)
+    summary = Column(String(500))
+    error_message = Column(Text)
+    result_data = Column(JSONEncodedDict)  # 结构化明细（检查项/修复项/统计）
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "run_uuid": self.run_uuid,
+            "mode": self.mode,
+            "source": self.source,
+            "status": self.status,
+            "score": int(self.score or 0),
+            "total_checks": int(self.total_checks or 0),
+            "passed_checks": int(self.passed_checks or 0),
+            "warning_checks": int(self.warning_checks or 0),
+            "failed_checks": int(self.failed_checks or 0),
+            "duration_ms": int(self.duration_ms or 0),
+            "summary": self.summary,
+            "error_message": self.error_message,
+            "result_data": self.result_data or {},
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class Setting(Base):
     """系统设置表"""
     __tablename__ = 'settings'
@@ -197,7 +311,7 @@ class CpaService(Base):
     name = Column(String(100), nullable=False)  # 服务名称
     api_url = Column(String(500), nullable=False)  # API URL
     api_token = Column(Text, nullable=False)  # API Token
-    proxy_url = Column(String(1000))  # ?? URL
+    proxy_url = Column(String(1000))  # 代理 URL
     enabled = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # 优先级
     created_at = Column(DateTime, default=datetime.utcnow)

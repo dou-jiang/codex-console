@@ -7,7 +7,26 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, asc, func
 
-from .models import Account, EmailService, RegistrationTask, Setting, Proxy, CpaService, Sub2ApiService
+from ..config.constants import (
+    PoolState,
+    account_label_to_role_tag,
+    normalize_account_label,
+    normalize_pool_state,
+    normalize_role_tag,
+    role_tag_to_account_label,
+)
+from .models import (
+    Account,
+    EmailService,
+    RegistrationTask,
+    Setting,
+    Proxy,
+    CpaService,
+    Sub2ApiService,
+    BindCardTask,
+    TeamInviteRecord,
+    OperationAuditLog,
+)
 
 
 # ============================================================================
@@ -32,9 +51,25 @@ def create_account(
     expires_at: Optional['datetime'] = None,
     extra_data: Optional[Dict[str, Any]] = None,
     status: Optional[str] = None,
-    source: Optional[str] = None
+    source: Optional[str] = None,
+    account_label: Optional[str] = None,
+    role_tag: Optional[str] = None,
+    biz_tag: Optional[str] = None,
+    pool_state: Optional[str] = None,
+    pool_state_manual: Optional[str] = None,
+    priority: Optional[int] = None,
+    last_used_at: Optional['datetime'] = None,
 ) -> Account:
     """创建新账户"""
+    normalized_role_tag = normalize_role_tag(
+        role_tag if role_tag is not None else account_label_to_role_tag(account_label)
+    )
+    normalized_account_label = role_tag_to_account_label(normalized_role_tag)
+    normalized_pool_state = normalize_pool_state(pool_state) if pool_state is not None else PoolState.CANDIDATE_POOL.value
+    normalized_pool_state_manual = (
+        normalize_pool_state(pool_state_manual) if pool_state_manual is not None and str(pool_state_manual).strip() else None
+    )
+
     db_account = Account(
         email=email,
         password=password,
@@ -53,6 +88,13 @@ def create_account(
         extra_data=extra_data or {},
         status=status or 'active',
         source=source or 'register',
+        account_label=normalized_account_label,
+        role_tag=normalized_role_tag,
+        biz_tag=(str(biz_tag).strip() or None) if biz_tag is not None else None,
+        pool_state=normalized_pool_state,
+        pool_state_manual=normalized_pool_state_manual,
+        priority=int(priority) if priority is not None else 50,
+        last_used_at=last_used_at,
         registered_at=datetime.utcnow()
     )
     db.add(db_account)
@@ -111,8 +153,45 @@ def update_account(
         return None
 
     for key, value in kwargs.items():
+        if key == "role_tag" and value is not None:
+            normalized_role = normalize_role_tag(value)
+            db_account.role_tag = normalized_role
+            db_account.account_label = role_tag_to_account_label(normalized_role)
+            continue
+
+        if key == "account_label" and value is not None:
+            normalized_label = normalize_account_label(value)
+            db_account.account_label = normalized_label
+            db_account.role_tag = account_label_to_role_tag(normalized_label)
+            continue
+
+        if key in ("pool_state", "pool_state_manual"):
+            if value is None:
+                setattr(db_account, key, None)
+            elif str(value).strip():
+                setattr(db_account, key, normalize_pool_state(value))
+            else:
+                setattr(db_account, key, None)
+            continue
+
+        if key == "biz_tag":
+            db_account.biz_tag = str(value).strip() or None if value is not None else None
+            continue
+
+        if key == "priority" and value is not None:
+            try:
+                db_account.priority = int(value)
+            except Exception:
+                db_account.priority = 50
+            continue
+
         if hasattr(db_account, key) and value is not None:
             setattr(db_account, key, value)
+
+    # 兜底双写：保证旧字段 account_label 与 role_tag 始终一致
+    role_value = normalize_role_tag(getattr(db_account, "role_tag", None))
+    db_account.role_tag = role_value
+    db_account.account_label = role_tag_to_account_label(role_value)
 
     db.commit()
     db.refresh(db_account)
@@ -121,20 +200,69 @@ def update_account(
 
 def delete_account(db: Session, account_id: int) -> bool:
     """删除账户"""
+    def _detach_bind_card_tasks(snapshot_email: str):
+        linked_tasks = db.query(BindCardTask).filter(BindCardTask.account_id == account_id).all()
+        for task in linked_tasks:
+            if not str(getattr(task, "account_email", "") or "").strip():
+                task.account_email = snapshot_email
+            task.account_id = None
+
+    def _detach_team_invite_records(snapshot_email: str):
+        linked_records = db.query(TeamInviteRecord).filter(TeamInviteRecord.inviter_account_id == account_id).all()
+        for record in linked_records:
+            if not str(getattr(record, "inviter_email", "") or "").strip():
+                record.inviter_email = snapshot_email
+            record.inviter_account_id = None
+
     db_account = get_account_by_id(db, account_id)
     if not db_account:
         return False
 
-    db.delete(db_account)
-    db.commit()
-    return True
+    try:
+        # 正常路径：保留绑卡任务历史，先解绑再删账号
+        _detach_bind_card_tasks(db_account.email)
+        _detach_team_invite_records(db_account.email)
+        db.flush()
+        db.delete(db_account)
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        err = str(e).lower()
+        need_retry_with_migration = (
+            "bind_card_tasks" in err and
+            "account_id" in err and
+            ("not null" in err or "constraint failed" in err or "foreign key" in err)
+        )
+        if not need_retry_with_migration:
+            raise
+
+        # 旧库结构兜底：先跑迁移，再重试一次删除
+        from .session import get_session_manager
+        get_session_manager().migrate_tables()
+
+        db_account = get_account_by_id(db, account_id)
+        if not db_account:
+            return False
+        try:
+            _detach_bind_card_tasks(db_account.email)
+            _detach_team_invite_records(db_account.email)
+            db.flush()
+            db.delete(db_account)
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            raise
 
 
 def delete_accounts_batch(db: Session, account_ids: List[int]) -> int:
     """批量删除账户"""
-    result = db.query(Account).filter(Account.id.in_(account_ids)).delete(synchronize_session=False)
-    db.commit()
-    return result
+    deleted = 0
+    for account_id in account_ids:
+        if delete_account(db, account_id):
+            deleted += 1
+    return deleted
 
 
 def get_accounts_count(
@@ -387,8 +515,83 @@ def delete_setting(db: Session, key: str) -> bool:
 
 
 # ============================================================================
+# 操作审计日志
+# ============================================================================
+
+def create_operation_audit_log(
+    db: Session,
+    *,
+    actor: Optional[str],
+    action: str,
+    target_type: str,
+    target_id: Optional[Union[str, int]] = None,
+    target_email: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> OperationAuditLog:
+    row = OperationAuditLog(
+        actor=(str(actor or "").strip() or "system"),
+        action=str(action or "").strip() or "unknown_action",
+        target_type=str(target_type or "").strip() or "unknown_target",
+        target_id=(str(target_id).strip() if target_id is not None else None),
+        target_email=(str(target_email or "").strip() or None),
+        payload=dict(payload or {}),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_operation_audit_logs(
+    db: Session,
+    *,
+    limit: int = 100,
+    action: Optional[str] = None,
+    target_type: Optional[str] = None,
+) -> List[OperationAuditLog]:
+    safe_limit = max(1, min(500, int(limit or 100)))
+    query = db.query(OperationAuditLog)
+    if action:
+        query = query.filter(OperationAuditLog.action == str(action).strip())
+    if target_type:
+        query = query.filter(OperationAuditLog.target_type == str(target_type).strip())
+    return query.order_by(desc(OperationAuditLog.id)).limit(safe_limit).all()
+
+
+# ============================================================================
 # 代理 CRUD
 # ============================================================================
+
+def _ensure_single_default_proxy(db: Session) -> Optional[Proxy]:
+    """
+    保证代理表中“有且仅有一个默认代理”：
+    - 没有默认时，自动使用最早创建（ID 最小）的代理作为默认
+    - 有多个默认时，仅保留最早的一个
+    """
+    proxies = db.query(Proxy).order_by(asc(Proxy.id)).all()
+    if not proxies:
+        return None
+
+    default_proxies = [proxy for proxy in proxies if bool(proxy.is_default)]
+    keeper = default_proxies[0] if default_proxies else proxies[0]
+    changed = False
+
+    if not keeper.is_default:
+        keeper.is_default = True
+        changed = True
+
+    for proxy in proxies:
+        should_default = proxy.id == keeper.id
+        if bool(proxy.is_default) != should_default:
+            proxy.is_default = should_default
+            changed = True
+
+    if changed:
+        db.commit()
+        db.refresh(keeper)
+
+    return keeper
+
 
 def create_proxy(
     db: Session,
@@ -415,6 +618,10 @@ def create_proxy(
     db.add(db_proxy)
     db.commit()
     db.refresh(db_proxy)
+
+    # 统一默认代理策略：首次添加自动默认，多代理保持“第一个默认”直到手动切换。
+    _ensure_single_default_proxy(db)
+    db.refresh(db_proxy)
     return db_proxy
 
 
@@ -430,6 +637,7 @@ def get_proxies(
     limit: int = 100
 ) -> List[Proxy]:
     """获取代理列表"""
+    _ensure_single_default_proxy(db)
     query = db.query(Proxy)
 
     if enabled is not None:
@@ -471,6 +679,7 @@ def delete_proxy(db: Session, proxy_id: int) -> bool:
 
     db.delete(db_proxy)
     db.commit()
+    _ensure_single_default_proxy(db)
     return True
 
 
@@ -486,28 +695,38 @@ def update_proxy_last_used(db: Session, proxy_id: int) -> bool:
 
 
 def get_random_proxy(db: Session) -> Optional[Proxy]:
-    """随机获取一个启用的代理，优先返回 is_default=True 的代理"""
-    import random
-    # 优先返回默认代理
-    default_proxy = db.query(Proxy).filter(Proxy.enabled == True, Proxy.is_default == True).first()
+    """获取一个启用代理：优先默认代理，否则使用最早启用的代理。"""
+    _ensure_single_default_proxy(db)
+
+    # 优先返回启用状态下的默认代理
+    default_proxy = (
+        db.query(Proxy)
+        .filter(Proxy.enabled == True, Proxy.is_default == True)
+        .order_by(asc(Proxy.id))
+        .first()
+    )
     if default_proxy:
         return default_proxy
-    proxies = get_enabled_proxies(db)
-    if not proxies:
-        return None
-    return random.choice(proxies)
+
+    # 默认代理不可用时，回退到最早启用的代理（稳定而可预期）
+    return (
+        db.query(Proxy)
+        .filter(Proxy.enabled == True)
+        .order_by(asc(Proxy.id))
+        .first()
+    )
 
 
 def set_proxy_default(db: Session, proxy_id: int) -> Optional[Proxy]:
     """将指定代理设为默认，同时清除其他代理的默认标记"""
-    # 清除所有默认标记
-    db.query(Proxy).filter(Proxy.is_default == True).update({"is_default": False})
-    # 设置新的默认代理
     proxy = db.query(Proxy).filter(Proxy.id == proxy_id).first()
-    if proxy:
-        proxy.is_default = True
-        db.commit()
-        db.refresh(proxy)
+    if not proxy:
+        return None
+
+    db.query(Proxy).filter(Proxy.id != proxy_id, Proxy.is_default == True).update({"is_default": False})
+    proxy.is_default = True
+    db.commit()
+    db.refresh(proxy)
     return proxy
 
 
@@ -608,6 +827,7 @@ def create_sub2api_service(
         name=name,
         api_url=api_url,
         api_key=api_key,
+        target_type=target_type,
         enabled=enabled,
         priority=priority,
     )

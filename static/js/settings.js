@@ -32,12 +32,19 @@ const elements = {
     // 代理列表
     proxiesTable: document.getElementById('proxies-table'),
     addProxyBtn: document.getElementById('add-proxy-btn'),
+    proxyBatchImportBtn: document.getElementById('proxy-batch-import-btn'),
     testAllProxiesBtn: document.getElementById('test-all-proxies-btn'),
     addProxyModal: document.getElementById('add-proxy-modal'),
     proxyItemForm: document.getElementById('proxy-item-form'),
     closeProxyModal: document.getElementById('close-proxy-modal'),
     cancelProxyBtn: document.getElementById('cancel-proxy-btn'),
     proxyModalTitle: document.getElementById('proxy-modal-title'),
+    proxyBatchImportModal: document.getElementById('proxy-batch-import-modal'),
+    closeProxyBatchImportModal: document.getElementById('close-proxy-batch-import-modal'),
+    cancelProxyBatchImportBtn: document.getElementById('cancel-proxy-batch-import-btn'),
+    proxyBatchImportForm: document.getElementById('proxy-batch-import-form'),
+    proxyBatchImportText: document.getElementById('proxy-batch-import-text'),
+    proxyBatchImportResult: document.getElementById('proxy-batch-import-result'),
     // 动态代理设置
     dynamicProxyForm: document.getElementById('dynamic-proxy-form'),
     testDynamicProxyBtn: document.getElementById('test-dynamic-proxy-btn'),
@@ -72,8 +79,8 @@ const elements = {
     emailCodeForm: document.getElementById('email-code-form'),
     // Outlook 设置
     outlookSettingsForm: document.getElementById('outlook-settings-form'),
-    // Web UI 访问控制
-    webuiSettingsForm: document.getElementById('webui-settings-form')
+    // 系统设置（端口 + 访问控制）
+    systemSettingsForm: document.getElementById('system-settings-form')
 };
 
 // 选中的服务 ID
@@ -211,6 +218,9 @@ function initEventListeners() {
     if (elements.addProxyBtn) {
         elements.addProxyBtn.addEventListener('click', () => openProxyModal());
     }
+    if (elements.proxyBatchImportBtn) {
+        elements.proxyBatchImportBtn.addEventListener('click', openProxyBatchImportModal);
+    }
 
     if (elements.testAllProxiesBtn) {
         elements.testAllProxiesBtn.addEventListener('click', handleTestAllProxies);
@@ -235,6 +245,22 @@ function initEventListeners() {
     if (elements.proxyItemForm) {
         elements.proxyItemForm.addEventListener('submit', handleSaveProxyItem);
     }
+    if (elements.closeProxyBatchImportModal) {
+        elements.closeProxyBatchImportModal.addEventListener('click', closeProxyBatchImportModal);
+    }
+    if (elements.cancelProxyBatchImportBtn) {
+        elements.cancelProxyBatchImportBtn.addEventListener('click', closeProxyBatchImportModal);
+    }
+    if (elements.proxyBatchImportModal) {
+        elements.proxyBatchImportModal.addEventListener('click', (e) => {
+            if (e.target === elements.proxyBatchImportModal) {
+                closeProxyBatchImportModal();
+            }
+        });
+    }
+    if (elements.proxyBatchImportForm) {
+        elements.proxyBatchImportForm.addEventListener('submit', handleProxyBatchImport);
+    }
 
     // 动态代理设置
     if (elements.dynamicProxyForm) {
@@ -254,8 +280,8 @@ function initEventListeners() {
         elements.outlookSettingsForm.addEventListener('submit', handleSaveOutlookSettings);
     }
 
-    if (elements.webuiSettingsForm) {
-        elements.webuiSettingsForm.addEventListener('submit', handleSaveWebuiSettings);
+    if (elements.systemSettingsForm) {
+        elements.systemSettingsForm.addEventListener('submit', handleSaveSystemSettings);
     }
     // Team Manager 服务管理
     if (elements.addTmServiceBtn) {
@@ -354,12 +380,19 @@ async function loadSettings() {
         // 加载 Outlook 设置
         loadOutlookSettings();
 
-        // Web UI 访问密码提示
-        if (data.webui?.has_access_password) {
-            const input = document.getElementById('webui-access-password');
-            if (input) {
-                input.value = '';
-                input.placeholder = '已配置，留空保持不变';
+        // 系统设置（端口 + 访问密码）
+        const webuiPortInput = document.getElementById('webui-port');
+        if (webuiPortInput) {
+            webuiPortInput.value = data.webui?.port || 1455;
+        }
+        const passwordInput = document.getElementById('webui-access-password');
+        if (passwordInput) {
+            if (data.webui?.has_access_password) {
+                passwordInput.value = '';
+                passwordInput.placeholder = '已配置，留空保持不变';
+            } else {
+                passwordInput.value = '';
+                passwordInput.placeholder = '未配置，留空表示不修改';
             }
         }
 
@@ -369,22 +402,29 @@ async function loadSettings() {
     }
 }
 
-// 保存 Web UI 设置
-async function handleSaveWebuiSettings(e) {
+// 保存系统设置（端口 + 访问控制）
+async function handleSaveSystemSettings(e) {
     e.preventDefault();
 
+    const portRaw = document.getElementById('webui-port')?.value;
+    const parsedPort = parseInt(portRaw, 10);
     const accessPassword = document.getElementById('webui-access-password').value;
-    const payload = {
-        access_password: accessPassword || null
-    };
+    const payload = {};
+    if (Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535) {
+        payload.port = parsedPort;
+    }
+    if (accessPassword) {
+        payload.access_password = accessPassword;
+    }
 
     try {
         await api.post('/settings/webui', payload);
-        toast.success('Web UI 设置已更新');
+        toast.success('系统设置已更新');
         document.getElementById('webui-access-password').value = '';
+        await loadSettings();
     } catch (error) {
-        console.error('保存 Web UI 设置失败:', error);
-        toast.error('保存 Web UI 设置失败');
+        console.error('保存系统设置失败:', error);
+        toast.error('保存系统设置失败');
     }
 }
 
@@ -827,7 +867,7 @@ async function loadProxies() {
         console.error('加载代理列表失败:', error);
         elements.proxiesTable.innerHTML = `
             <tr>
-                <td colspan="7">
+                <td colspan="8">
                     <div class="empty-state">
                         <div class="empty-state-icon">❌</div>
                         <div class="empty-state-title">加载失败</div>
@@ -843,7 +883,7 @@ function renderProxies(proxies) {
     if (!proxies || proxies.length === 0) {
         elements.proxiesTable.innerHTML = `
             <tr>
-                <td colspan="7">
+                <td colspan="8">
                     <div class="empty-state">
                         <div class="empty-state-icon">🌐</div>
                         <div class="empty-state-title">暂无代理</div>
@@ -933,6 +973,83 @@ function openProxyModal(proxy = null) {
 function closeProxyModal() {
     elements.addProxyModal.classList.remove('active');
     elements.proxyItemForm.reset();
+}
+
+function openProxyBatchImportModal() {
+    if (!elements.proxyBatchImportModal) return;
+    if (elements.proxyBatchImportForm) {
+        elements.proxyBatchImportForm.reset();
+    }
+    if (elements.proxyBatchImportResult) {
+        elements.proxyBatchImportResult.style.display = 'none';
+        elements.proxyBatchImportResult.innerHTML = '';
+    }
+    elements.proxyBatchImportModal.classList.add('active');
+}
+
+function closeProxyBatchImportModal() {
+    if (!elements.proxyBatchImportModal) return;
+    elements.proxyBatchImportModal.classList.remove('active');
+}
+
+function renderProxyBatchImportResult(result) {
+    if (!elements.proxyBatchImportResult) return;
+    const errors = Array.isArray(result?.errors) ? result.errors : [];
+    const preview = errors.slice(0, 20).map(item => {
+        const line = Number(item?.line || 0);
+        const raw = escapeHtml(String(item?.raw || ''));
+        const error = escapeHtml(String(item?.error || '解析失败'));
+        return `<li>第 ${line} 行：${error}${raw ? `（${raw}）` : ''}</li>`;
+    }).join('');
+    elements.proxyBatchImportResult.innerHTML = `
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <span>✅ 新增: <strong>${result.created || 0}</strong></span>
+            <span>🔄 更新: <strong>${result.updated || 0}</strong></span>
+            <span>⏭️ 跳过: <strong>${result.skipped || 0}</strong></span>
+            <span>❌ 失败: <strong>${result.failed || 0}</strong></span>
+        </div>
+        ${preview ? `<div style="margin-top:8px;"><strong>错误明细（最多 20 条）：</strong><ul style="margin:6px 0 0 18px;">${preview}</ul></div>` : ''}
+    `;
+    elements.proxyBatchImportResult.style.display = '';
+}
+
+async function handleProxyBatchImport(e) {
+    e.preventDefault();
+    const content = String(elements.proxyBatchImportText?.value || '').trim();
+    if (!content) {
+        toast.warning('请先粘贴代理文本');
+        return;
+    }
+
+    const submitBtn = document.getElementById('submit-proxy-batch-import-btn');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="loading-spinner"></span> 导入中...';
+    }
+
+    try {
+        const payload = {
+            content,
+            default_type: String(document.getElementById('proxy-batch-default-type')?.value || 'http'),
+            enabled: Boolean(document.getElementById('proxy-batch-import-enabled')?.checked),
+            overwrite_existing: Boolean(document.getElementById('proxy-batch-overwrite-existing')?.checked),
+        };
+        const result = await api.post('/settings/proxies/batch-import', payload);
+        renderProxyBatchImportResult(result);
+        await loadProxies();
+        if ((result.failed || 0) > 0) {
+            toast.warning(`导入完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，失败 ${result.failed || 0}`);
+        } else {
+            toast.success(`导入完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，跳过 ${result.skipped || 0}`);
+        }
+    } catch (error) {
+        toast.error('批量导入失败: ' + error.message);
+    } finally {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = '📥 开始导入';
+        }
+    }
 }
 
 // 保存代理
@@ -1280,19 +1397,20 @@ async function loadCpaServices() {
         const services = await api.get('/cpa-services');
         renderCpaServicesTable(services);
     } catch (e) {
-        elements.cpaServicesTable.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--danger-color);">${e.message}</td></tr>`;
+        elements.cpaServicesTable.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--danger-color);">${e.message}</td></tr>`;
     }
 }
 
 function renderCpaServicesTable(services) {
     if (!services || services.length === 0) {
-        elements.cpaServicesTable.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">暂无 CPA 服务，点击「添加服务」新增</td></tr>';
+        elements.cpaServicesTable.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">暂无 CPA 服务，点击「添加服务」新增</td></tr>';
         return;
     }
     elements.cpaServicesTable.innerHTML = services.map(s => `
         <tr>
             <td>${escapeHtml(s.name)}</td>
             <td style="font-size:0.85rem;color:var(--text-muted);">${escapeHtml(s.api_url)}</td>
+            <td style="font-size:0.85rem;color:var(--text-muted);">${escapeHtml(s.proxy_url || '-')}</td>
             <td style="text-align:center;" title="${s.enabled ? '已启用' : '已禁用'}">${s.enabled ? '✅' : '⭕'}</td>
             <td style="text-align:center;">${s.priority}</td>
             <td style="white-space:nowrap;">
@@ -1309,6 +1427,7 @@ function openCpaServiceModal(service = null) {
     document.getElementById('cpa-service-name').value = service ? service.name : '';
     document.getElementById('cpa-service-url').value = service ? service.api_url : '';
     document.getElementById('cpa-service-token').value = '';
+    document.getElementById('cpa-service-proxy-url').value = service ? (service.proxy_url || '') : '';
     document.getElementById('cpa-service-priority').value = service ? service.priority : 0;
     document.getElementById('cpa-service-enabled').checked = service ? service.enabled : true;
     elements.cpaServiceModalTitle.textContent = service ? '编辑 CPA 服务' : '添加 CPA 服务';
@@ -1334,6 +1453,7 @@ async function handleSaveCpaService(e) {
     const name = document.getElementById('cpa-service-name').value.trim();
     const apiUrl = document.getElementById('cpa-service-url').value.trim();
     const apiToken = document.getElementById('cpa-service-token').value.trim();
+    const proxyUrl = document.getElementById('cpa-service-proxy-url').value.trim();
     const priority = parseInt(document.getElementById('cpa-service-priority').value) || 0;
     const enabled = document.getElementById('cpa-service-enabled').checked;
 
@@ -1347,7 +1467,7 @@ async function handleSaveCpaService(e) {
     }
 
     try {
-        const payload = { name, api_url: apiUrl, priority, enabled };
+        const payload = { name, api_url: apiUrl, proxy_url: proxyUrl, priority, enabled };
         if (apiToken) payload.api_token = apiToken;
 
         if (id) {
@@ -1441,7 +1561,7 @@ async function loadSub2ApiServices() {
         renderSub2ApiServices(services);
     } catch (e) {
         if (elements.sub2ApiServicesTable) {
-            elements.sub2ApiServicesTable.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">加载失败</td></tr>';
+            elements.sub2ApiServicesTable.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">加载失败</td></tr>';
         }
     }
 }
@@ -1449,13 +1569,14 @@ async function loadSub2ApiServices() {
 function renderSub2ApiServices(services) {
     if (!elements.sub2ApiServicesTable) return;
     if (!services || services.length === 0) {
-        elements.sub2ApiServicesTable.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">暂无 Sub2API 服务，点击「添加服务」新增</td></tr>';
+        elements.sub2ApiServicesTable.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">暂无 Sub2API 服务，点击「添加服务」新增</td></tr>';
         return;
     }
     elements.sub2ApiServicesTable.innerHTML = services.map(s => `
         <tr>
             <td>${escapeHtml(s.name)}</td>
             <td style="font-size:0.85rem;color:var(--text-muted);">${escapeHtml(s.api_url)}</td>
+            <td style="text-align:center;">${String(s.target_type || 'sub2api').toLowerCase() === 'newapi' ? 'newApi' : 'Sub2Api'}</td>
             <td style="text-align:center;" title="${s.enabled ? '已启用' : '已禁用'}">${s.enabled ? '✅' : '⭕'}</td>
             <td style="text-align:center;">${s.priority}</td>
             <td style="white-space:nowrap;">
@@ -1477,7 +1598,10 @@ function openSub2ApiServiceModal(svc = null) {
         document.getElementById('sub2api-service-url').value = svc.api_url || '';
         document.getElementById('sub2api-service-priority').value = svc.priority ?? 0;
         document.getElementById('sub2api-service-enabled').checked = svc.enabled !== false;
+        document.getElementById('sub2api-service-target-type').value = String(svc.target_type || 'sub2api').toLowerCase() === 'newapi' ? 'newapi' : 'sub2api';
         document.getElementById('sub2api-service-key').placeholder = svc.has_key ? '已配置，留空保持不变' : '请输入 API Key';
+    } else {
+        document.getElementById('sub2api-service-target-type').value = 'sub2api';
     }
     elements.sub2ApiServiceEditModal.classList.add('active');
 }
@@ -1516,6 +1640,7 @@ async function handleSaveSub2ApiService(e) {
         name: document.getElementById('sub2api-service-name').value,
         api_url: document.getElementById('sub2api-service-url').value,
         api_key: document.getElementById('sub2api-service-key').value || undefined,
+        target_type: document.getElementById('sub2api-service-target-type').value || 'sub2api',
         priority: parseInt(document.getElementById('sub2api-service-priority').value) || 0,
         enabled: document.getElementById('sub2api-service-enabled').checked,
     };

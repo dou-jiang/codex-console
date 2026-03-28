@@ -48,7 +48,7 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     ),
     "app_version": SettingDefinition(
         db_key="app.version",
-        default_value="1.1.1",
+        default_value="2.0.0",
         category=SettingCategory.GENERAL,
         description="应用版本"
     ),
@@ -93,6 +93,66 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.WEBUI,
         description="Web UI 访问密码",
         is_secret=True
+    ),
+    "auto_quick_refresh_enabled": SettingDefinition(
+        db_key="webui.auto_quick_refresh.enabled",
+        default_value=False,
+        category=SettingCategory.WEBUI,
+        description="是否启用账号管理自动一键刷新"
+    ),
+    "auto_quick_refresh_interval_minutes": SettingDefinition(
+        db_key="webui.auto_quick_refresh.interval_minutes",
+        default_value=30,
+        category=SettingCategory.WEBUI,
+        description="账号管理自动一键刷新间隔（分钟）"
+    ),
+    "auto_quick_refresh_retry_limit": SettingDefinition(
+        db_key="webui.auto_quick_refresh.retry_limit",
+        default_value=2,
+        category=SettingCategory.WEBUI,
+        description="账号管理自动一键刷新失败重试次数"
+    ),
+    "selfcheck_auto_enabled": SettingDefinition(
+        db_key="webui.selfcheck.auto_enabled",
+        default_value=False,
+        category=SettingCategory.WEBUI,
+        description="是否启用系统自检定时巡检"
+    ),
+    "selfcheck_interval_minutes": SettingDefinition(
+        db_key="webui.selfcheck.interval_minutes",
+        default_value=15,
+        category=SettingCategory.WEBUI,
+        description="系统自检定时巡检间隔（分钟）"
+    ),
+    "selfcheck_mode": SettingDefinition(
+        db_key="webui.selfcheck.mode",
+        default_value="quick",
+        category=SettingCategory.WEBUI,
+        description="系统自检定时巡检模式（quick/full）"
+    ),
+    "circuit_breaker_enabled": SettingDefinition(
+        db_key="runtime.circuit_breaker.enabled",
+        default_value=True,
+        category=SettingCategory.WEBUI,
+        description="是否启用失败熔断器"
+    ),
+    "circuit_breaker_failure_threshold": SettingDefinition(
+        db_key="runtime.circuit_breaker.failure_threshold",
+        default_value=5,
+        category=SettingCategory.WEBUI,
+        description="熔断触发连续失败次数阈值"
+    ),
+    "circuit_breaker_cooldown_seconds": SettingDefinition(
+        db_key="runtime.circuit_breaker.cooldown_seconds",
+        default_value=180,
+        category=SettingCategory.WEBUI,
+        description="熔断冷却时长（秒）"
+    ),
+    "circuit_breaker_probe_interval_seconds": SettingDefinition(
+        db_key="runtime.circuit_breaker.probe_interval_seconds",
+        default_value=30,
+        category=SettingCategory.WEBUI,
+        description="冷却结束后自动探活最小间隔（秒）"
     ),
 
     # 日志配置
@@ -258,18 +318,12 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     # 邮箱服务配置
     "email_service_priority": SettingDefinition(
         db_key="email.service_priority",
-        default_value={"tempmail": 0, "yyds_mail": 1, "outlook": 2, "moe_mail": 3},
+        default_value={"tempmail": 0, "outlook": 1, "moe_mail": 2},
         category=SettingCategory.EMAIL,
         description="邮箱服务优先级"
     ),
 
     # Tempmail.lol 配置
-    "tempmail_enabled": SettingDefinition(
-        db_key="tempmail.enabled",
-        default_value=True,
-        category=SettingCategory.TEMPMAIL,
-        description="是否启用 Tempmail 渠道"
-    ),
     "tempmail_base_url": SettingDefinition(
         db_key="tempmail.base_url",
         default_value="https://api.tempmail.lol/v2",
@@ -287,43 +341,6 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         default_value=3,
         category=SettingCategory.TEMPMAIL,
         description="Tempmail 最大重试次数"
-    ),
-    "yyds_mail_enabled": SettingDefinition(
-        db_key="yyds_mail.enabled",
-        default_value=False,
-        category=SettingCategory.TEMPMAIL,
-        description="是否启用 YYDS Mail 渠道"
-    ),
-    "yyds_mail_base_url": SettingDefinition(
-        db_key="yyds_mail.base_url",
-        default_value="https://maliapi.215.im/v1",
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail API 地址"
-    ),
-    "yyds_mail_api_key": SettingDefinition(
-        db_key="yyds_mail.api_key",
-        default_value="",
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail API Key",
-        is_secret=True
-    ),
-    "yyds_mail_default_domain": SettingDefinition(
-        db_key="yyds_mail.default_domain",
-        default_value="",
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail 默认域名"
-    ),
-    "yyds_mail_timeout": SettingDefinition(
-        db_key="yyds_mail.timeout",
-        default_value=30,
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail 超时时间（秒）"
-    ),
-    "yyds_mail_max_retries": SettingDefinition(
-        db_key="yyds_mail.max_retries",
-        default_value=3,
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail 最大重试次数"
     ),
 
     # 自定义域名邮箱配置
@@ -444,6 +461,16 @@ SETTING_TYPES: Dict[str, Type] = {
     "proxy_enabled": bool,
     "proxy_port": int,
     "proxy_dynamic_enabled": bool,
+    "auto_quick_refresh_enabled": bool,
+    "auto_quick_refresh_interval_minutes": int,
+    "auto_quick_refresh_retry_limit": int,
+    "selfcheck_auto_enabled": bool,
+    "selfcheck_interval_minutes": int,
+    "selfcheck_mode": str,
+    "circuit_breaker_enabled": bool,
+    "circuit_breaker_failure_threshold": int,
+    "circuit_breaker_cooldown_seconds": int,
+    "circuit_breaker_probe_interval_seconds": int,
     "registration_max_retries": int,
     "registration_timeout": int,
     "registration_default_password_length": int,
@@ -451,12 +478,8 @@ SETTING_TYPES: Dict[str, Type] = {
     "registration_sleep_max": int,
     "registration_entry_flow": str,
     "email_service_priority": dict,
-    "tempmail_enabled": bool,
     "tempmail_timeout": int,
     "tempmail_max_retries": int,
-    "yyds_mail_enabled": bool,
-    "yyds_mail_timeout": int,
-    "yyds_mail_max_retries": int,
     "tm_enabled": bool,
     "cpa_enabled": bool,
     "email_code_timeout": int,
@@ -639,7 +662,7 @@ class Settings(BaseModel):
 
     # 应用信息
     app_name: str = "OpenAI/Codex CLI 自动注册系统"
-    app_version: str = "1.1.1"
+    app_version: str = "2.0.0"
     debug: bool = False
 
     # 数据库配置
@@ -666,6 +689,16 @@ class Settings(BaseModel):
     webui_port: int = 8000
     webui_secret_key: SecretStr = SecretStr("your-secret-key-change-in-production")
     webui_access_password: SecretStr = SecretStr("admin123")
+    auto_quick_refresh_enabled: bool = False
+    auto_quick_refresh_interval_minutes: int = 30
+    auto_quick_refresh_retry_limit: int = 2
+    selfcheck_auto_enabled: bool = False
+    selfcheck_interval_minutes: int = 15
+    selfcheck_mode: str = "quick"
+    circuit_breaker_enabled: bool = True
+    circuit_breaker_failure_threshold: int = 5
+    circuit_breaker_cooldown_seconds: int = 180
+    circuit_breaker_probe_interval_seconds: int = 30
 
     # 日志配置
     log_level: str = "INFO"
@@ -720,19 +753,12 @@ class Settings(BaseModel):
     registration_entry_flow: str = "native"
 
     # 邮箱服务配置
-    email_service_priority: Dict[str, int] = {"tempmail": 0, "yyds_mail": 1, "outlook": 2, "moe_mail": 3}
+    email_service_priority: Dict[str, int] = {"tempmail": 0, "outlook": 1, "moe_mail": 2}
 
     # Tempmail.lol 配置
-    tempmail_enabled: bool = True
     tempmail_base_url: str = "https://api.tempmail.lol/v2"
     tempmail_timeout: int = 30
     tempmail_max_retries: int = 3
-    yyds_mail_enabled: bool = False
-    yyds_mail_base_url: str = "https://maliapi.215.im/v1"
-    yyds_mail_api_key: Optional[SecretStr] = None
-    yyds_mail_default_domain: str = ""
-    yyds_mail_timeout: int = 30
-    yyds_mail_max_retries: int = 3
 
     # 自定义域名邮箱配置
     custom_domain_base_url: str = ""

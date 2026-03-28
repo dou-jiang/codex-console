@@ -6,10 +6,12 @@
 /* CSS 变量 - 亮色主题 */
 :root {
     /* 主色调 */
-    --primary-color: #10a37f;
-    --primary-hover: #0d8a6a;
-    --primary-light: rgba(16, 163, 127, 0.1);
-    --primary-dark: #0a7d5e;
+    --primary-color: #6366F1;
+    --primary-hover: #5558e6;
+    --primary-light: rgba(99, 102, 241, 0.16);
+    --primary-dark: #6366F1;
+    --secondary-accent: #6366F1;
+    --brand-gradient: linear-gradient(135deg, #6366F1 0%, #6366F1 100%);
 
     /* 语义色 */
     --danger-color: #ef4444;
@@ -17,8 +19,8 @@
     --danger-light: rgba(239, 68, 68, 0.1);
     --warning-color: #f59e0b;
     --warning-light: rgba(245, 158, 11, 0.1);
-    --success-color: #22c55e;
-    --success-light: rgba(34, 197, 94, 0.1);
+    --success-color: #6366F1;
+    --success-light: rgba(99, 102, 241, 0.12);
     --info-color: #3b82f6;
     --info-light: rgba(59, 130, 246, 0.1);
 
@@ -63,22 +65,26 @@
     --spacing-md: 16px;
     --spacing-lg: 24px;
     --spacing-xl: 32px;
+    --control-height: 40px;
+    --control-height-sm: 32px;
 }
 
 /* 暗色主题 */
 [data-theme="dark"] {
-    --primary-color: #34d399;
-    --primary-hover: #6ee7b7;
-    --primary-light: rgba(52, 211, 153, 0.15);
-    --primary-dark: #10b981;
+    --primary-color: #6366F1;
+    --primary-hover: #5558e6;
+    --primary-light: rgba(99, 102, 241, 0.2);
+    --primary-dark: #6366F1;
+    --secondary-accent: #6366F1;
+    --brand-gradient: linear-gradient(135deg, #6366F1 0%, #6366F1 100%);
 
     --danger-color: #f87171;
     --danger-hover: #fca5a5;
     --danger-light: rgba(248, 113, 113, 0.15);
     --warning-color: #fbbf24;
     --warning-light: rgba(251, 191, 36, 0.15);
-    --success-color: #4ade80;
-    --success-light: rgba(74, 222, 128, 0.15);
+    --success-color: #6366F1;
+    --success-light: rgba(99, 102, 241, 0.2);
     --info-color: #60a5fa;
     --info-light: rgba(96, 165, 250, 0.15);
 
@@ -119,67 +125,6 @@ body {
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-}
-
-.site-notice-wrapper {
-    padding: var(--spacing-md) 0 0;
-}
-
-.site-notice {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-sm);
-    padding: 14px 18px;
-    border: 1px solid rgba(245, 158, 11, 0.28);
-    border-radius: var(--radius-lg);
-    background: linear-gradient(135deg, rgba(245, 158, 11, 0.14), rgba(16, 163, 127, 0.08));
-    box-shadow: var(--shadow-sm);
-}
-
-.site-notice-heading {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: center;
-    color: var(--text-primary);
-    font-size: 0.95rem;
-}
-
-.site-notice-heading strong {
-    color: #b45309;
-}
-
-.site-notice-text {
-    color: var(--text-secondary);
-    font-size: 0.875rem;
-    margin: 0;
-}
-
-.site-notice-links {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-}
-
-.site-notice-links a {
-    display: inline-flex;
-    align-items: center;
-    min-height: 36px;
-    padding: 0 14px;
-    border-radius: var(--radius-full);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--primary-color);
-    text-decoration: none;
-    font-size: 0.875rem;
-    font-weight: 600;
-    transition: all var(--transition);
-}
-
-.site-notice-links a:hover {
-    color: var(--primary-hover);
-    border-color: var(--primary-color);
-    transform: translateY(-1px);
 }
 
 /* ============================================
@@ -264,7 +209,17 @@ body {
 }
 
 /* 主题切换按钮 */
+.nav-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+}
+
+.selfcheck-toggle,
 .theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -272,12 +227,29 @@ body {
     cursor: pointer;
     color: var(--text-secondary);
     transition: all var(--transition);
-    margin-left: var(--spacing-md);
+    text-decoration: none;
+    font-size: 1rem;
+    line-height: 1;
 }
 
+.selfcheck-toggle {
+    margin-left: 0;
+}
+
+.theme-toggle {
+    margin-left: 0;
+}
+
+.selfcheck-toggle:hover,
 .theme-toggle:hover {
     color: var(--text-primary);
     background: var(--surface-hover);
+}
+
+.selfcheck-toggle.active {
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+    background: var(--primary-light);
 }
 
 /* ============================================
@@ -380,6 +352,11 @@ body {
     transition: all var(--transition);
 }
 
+.form-group input,
+.form-group select {
+    height: var(--control-height);
+}
+
 .form-group input:hover,
 .form-group select:hover,
 .form-group textarea:hover {
@@ -435,6 +412,7 @@ body {
     justify-content: center;
     gap: var(--spacing-sm);
     padding: 10px 20px;
+    min-height: var(--control-height);
     font-size: 0.875rem;
     font-weight: 500;
     font-family: inherit;
@@ -451,12 +429,12 @@ body {
 }
 
 .btn-primary {
-    background: var(--primary-color);
+    background: var(--brand-gradient);
     color: white;
 }
 
 .btn-primary:hover:not(:disabled) {
-    background: var(--primary-hover);
+    filter: brightness(1.03);
     transform: translateY(-1px);
     box-shadow: var(--shadow-md);
 }
@@ -487,12 +465,12 @@ body {
 }
 
 .btn-success {
-    background: #10a37f;
+    background: var(--brand-gradient);
     color: #fff;
 }
 
 .btn-success:hover:not(:disabled) {
-    background: #0f8f70;
+    filter: brightness(1.03);
     transform: translateY(-1px);
     box-shadow: var(--shadow-md);
 }
@@ -542,6 +520,7 @@ body {
 
 .btn-sm {
     padding: 6px 12px;
+    min-height: var(--control-height-sm);
     font-size: 0.75rem;
 }
 
@@ -1122,7 +1101,7 @@ body {
 }
 
 .progress-bar {
-    background: linear-gradient(90deg, var(--primary-color), var(--primary-dark));
+    background: var(--brand-gradient);
     height: 100%;
     border-radius: var(--radius-full);
     transition: width 0.3s ease;
@@ -1132,7 +1111,7 @@ body {
 .progress-bar.indeterminate {
     background: linear-gradient(90deg,
         transparent 0%,
-        var(--primary-color) 50%,
+        var(--secondary-accent) 50%,
         transparent 100%);
     animation: indeterminate 1.5s infinite linear;
 }
@@ -1311,19 +1290,6 @@ body {
 }
 
 @media (max-width: 768px) {
-    .site-notice {
-        padding: 12px 14px;
-    }
-
-    .site-notice-heading {
-        font-size: 0.9rem;
-    }
-
-    .site-notice-links a {
-        width: 100%;
-        justify-content: center;
-    }
-
     .container {
         padding: 0 var(--spacing-md);
     }

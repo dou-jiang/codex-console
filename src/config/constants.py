@@ -20,6 +20,27 @@ class AccountStatus(str, Enum):
     FAILED = "failed"
 
 
+class AccountLabel(str, Enum):
+    """账号标签（注册类型）"""
+    NONE = "none"
+    MOTHER = "mother"
+    CHILD = "child"
+
+
+class RoleTag(str, Enum):
+    """账号角色标签（增强版）"""
+    NONE = "none"
+    PARENT = "parent"
+    CHILD = "child"
+
+
+class PoolState(str, Enum):
+    """账号池状态"""
+    TEAM_POOL = "team_pool"
+    CANDIDATE_POOL = "candidate_pool"
+    BLOCKED = "blocked"
+
+
 class TaskStatus(str, Enum):
     """任务状态"""
     PENDING = "pending"
@@ -32,7 +53,6 @@ class TaskStatus(str, Enum):
 class EmailServiceType(str, Enum):
     """邮箱服务类型"""
     TEMPMAIL = "tempmail"
-    YYDS_MAIL = "yyds_mail"
     OUTLOOK = "outlook"
     MOE_MAIL = "moe_mail"
     TEMP_MAIL = "temp_mail"
@@ -42,12 +62,62 @@ class EmailServiceType(str, Enum):
     CLOUDMAIL = "cloudmail"
 
 
+def normalize_account_label(value: str) -> str:
+    """标准化账号标签，未知值降级为 none。"""
+    text = str(value or "").strip().lower()
+    if text in (AccountLabel.MOTHER.value, "parent", "manager", "母号"):
+        return AccountLabel.MOTHER.value
+    if text in (AccountLabel.CHILD.value, "member", "子号"):
+        return AccountLabel.CHILD.value
+    return AccountLabel.NONE.value
+
+
+def normalize_role_tag(value: str) -> str:
+    """标准化角色标签，未知值降级为 none。"""
+    text = str(value or "").strip().lower()
+    if text in (RoleTag.PARENT.value, "mother", "manager", "母号"):
+        return RoleTag.PARENT.value
+    if text in (RoleTag.CHILD.value, "member", "子号"):
+        return RoleTag.CHILD.value
+    return RoleTag.NONE.value
+
+
+def normalize_pool_state(value: str) -> str:
+    """标准化池状态，未知值降级为 candidate_pool。"""
+    text = str(value or "").strip().lower()
+    if text == PoolState.TEAM_POOL.value:
+        return PoolState.TEAM_POOL.value
+    if text == PoolState.BLOCKED.value:
+        return PoolState.BLOCKED.value
+    return PoolState.CANDIDATE_POOL.value
+
+
+def role_tag_to_account_label(role_tag: str) -> str:
+    """role_tag -> account_label 兼容映射。"""
+    normalized = normalize_role_tag(role_tag)
+    if normalized == RoleTag.PARENT.value:
+        return AccountLabel.MOTHER.value
+    if normalized == RoleTag.CHILD.value:
+        return AccountLabel.CHILD.value
+    return AccountLabel.NONE.value
+
+
+def account_label_to_role_tag(account_label: str) -> str:
+    """account_label -> role_tag 兼容映射。"""
+    normalized = normalize_account_label(account_label)
+    if normalized == AccountLabel.MOTHER.value:
+        return RoleTag.PARENT.value
+    if normalized == AccountLabel.CHILD.value:
+        return RoleTag.CHILD.value
+    return RoleTag.NONE.value
+
+
 # ============================================================================
 # 应用常量
 # ============================================================================
 
 APP_NAME = "OpenAI/Codex CLI 自动注册系统"
-APP_VERSION = "1.1.1"
+APP_VERSION = "2.0.0"
 APP_DESCRIPTION = "自动注册 OpenAI/Codex CLI 账号的系统"
 
 # ============================================================================
@@ -104,13 +174,6 @@ CUSTOM_DOMAIN_API_ENDPOINTS = {
 EMAIL_SERVICE_DEFAULTS = {
     "tempmail": {
         "base_url": "https://api.tempmail.lol/v2",
-        "timeout": 30,
-        "max_retries": 3,
-    },
-    "yyds_mail": {
-        "base_url": "https://maliapi.215.im/v1",
-        "api_key": "",
-        "default_domain": "",
         "timeout": 30,
         "max_retries": 3,
     },

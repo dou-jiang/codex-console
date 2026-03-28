@@ -2,22 +2,34 @@
 账号管理 API 路由
 """
 import io
-import asyncio
 import json
 import logging
 import re
 import zipfile
 import base64
+import time
+import threading
+import uuid
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Body
+from fastapi import APIRouter, HTTPException, Query, Body, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 
-from ...config.constants import AccountStatus
+from ...config.constants import (
+    AccountLabel,
+    AccountStatus,
+    RoleTag,
+    account_label_to_role_tag,
+    normalize_account_label,
+    normalize_pool_state,
+    normalize_role_tag,
+    role_tag_to_account_label,
+)
 from ...config.settings import get_settings
 from ...core.openai.overview import fetch_codex_overview
 from ...core.openai.token_refresh import refresh_account_token as do_refresh
@@ -30,6 +42,9 @@ from ...core.dynamic_proxy import get_proxy_url_for_task
 from ...database import crud
 from ...database.models import Account
 from ...database.session import get_db
+from ..task_manager import task_manager
+from ..services.accounts_service import get_role_tag_counts as _service_get_role_tag_counts
+from ..services.accounts_service import stream_accounts as _service_stream_accounts
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -43,6 +58,28 @@ INVALID_ACCOUNT_STATUSES = (
     AccountStatus.FAILED.value,
     AccountStatus.EXPIRED.value,
     AccountStatus.BANNED.value,
+)
+
+ACCOUNT_ASYNC_TASK_MAX_KEEP = 300
+ACCOUNT_ASYNC_EXECUTOR_MAX_WORKERS = 6
+ACCOUNT_BATCH_REFRESH_ASYNC_MAX_WORKERS = 8
+ACCOUNT_BATCH_REFRESH_RETRY_ATTEMPTS = 2
+ACCOUNT_BATCH_REFRESH_RETRY_BASE_DELAY_SECONDS = 1.0
+ACCOUNT_BATCH_VALIDATE_ASYNC_MAX_WORKERS = 8
+ACCOUNT_BATCH_VALIDATE_SYNC_MAX_WORKERS = 12
+ACCOUNT_BATCH_VALIDATE_RETRY_ATTEMPTS = 2
+ACCOUNT_BATCH_VALIDATE_RETRY_BASE_DELAY_SECONDS = 0.8
+ACCOUNT_BATCH_VALIDATE_HTTP_TIMEOUT_SECONDS = 18
+ACCOUNT_OVERVIEW_REFRESH_MAX_WORKERS = 8
+ACCOUNT_OVERVIEW_REFRESH_RETRY_ATTEMPTS = 2
+ACCOUNT_OVERVIEW_REFRESH_RETRY_BASE_DELAY_SECONDS = 1.0
+QUICK_REFRESH_TASK_WAIT_TIMEOUT_SECONDS = 40 * 60
+QUICK_REFRESH_TASK_POLL_INTERVAL_SECONDS = 1.2
+_account_async_tasks: Dict[str, Dict[str, Any]] = {}
+_account_async_tasks_lock = threading.Lock()
+_account_async_executor = ThreadPoolExecutor(
+    max_workers=ACCOUNT_ASYNC_EXECUTOR_MAX_WORKERS,
+    thread_name_prefix="account_async",
 )
 
 
@@ -74,6 +111,264 @@ def _apply_status_filter(query, status: Optional[str]):
     return query.filter(Account.status == normalized)
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _resolve_actor(request: Optional[Request]) -> str:
+    if request is None:
+        return "system"
+    header_keys = ("x-operator", "x-user", "x-username")
+    for key in header_keys:
+        value = str(request.headers.get(key) or "").strip()
+        if value:
+            return value[:120]
+    client_host = ""
+    try:
+        client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip()
+    except Exception:
+        client_host = ""
+    return f"api@{client_host}" if client_host else "api"
+
+
+def _audit_account_action(
+    db,
+    *,
+    actor: str,
+    action: str,
+    account: Optional[Account] = None,
+    target_id: Optional[int] = None,
+    target_email: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    try:
+        crud.create_operation_audit_log(
+            db,
+            actor=actor,
+            action=action,
+            target_type="account",
+            target_id=target_id if target_id is not None else getattr(account, "id", None),
+            target_email=target_email if target_email is not None else getattr(account, "email", None),
+            payload=payload or {},
+        )
+    except Exception:
+        logger.warning("写入账号操作审计日志失败: action=%s", action, exc_info=True)
+
+
+def _iter_query_in_batches(query, batch_size: int = 200) -> Iterator[Account]:
+    """
+    分批迭代查询结果，避免一次性 all() 把全量记录加载进内存。
+    """
+    yield from _service_stream_accounts(query, batch_size=batch_size)
+
+
+def _cleanup_account_async_tasks_locked():
+    """限制内存中的异步任务数量，优先清理已结束的旧任务。"""
+    total = len(_account_async_tasks)
+    if total <= ACCOUNT_ASYNC_TASK_MAX_KEEP:
+        return
+
+    overflow = total - ACCOUNT_ASYNC_TASK_MAX_KEEP
+    finished_keys = [
+        (task_id, _account_async_tasks[task_id].get("_created_ts", 0))
+        for task_id in _account_async_tasks
+        if _account_async_tasks[task_id].get("status") in {"completed", "failed", "cancelled"}
+    ]
+    finished_keys.sort(key=lambda item: item[1])
+
+    removed = 0
+    for task_id, _ in finished_keys:
+        if removed >= overflow:
+            break
+        _account_async_tasks.pop(task_id, None)
+        removed += 1
+
+    # 如果当前大多是运行中任务，不强制裁剪，避免前端轮询中的任务被提前清理。
+
+
+def _create_account_async_task(task_type: str, total: int = 0, payload: Optional[dict] = None) -> str:
+    task_id = str(uuid.uuid4())
+    task = {
+        "id": task_id,
+        "task_type": task_type,
+        "status": "pending",
+        "message": "任务已创建，等待执行",
+        "created_at": _utc_now_iso(),
+        "started_at": None,
+        "finished_at": None,
+        "cancel_requested": False,
+        "pause_requested": False,
+        "paused": False,
+        "progress": {
+            "total": max(0, int(total or 0)),
+            "completed": 0,
+            "success": 0,
+            "failed": 0,
+        },
+        "result": None,
+        "error": None,
+        "payload": payload or {},
+        "details": [],
+        "_created_ts": time.time(),
+    }
+    with _account_async_tasks_lock:
+        _account_async_tasks[task_id] = task
+        _cleanup_account_async_tasks_locked()
+    task_manager.register_domain_task(
+        domain="accounts",
+        task_id=task_id,
+        task_type=task_type,
+        payload=payload or {},
+        progress=task["progress"],
+    )
+    return task_id
+
+
+def _get_account_async_task(task_id: str) -> Optional[Dict[str, Any]]:
+    with _account_async_tasks_lock:
+        return _account_async_tasks.get(task_id)
+
+
+def _get_account_async_task_or_404(task_id: str) -> Dict[str, Any]:
+    task = _get_account_async_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
+def _build_account_async_task_snapshot(task: Dict[str, Any]) -> Dict[str, Any]:
+    data = {
+        "id": task.get("id"),
+        "task_type": task.get("task_type"),
+        "status": task.get("status"),
+        "message": task.get("message"),
+        "created_at": task.get("created_at"),
+        "started_at": task.get("started_at"),
+        "finished_at": task.get("finished_at"),
+        "cancel_requested": bool(task.get("cancel_requested")),
+        "pause_requested": bool(task.get("pause_requested")),
+        "paused": bool(task.get("paused")),
+        "progress": task.get("progress") or {},
+        "payload": task.get("payload") or {},
+        "result": task.get("result"),
+        "error": task.get("error"),
+        "details": task.get("details") or [],
+    }
+    return data
+
+
+def _update_account_async_task(task_id: str, **fields):
+    with _account_async_tasks_lock:
+        task = _account_async_tasks.get(task_id)
+        if not task:
+            return
+        task.update(fields)
+    task_manager.update_domain_task("accounts", task_id, **fields)
+
+
+def _append_account_async_task_detail(task_id: str, detail: dict, max_items: int = 500):
+    with _account_async_tasks_lock:
+        task = _account_async_tasks.get(task_id)
+        if not task:
+            return
+        details = task.setdefault("details", [])
+        details.append(detail)
+        if len(details) > max_items:
+            task["details"] = details[-max_items:]
+    task_manager.append_domain_task_detail("accounts", task_id, detail, max_items=max_items)
+
+
+def _set_account_async_task_progress(task_id: str, *, completed: int, success: int, failed: int, total: Optional[int] = None):
+    with _account_async_tasks_lock:
+        task = _account_async_tasks.get(task_id)
+        if not task:
+            return
+        progress = task.setdefault("progress", {})
+        if total is not None:
+            progress["total"] = max(0, int(total))
+        progress["completed"] = max(0, int(completed))
+        progress["success"] = max(0, int(success))
+        progress["failed"] = max(0, int(failed))
+    payload = {
+        "completed": max(0, int(completed)),
+        "success": max(0, int(success)),
+        "failed": max(0, int(failed)),
+    }
+    if total is not None:
+        payload["total"] = max(0, int(total))
+    task_manager.set_domain_task_progress("accounts", task_id, **payload)
+
+
+def _is_account_async_task_cancel_requested(task_id: str) -> bool:
+    local_requested = False
+    with _account_async_tasks_lock:
+        task = _account_async_tasks.get(task_id)
+        local_requested = bool(task and task.get("cancel_requested"))
+    return local_requested or task_manager.is_domain_task_cancel_requested("accounts", task_id)
+
+
+def _is_account_async_task_pause_requested(task_id: str) -> bool:
+    local_requested = False
+    with _account_async_tasks_lock:
+        task = _account_async_tasks.get(task_id)
+        local_requested = bool(task and task.get("pause_requested"))
+    return local_requested or task_manager.is_domain_task_pause_requested("accounts", task_id)
+
+
+def _wait_if_account_async_task_paused(task_id: str, running_message: str) -> bool:
+    paused_once = False
+    while True:
+        if _is_account_async_task_cancel_requested(task_id):
+            return False
+        if not _is_account_async_task_pause_requested(task_id):
+            if paused_once:
+                _update_account_async_task(
+                    task_id,
+                    status="running",
+                    paused=False,
+                    message=running_message,
+                )
+            return True
+        if not paused_once:
+            _update_account_async_task(
+                task_id,
+                status="paused",
+                paused=True,
+                message="任务已暂停，等待继续",
+            )
+            paused_once = True
+        time.sleep(0.35)
+
+
+def _run_account_async_task_guard(task_id: str, task_type: str, worker, *args):
+    acquired, running, quota = task_manager.try_acquire_domain_slot("accounts", task_id)
+    if not acquired:
+        reason = f"并发配额已满（running={running}, quota={quota}）"
+        _update_account_async_task(
+            task_id,
+            status="failed",
+            finished_at=_utc_now_iso(),
+            message=reason,
+            error=reason,
+            paused=False,
+        )
+        return
+    try:
+        worker(task_id, *args)
+    except Exception as exc:
+        logger.exception("异步任务执行失败: task_id=%s type=%s error=%s", task_id, task_type, exc)
+        _update_account_async_task(
+            task_id,
+            status="failed",
+            finished_at=_utc_now_iso(),
+            message=f"任务异常: {exc}",
+            error=str(exc),
+            paused=False,
+        )
+    finally:
+        task_manager.release_domain_slot("accounts", task_id)
+
+
 # ============== Pydantic Models ==============
 
 class AccountResponse(BaseModel):
@@ -93,6 +388,14 @@ class AccountResponse(BaseModel):
     proxy_used: Optional[str] = None
     cpa_uploaded: bool = False
     cpa_uploaded_at: Optional[str] = None
+    account_label: str = AccountLabel.NONE.value
+    role_tag: str = RoleTag.NONE.value
+    biz_tag: Optional[str] = None
+    pool_state: str = "candidate_pool"
+    pool_state_manual: Optional[str] = None
+    last_pool_sync_at: Optional[str] = None
+    priority: int = 50
+    last_used_at: Optional[str] = None
     subscription_type: Optional[str] = None
     subscription_at: Optional[str] = None
     cookies: Optional[str] = None
@@ -115,6 +418,10 @@ class AccountUpdateRequest(BaseModel):
     metadata: Optional[dict] = None
     cookies: Optional[str] = None  # 完整 cookie 字符串，用于支付请求
     session_token: Optional[str] = None
+    role_tag: Optional[str] = None
+    biz_tag: Optional[str] = None
+    pool_state_manual: Optional[str] = None
+    priority: Optional[int] = None
 
 
 class ManualAccountCreateRequest(BaseModel):
@@ -133,6 +440,10 @@ class ManualAccountCreateRequest(BaseModel):
     cookies: Optional[str] = None
     proxy_used: Optional[str] = None
     source: Optional[str] = "manual"
+    account_label: Optional[str] = AccountLabel.NONE.value
+    role_tag: Optional[str] = None
+    biz_tag: Optional[str] = None
+    priority: Optional[int] = 50
     subscription_type: Optional[str] = None
     metadata: Optional[dict] = None
 
@@ -153,6 +464,12 @@ class AccountImportItem(BaseModel):
     cookies: Optional[str] = None
     proxy_used: Optional[str] = None
     source: Optional[str] = "import"
+    account_label: Optional[str] = AccountLabel.NONE.value
+    role_tag: Optional[str] = None
+    biz_tag: Optional[str] = None
+    pool_state: Optional[str] = None
+    pool_state_manual: Optional[str] = None
+    priority: Optional[int] = 50
     subscription_type: Optional[str] = None
     plan_type: Optional[str] = None
     auth_mode: Optional[str] = None
@@ -235,6 +552,26 @@ def resolve_account_ids(
     return [row[0] for row in query.all()]
 
 
+def _resolve_account_role_tag(account: Account) -> str:
+    role_value = str(getattr(account, "role_tag", "") or "").strip()
+    if role_value:
+        normalized_role = normalize_role_tag(role_value)
+        if normalized_role != RoleTag.NONE.value:
+            return normalized_role
+    return account_label_to_role_tag(getattr(account, "account_label", None))
+
+
+def _resolve_account_pool_state(account: Account) -> str:
+    return normalize_pool_state(getattr(account, "pool_state", None))
+
+
+def _set_account_role_tag(account: Account, role_tag: Optional[str]) -> str:
+    normalized_role = normalize_role_tag(role_tag)
+    account.role_tag = normalized_role
+    account.account_label = role_tag_to_account_label(normalized_role)
+    return normalized_role
+
+
 def account_to_response(account: Account) -> AccountResponse:
     """转换 Account 模型为响应模型"""
     return AccountResponse(
@@ -253,6 +590,14 @@ def account_to_response(account: Account) -> AccountResponse:
         proxy_used=account.proxy_used,
         cpa_uploaded=account.cpa_uploaded or False,
         cpa_uploaded_at=account.cpa_uploaded_at.isoformat() if account.cpa_uploaded_at else None,
+        account_label=normalize_account_label(getattr(account, "account_label", None)),
+        role_tag=_resolve_account_role_tag(account),
+        biz_tag=(str(getattr(account, "biz_tag", "") or "").strip() or None),
+        pool_state=_resolve_account_pool_state(account),
+        pool_state_manual=(str(getattr(account, "pool_state_manual", "") or "").strip() or None),
+        last_pool_sync_at=account.last_pool_sync_at.isoformat() if getattr(account, "last_pool_sync_at", None) else None,
+        priority=int(getattr(account, "priority", 50) or 50),
+        last_used_at=account.last_used_at.isoformat() if getattr(account, "last_used_at", None) else None,
         subscription_type=account.subscription_type,
         subscription_at=account.subscription_at.isoformat() if account.subscription_at else None,
         cookies=account.cookies,
@@ -488,6 +833,17 @@ def _is_paid_subscription(value: Optional[str]) -> bool:
     return normalized in PAID_SUBSCRIPTION_TYPES
 
 
+def _promote_child_label_if_paid(account: Account, subscription_type: Optional[str], *, reason: str) -> bool:
+    """
+    历史兼容函数：关闭“付费后自动子号升母号”。
+    账号标签仅允许手动修改或专用业务入口修改，避免 Team 加入后误升母号。
+    """
+    _ = account
+    _ = subscription_type
+    _ = reason
+    return False
+
+
 def _pick_first_text(*values: Any) -> Optional[str]:
     for value in values:
         if value is None:
@@ -588,6 +944,7 @@ def _get_account_overview_data(
             if detected_sub and current_sub != detected_sub:
                 account.subscription_type = detected_sub
                 account.subscription_at = datetime.utcnow() if detected_sub else None
+                _promote_child_label_if_paid(account, detected_sub, reason="overview_detected_paid")
                 updated = True
             elif not detected_sub and current_sub in PAID_SUBSCRIPTION_TYPES:
                 logger.info(
@@ -625,6 +982,10 @@ async def create_manual_account(request: ManualAccountCreateRequest):
     email_service = (request.email_service or "manual").strip() or "manual"
     status = request.status or AccountStatus.ACTIVE.value
     source = (request.source or "manual").strip() or "manual"
+    role_tag = normalize_role_tag(
+        request.role_tag if request.role_tag is not None else request.account_label
+    )
+    account_label = role_tag_to_account_label(role_tag)
     subscription_type = _normalize_subscription_input(request.subscription_type)
 
     if not email or "@" not in email:
@@ -657,10 +1018,15 @@ async def create_manual_account(request: ManualAccountCreateRequest):
                 cookies=request.cookies,
                 proxy_used=request.proxy_used,
                 extra_data=request.metadata or {},
+                account_label=account_label,
+                role_tag=role_tag,
+                biz_tag=request.biz_tag,
+                priority=request.priority if request.priority is not None else 50,
             )
             if subscription_type:
                 account.subscription_type = subscription_type
                 account.subscription_at = datetime.utcnow()
+                _promote_child_label_if_paid(account, subscription_type, reason="manual_create_paid")
                 db.commit()
                 db.refresh(account)
         except Exception as exc:
@@ -770,6 +1136,24 @@ async def import_accounts(request: ImportAccountsRequest):
 
             email_service = str(item.email_service or "manual").strip() or "manual"
             source = str(item.source or "import").strip() or "import"
+            raw_role_tag = _pick_first_text(
+                item.role_tag,
+                raw_item.get("role_tag"),
+                raw_item.get("registration_type"),
+                item.account_label,
+                raw_item.get("account_label"),
+            )
+            role_tag = normalize_role_tag(raw_role_tag) if raw_role_tag is not None else RoleTag.NONE.value
+            account_label = role_tag_to_account_label(role_tag)
+            biz_tag = _pick_first_text(item.biz_tag, raw_item.get("biz_tag"))
+            raw_pool_state = _pick_first_text(item.pool_state, raw_item.get("pool_state"))
+            pool_state = normalize_pool_state(raw_pool_state) if raw_pool_state is not None else None
+            raw_pool_state_manual = _pick_first_text(item.pool_state_manual, raw_item.get("pool_state_manual"))
+            pool_state_manual = normalize_pool_state(raw_pool_state_manual) if raw_pool_state_manual is not None else None
+            try:
+                priority_value = int(item.priority) if item.priority is not None else 50
+            except Exception:
+                priority_value = 50
             subscription_type = (
                 _normalize_subscription_input(item.subscription_type)
                 or _normalize_subscription_input(item.plan_type)
@@ -820,6 +1204,12 @@ async def import_accounts(request: ImportAccountsRequest):
                         "cookies": item.cookies if item.cookies is not None else None,
                         "proxy_used": _safe_text(item.proxy_used),
                         "source": source,
+                        "account_label": account_label,
+                        "role_tag": role_tag,
+                        "biz_tag": biz_tag,
+                        "pool_state": pool_state,
+                        "pool_state_manual": pool_state_manual,
+                        "priority": priority_value,
                         "extra_data": metadata,
                         "last_refresh": datetime.utcnow(),
                     }
@@ -829,6 +1219,7 @@ async def import_accounts(request: ImportAccountsRequest):
                         raise RuntimeError("更新账号失败")
                     account.subscription_type = subscription_type
                     account.subscription_at = datetime.utcnow() if subscription_type else None
+                    _promote_child_label_if_paid(account, subscription_type, reason="import_overwrite_paid")
                     db.commit()
                     result["updated"] += 1
                     continue
@@ -850,10 +1241,17 @@ async def import_accounts(request: ImportAccountsRequest):
                     extra_data=metadata,
                     status=status,
                     source=source,
+                    account_label=account_label,
+                    role_tag=role_tag,
+                    biz_tag=biz_tag,
+                    pool_state=pool_state,
+                    pool_state_manual=pool_state_manual,
+                    priority=priority_value,
                 )
                 if subscription_type:
                     account.subscription_type = subscription_type
                     account.subscription_at = datetime.utcnow()
+                    _promote_child_label_if_paid(account, subscription_type, reason="import_create_paid")
                     db.commit()
                 result["created"] += 1
             except Exception as exc:
@@ -869,6 +1267,9 @@ async def list_accounts(
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     status: Optional[str] = Query(None, description="状态筛选"),
     email_service: Optional[str] = Query(None, description="邮箱服务筛选"),
+    role_tag: Optional[str] = Query(None, description="角色标签筛选：parent/child/none"),
+    pool_state: Optional[str] = Query(None, description="池状态筛选：team_pool/candidate_pool/blocked"),
+    biz_tag: Optional[str] = Query(None, description="业务标签筛选"),
     search: Optional[str] = Query(None, description="搜索关键词"),
 ):
     """
@@ -887,6 +1288,28 @@ async def list_accounts(
         # 邮箱服务筛选
         if email_service:
             query = query.filter(Account.email_service == email_service)
+
+        # 角色标签筛选
+        if role_tag:
+            normalized_role = normalize_role_tag(role_tag)
+            fallback_label = role_tag_to_account_label(normalized_role)
+            query = query.filter(
+                or_(
+                    func.lower(func.coalesce(Account.role_tag, "")) == normalized_role,
+                    and_(
+                        func.trim(func.coalesce(Account.role_tag, "")) == "",
+                        func.lower(func.coalesce(Account.account_label, "")) == fallback_label,
+                    ),
+                )
+            )
+
+        # 池状态筛选
+        if pool_state:
+            query = query.filter(Account.pool_state == normalize_pool_state(pool_state))
+
+        # 业务标签筛选
+        if biz_tag:
+            query = query.filter(Account.biz_tag == str(biz_tag).strip())
 
         # 搜索
         if search:
@@ -932,11 +1355,12 @@ async def list_accounts_overview_cards(
         if email_service:
             query = query.filter(Account.email_service == email_service)
 
-        accounts = [
-            account
-            for account in query.order_by(Account.created_at.desc()).all()
-            if not _is_overview_card_removed(account)
-        ]
+        ordered_query = query.order_by(Account.created_at.desc())
+        accounts = []
+        for account in _iter_query_in_batches(ordered_query, batch_size=200):
+            if _is_overview_card_removed(account):
+                continue
+            accounts.append(account)
         current_account_id = _get_current_account_id(db)
         global_proxy = _get_proxy(proxy)
         # 卡片列表接口默认“缓存优先”，避免首次进入或新增卡片后触发全量远端请求造成页面卡死。
@@ -1026,9 +1450,9 @@ async def list_accounts_overview_addable(
         if email_service:
             query = query.filter(Account.email_service == email_service)
 
-        accounts = query.order_by(Account.created_at.desc()).all()
+        ordered_query = query.order_by(Account.created_at.desc())
         rows = []
-        for account in accounts:
+        for account in _iter_query_in_batches(ordered_query, batch_size=200):
             if not _is_overview_card_removed(account):
                 continue
             if not _is_paid_subscription(account.subscription_type):
@@ -1068,9 +1492,9 @@ async def list_accounts_overview_selectable(
         if email_service:
             query = query.filter(Account.email_service == email_service)
 
-        accounts = query.order_by(Account.created_at.desc()).all()
+        ordered_query = query.order_by(Account.created_at.desc())
         rows = []
-        for account in accounts:
+        for account in _iter_query_in_batches(ordered_query, batch_size=200):
             # 仅返回当前未在卡片中的账号（即已从卡片移除）
             if not _is_overview_card_removed(account):
                 continue
@@ -1167,10 +1591,12 @@ async def attach_accounts_overview_card(account_id: int):
 
 
 @router.post("/overview/refresh")
-async def refresh_accounts_overview(request: OverviewRefreshRequest):
+def refresh_accounts_overview(request: OverviewRefreshRequest):
     """
     批量刷新账号总览数据。
+    使用线程池并发执行，避免长时间刷新阻塞其他接口。
     """
+    started_at = time.monotonic()
     proxy = _get_proxy(request.proxy)
     result = {"success_count": 0, "failed_count": 0, "details": []}
 
@@ -1190,87 +1616,68 @@ async def refresh_accounts_overview(request: OverviewRefreshRequest):
             ).order_by(Account.created_at.desc()).all()
             ids = [acc.id for acc in candidates if not _is_overview_card_removed(acc)]
 
-        logger.info(
-            "账号总览刷新开始: target_count=%s force=%s select_all=%s proxy=%s",
-            len(ids),
-            bool(request.force),
-            bool(request.select_all),
-            proxy or "-",
-        )
+    logger.info(
+        "账号总览刷新开始: target_count=%s force=%s select_all=%s proxy=%s",
+        len(ids),
+        bool(request.force),
+        bool(request.select_all),
+        proxy or "-",
+    )
 
-        for account_id in ids:
-            account = crud.get_account_by_id(db, account_id)
-            if not account:
+    if not ids:
+        return result
+
+    worker_count = min(ACCOUNT_OVERVIEW_REFRESH_MAX_WORKERS, max(1, len(ids)))
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="overview_refresh") as pool:
+        future_map = {
+            pool.submit(_refresh_overview_account_with_retry, account_id, bool(request.force), proxy): account_id
+            for account_id in ids
+        }
+        for future in as_completed(future_map):
+            account_id = future_map[future]
+            try:
+                detail = future.result()
+            except Exception as exc:
+                detail = {"id": account_id, "success": False, "error": str(exc)}
+
+            result["details"].append(detail)
+            if detail.get("success") is True:
+                result["success_count"] += 1
+            elif not detail.get("skipped"):
                 result["failed_count"] += 1
-                result["details"].append({"id": account_id, "success": False, "error": "账号不存在"})
-                logger.warning("账号总览刷新失败: account_id=%s error=账号不存在", account_id)
-                continue
-            if (not _is_paid_subscription(account.subscription_type)) or _is_overview_card_removed(account):
-                result["details"].append(
-                    {
-                        "id": account.id,
-                        "email": account.email,
-                        "success": False,
-                        "error": "账号不在 Codex 卡片范围内，已跳过",
-                    }
-                )
-                continue
 
-            account_proxy = (account.proxy_used or "").strip() or proxy
-            overview, updated = _get_account_overview_data(
-                db,
-                account,
-                force_refresh=request.force,
-                proxy=account_proxy,
-                allow_network=True,
-            )
-            if updated:
-                db.commit()
-
-            if overview.get("hourly_quota", {}).get("status") == "unknown" and overview.get("weekly_quota", {}).get("status") == "unknown":
-                result["failed_count"] += 1
-                result["details"].append(
-                    {
-                        "id": account.id,
-                        "email": account.email,
-                        "success": False,
-                        "error": overview.get("error") or "未获取到配额数据",
-                    }
+            if detail.get("success") is True:
+                logger.info(
+                    "账号总览刷新成功: account_id=%s email=%s plan=%s",
+                    detail.get("id"),
+                    detail.get("email"),
+                    detail.get("plan_type") or "-",
                 )
-                logger.warning(
-                    "账号总览刷新失败: account_id=%s email=%s error=%s",
-                    account.id,
-                    account.email,
-                    overview.get("error") or "未获取到配额数据",
+            elif detail.get("skipped"):
+                logger.info(
+                    "账号总览刷新跳过: account_id=%s email=%s reason=%s",
+                    detail.get("id"),
+                    detail.get("email"),
+                    detail.get("error"),
                 )
             else:
-                result["success_count"] += 1
-                result["details"].append(
-                    {
-                        "id": account.id,
-                        "email": account.email,
-                        "success": True,
-                        "plan_type": overview.get("plan_type"),
-                    }
-                )
-                logger.info(
-                    "账号总览刷新成功: account_id=%s email=%s plan=%s hourly=%s weekly=%s code_review=%s hourly_source=%s weekly_source=%s",
-                    account.id,
-                    account.email,
-                    overview.get("plan_type") or "-",
-                    overview.get("hourly_quota", {}).get("percentage"),
-                    overview.get("weekly_quota", {}).get("percentage"),
-                    overview.get("code_review_quota", {}).get("percentage"),
-                    overview.get("hourly_quota", {}).get("source"),
-                    overview.get("weekly_quota", {}).get("source"),
+                logger.warning(
+                    "账号总览刷新失败: account_id=%s email=%s error=%s",
+                    detail.get("id"),
+                    detail.get("email"),
+                    detail.get("error"),
                 )
 
-        logger.info(
-            "账号总览刷新完成: success=%s failed=%s",
-            result["success_count"],
-            result["failed_count"],
-        )
-
+    result["details"].sort(key=lambda item: int(item.get("id") or 0))
+    duration = round(time.monotonic() - started_at, 2)
+    logger.info(
+        "账号总览刷新完成: success=%s failed=%s total=%s workers=%s duration=%.2fs",
+        result["success_count"],
+        result["failed_count"],
+        len(ids),
+        worker_count,
+        duration,
+    )
     return result
 
 
@@ -1359,12 +1766,22 @@ async def get_account_tokens(account_id: int):
 
 
 @router.patch("/{account_id}", response_model=AccountResponse)
-async def update_account(account_id: int, request: AccountUpdateRequest):
+async def update_account(account_id: int, request: AccountUpdateRequest, http_request: Request):
     """更新账号状态"""
     with get_db() as db:
         account = crud.get_account_by_id(db, account_id)
         if not account:
             raise HTTPException(status_code=404, detail="账号不存在")
+        actor = _resolve_actor(http_request)
+        before_snapshot = {
+            "status": account.status,
+            "role_tag": account.role_tag,
+            "account_label": account.account_label,
+            "biz_tag": account.biz_tag,
+            "pool_state_manual": account.pool_state_manual,
+            "priority": account.priority,
+            "subscription_type": account.subscription_type,
+        }
 
         update_data = {}
         if request.status:
@@ -1373,9 +1790,9 @@ async def update_account(account_id: int, request: AccountUpdateRequest):
             update_data["status"] = request.status
 
         if request.metadata:
-            current_metadata = account.metadata or {}
+            current_metadata = account.extra_data if isinstance(account.extra_data, dict) else {}
             current_metadata.update(request.metadata)
-            update_data["metadata"] = current_metadata
+            update_data["extra_data"] = current_metadata
 
         if request.cookies is not None:
             # 留空则清空，非空则更新
@@ -1386,7 +1803,46 @@ async def update_account(account_id: int, request: AccountUpdateRequest):
             update_data["session_token"] = request.session_token or None
             update_data["last_refresh"] = datetime.utcnow()
 
+        if request.role_tag is not None:
+            normalized_role = normalize_role_tag(request.role_tag)
+            update_data["role_tag"] = normalized_role
+            update_data["account_label"] = role_tag_to_account_label(normalized_role)
+
+        if request.biz_tag is not None:
+            update_data["biz_tag"] = str(request.biz_tag).strip() or None
+
+        if request.pool_state_manual is not None:
+            text = str(request.pool_state_manual or "").strip()
+            update_data["pool_state_manual"] = normalize_pool_state(text) if text else None
+
+        if request.priority is not None:
+            try:
+                update_data["priority"] = max(0, int(request.priority))
+            except Exception:
+                raise HTTPException(status_code=400, detail="priority 必须为整数")
+
         account = crud.update_account(db, account_id, **update_data)
+        if update_data:
+            after_snapshot = {
+                "status": account.status,
+                "role_tag": account.role_tag,
+                "account_label": account.account_label,
+                "biz_tag": account.biz_tag,
+                "pool_state_manual": account.pool_state_manual,
+                "priority": account.priority,
+                "subscription_type": account.subscription_type,
+            }
+            _audit_account_action(
+                db,
+                actor=actor,
+                action="account.update",
+                account=account,
+                payload={
+                    "fields": sorted(list(update_data.keys())),
+                    "before": before_snapshot,
+                    "after": after_snapshot,
+                },
+            )
         return account_to_response(account)
 
 
@@ -1408,20 +1864,25 @@ async def delete_account(account_id: int):
         if not account:
             raise HTTPException(status_code=404, detail="账号不存在")
 
-        crud.delete_account(db, account_id)
+        try:
+            crud.delete_account(db, account_id)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
         return {"success": True, "message": f"账号 {account.email} 已删除"}
 
 
 @router.post("/batch-delete")
-async def batch_delete_accounts(request: BatchDeleteRequest):
+async def batch_delete_accounts(request: BatchDeleteRequest, http_request: Request):
     """批量删除账号"""
     with get_db() as db:
+        actor = _resolve_actor(http_request)
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
             request.status_filter, request.email_service_filter, request.search_filter
         )
         deleted_count = 0
         errors = []
+        deleted_ids: List[int] = []
 
         for account_id in ids:
             try:
@@ -1429,8 +1890,24 @@ async def batch_delete_accounts(request: BatchDeleteRequest):
                 if account:
                     crud.delete_account(db, account_id)
                     deleted_count += 1
+                    deleted_ids.append(int(account_id))
             except Exception as e:
                 errors.append(f"ID {account_id}: {str(e)}")
+
+        _audit_account_action(
+            db,
+            actor=actor,
+            action="account.batch_delete",
+            target_id=0,
+            target_email=None,
+            payload={
+                "requested_ids": [int(item) for item in ids],
+                "deleted_ids": deleted_ids,
+                "deleted_count": deleted_count,
+                "error_count": len(errors),
+                "errors": errors[:50],
+            },
+        )
 
         return {
             "success": True,
@@ -1440,14 +1917,16 @@ async def batch_delete_accounts(request: BatchDeleteRequest):
 
 
 @router.post("/batch-update")
-async def batch_update_accounts(request: BatchUpdateRequest):
+async def batch_update_accounts(request: BatchUpdateRequest, http_request: Request):
     """批量更新账号状态"""
     if request.status not in [e.value for e in AccountStatus]:
         raise HTTPException(status_code=400, detail="无效的状态值")
 
     with get_db() as db:
+        actor = _resolve_actor(http_request)
         updated_count = 0
         errors = []
+        updated_ids: List[int] = []
 
         for account_id in request.ids:
             try:
@@ -1455,8 +1934,25 @@ async def batch_update_accounts(request: BatchUpdateRequest):
                 if account:
                     crud.update_account(db, account_id, status=request.status)
                     updated_count += 1
+                    updated_ids.append(int(account_id))
             except Exception as e:
                 errors.append(f"ID {account_id}: {str(e)}")
+
+        _audit_account_action(
+            db,
+            actor=actor,
+            action="account.batch_update_status",
+            target_id=0,
+            target_email=None,
+            payload={
+                "status": request.status,
+                "requested_ids": [int(item) for item in request.ids],
+                "updated_ids": updated_ids,
+                "updated_count": updated_count,
+                "error_count": len(errors),
+                "errors": errors[:50],
+            },
+        )
 
         return {
             "success": True,
@@ -1497,6 +1993,11 @@ async def export_accounts_json(request: BatchExportRequest):
                 "id_token": acc.id_token,
                 "session_token": acc.session_token,
                 "email_service": acc.email_service,
+                "account_label": normalize_account_label(getattr(acc, "account_label", None)),
+                "role_tag": _resolve_account_role_tag(acc),
+                "biz_tag": str(getattr(acc, "biz_tag", "") or "").strip() or None,
+                "pool_state": _resolve_account_pool_state(acc),
+                "priority": int(getattr(acc, "priority", 50) or 50),
                 "registered_at": acc.registered_at.isoformat() if acc.registered_at else None,
                 "last_refresh": acc.last_refresh.isoformat() if acc.last_refresh else None,
                 "expires_at": acc.expires_at.isoformat() if acc.expires_at else None,
@@ -1539,7 +2040,8 @@ async def export_accounts_csv(request: BatchExportRequest):
             "ID", "Email", "Password", "Client ID",
             "Account ID", "Workspace ID",
             "Access Token", "Refresh Token", "ID Token", "Session Token",
-            "Email Service", "Status", "Registered At", "Last Refresh", "Expires At"
+            "Email Service", "Account Label", "Role Tag", "Biz Tag", "Pool State", "Priority",
+            "Status", "Registered At", "Last Refresh", "Expires At"
         ])
 
         # 写入数据
@@ -1556,6 +2058,11 @@ async def export_accounts_csv(request: BatchExportRequest):
                 acc.id_token or "",
                 acc.session_token or "",
                 acc.email_service,
+                normalize_account_label(getattr(acc, "account_label", None)),
+                _resolve_account_role_tag(acc),
+                str(getattr(acc, "biz_tag", "") or "").strip(),
+                _resolve_account_pool_state(acc),
+                int(getattr(acc, "priority", 50) or 50),
                 acc.status,
                 acc.registered_at.isoformat() if acc.registered_at else "",
                 acc.last_refresh.isoformat() if acc.last_refresh else "",
@@ -1639,7 +2146,7 @@ async def export_accounts_sub2api(request: BatchExportRequest):
 
 @router.post("/export/codex")
 async def export_accounts_codex(request: BatchExportRequest):
-    """????? Codex ???????"""
+    """导出账号为 Codex JSONL 格式（便于迁移/导入）。"""
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
@@ -1735,10 +2242,19 @@ async def get_accounts_stats():
             func.count(Account.id)
         ).group_by(Account.email_service).all()
 
+        # 按角色标签统计（Service + Repository 聚合）
+        role_counts = _service_get_role_tag_counts(db)
+
         return {
             "total": total,
             "by_status": {status: count for status, count in status_stats},
-            "by_email_service": {service: count for service, count in service_stats}
+            "by_email_service": {service: count for service, count in service_stats},
+            "by_role_tag": role_counts,
+            "tagged_role_counts": {
+                "parent": role_counts["parent"],
+                "child": role_counts["child"],
+                "total_labeled": role_counts["parent"] + role_counts["child"],
+            },
         }
 
 
@@ -1818,6 +2334,21 @@ async def get_accounts_overview():
         }
 
 
+@router.get("/audit-logs")
+async def list_account_audit_logs(limit: int = Query(100, ge=1, le=500), action: Optional[str] = Query(None)):
+    with get_db() as db:
+        rows = crud.list_operation_audit_logs(
+            db,
+            limit=limit,
+            action=action,
+            target_type="account",
+        )
+    return {
+        "success": True,
+        "items": [row.to_dict() for row in rows],
+    }
+
+
 # ============== Token 刷新相关 ==============
 
 class TokenRefreshRequest(BaseModel):
@@ -1850,9 +2381,1141 @@ class BatchValidateRequest(BaseModel):
     search_filter: Optional[str] = None
 
 
+def _wait_account_async_task_finished(
+    task_id: str,
+    timeout_seconds: int = QUICK_REFRESH_TASK_WAIT_TIMEOUT_SECONDS,
+    poll_interval: float = QUICK_REFRESH_TASK_POLL_INTERVAL_SECONDS,
+) -> Dict[str, Any]:
+    started_at = time.monotonic()
+    while time.monotonic() - started_at < timeout_seconds:
+        task = _get_account_async_task(task_id)
+        if task:
+            snapshot = _build_account_async_task_snapshot(task)
+            status = str(snapshot.get("status") or "").lower()
+            if status in {"completed", "failed", "cancelled"}:
+                return snapshot
+        time.sleep(max(0.2, float(poll_interval)))
+    raise TimeoutError(f"等待账号任务超时: {task_id}")
+
+
+def _wait_payment_op_task_finished(
+    op_task_id: str,
+    timeout_seconds: int = QUICK_REFRESH_TASK_WAIT_TIMEOUT_SECONDS,
+    poll_interval: float = QUICK_REFRESH_TASK_POLL_INTERVAL_SECONDS,
+) -> Dict[str, Any]:
+    from . import payment as payment_routes
+
+    started_at = time.monotonic()
+    while time.monotonic() - started_at < timeout_seconds:
+        task = payment_routes._get_payment_op_task(op_task_id)
+        if task:
+            snapshot = payment_routes._build_payment_op_task_snapshot(task)
+            status = str(snapshot.get("status") or "").lower()
+            if status in {"completed", "failed", "cancelled"}:
+                return snapshot
+        time.sleep(max(0.2, float(poll_interval)))
+    raise TimeoutError(f"等待支付任务超时: {op_task_id}")
+
+
+def _task_terminal_error(task_snapshot: Dict[str, Any], default_message: str) -> str:
+    status = str(task_snapshot.get("status") or "").lower()
+    if status == "completed":
+        return ""
+    if status == "cancelled":
+        return str(task_snapshot.get("message") or "任务已取消")
+    return str(task_snapshot.get("error") or task_snapshot.get("message") or default_message)
+
+
+def has_active_batch_operations() -> bool:
+    active_status = {"pending", "running"}
+    account_task_types = {"batch_refresh", "batch_validate", "overview_refresh", "quick_refresh"}
+    with _account_async_tasks_lock:
+        for task in _account_async_tasks.values():
+            status = str(task.get("status") or "").lower()
+            task_type = str(task.get("task_type") or "").strip().lower()
+            if status in active_status and task_type in account_task_types:
+                return True
+
+    try:
+        from . import payment as payment_routes
+
+        with payment_routes._PAYMENT_OP_TASK_LOCK:
+            for task in payment_routes._PAYMENT_OP_TASKS.values():
+                status = str(task.get("status") or "").lower()
+                task_type = str(task.get("task_type") or "").strip().lower()
+                if status in active_status and task_type in {"batch_check_subscription", "quick_refresh"}:
+                    return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _compact_refresh_result(result: Dict[str, Any]) -> Dict[str, int]:
+    return {
+        "success_count": int(result.get("success_count") or 0),
+        "failed_count": int(result.get("failed_count") or 0),
+        "total": int(result.get("total") or 0),
+    }
+
+
+def _compact_validate_result(result: Dict[str, Any]) -> Dict[str, int]:
+    return {
+        "valid_count": int(result.get("valid_count") or 0),
+        "invalid_count": int(result.get("invalid_count") or 0),
+        "total": int(result.get("total") or 0),
+    }
+
+
+def run_quick_refresh_workflow(
+    *,
+    source: str = "manual",
+    proxy: Optional[str] = None,
+    select_all: bool = True,
+    status_filter: Optional[str] = None,
+    email_service_filter: Optional[str] = None,
+    search_filter: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload = {
+        "ids": [],
+        "proxy": proxy,
+        "select_all": bool(select_all),
+        "status_filter": status_filter,
+        "email_service_filter": email_service_filter,
+        "search_filter": search_filter,
+    }
+
+    # 1) 批量验证
+    validate_task = start_batch_validate_async(BatchValidateRequest(**payload))
+    validate_task_id = str(validate_task.get("id") or "")
+    if not validate_task_id:
+        raise RuntimeError("创建批量验证任务失败：缺少 task_id")
+    validate_final = _wait_account_async_task_finished(validate_task_id)
+    validate_error = _task_terminal_error(validate_final, "批量验证任务失败")
+    if validate_error:
+        raise RuntimeError(f"批量验证失败: {validate_error}")
+    validate_result = _compact_validate_result(validate_final.get("result") or {})
+
+    # 2) 批量检测订阅
+    from . import payment as payment_routes
+
+    subscription_task = payment_routes.start_batch_check_subscription_async(
+        payment_routes.BatchCheckSubscriptionRequest(**payload)
+    )
+    subscription_task_id = str(subscription_task.get("id") or "")
+    if not subscription_task_id:
+        raise RuntimeError("创建批量订阅检测任务失败：缺少 op_task_id")
+    subscription_final = _wait_payment_op_task_finished(subscription_task_id)
+    subscription_error = _task_terminal_error(subscription_final, "批量订阅检测任务失败")
+    if subscription_error:
+        raise RuntimeError(f"批量检测订阅失败: {subscription_error}")
+    subscription_raw = subscription_final.get("result") or {}
+    subscription_result = {
+        "success_count": int(subscription_raw.get("success_count") or 0),
+        "failed_count": int(subscription_raw.get("failed_count") or 0),
+        "total": int(subscription_raw.get("total") or 0),
+    }
+
+    return {
+        "source": source,
+        "finished_at": _utc_now_iso(),
+        "validate": validate_result,
+        "subscription": subscription_result,
+    }
+
+
+def _is_retryable_refresh_error(error_message: Optional[str]) -> bool:
+    text = str(error_message or "").strip().lower()
+    if not text:
+        return False
+    retry_markers = (
+        "network_error",
+        "network",
+        "timeout",
+        "timed out",
+        "connection",
+        "temporarily",
+        "too many requests",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+    )
+    return any(marker in text for marker in retry_markers)
+
+
+def _refresh_one_account_with_retry(
+    account_id: int,
+    proxy: Optional[str],
+    max_attempts: int = ACCOUNT_BATCH_REFRESH_RETRY_ATTEMPTS,
+) -> Dict[str, Any]:
+    attempts = max(1, int(max_attempts or 1))
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            refresh_result = do_refresh(account_id, proxy)
+        except Exception as exc:
+            refresh_result = None
+            last_error = str(exc)
+            if attempt < attempts:
+                time.sleep(ACCOUNT_BATCH_REFRESH_RETRY_BASE_DELAY_SECONDS * attempt)
+                continue
+            return {
+                "id": account_id,
+                "success": False,
+                "error": last_error,
+                "attempts": attempt,
+            }
+
+        if refresh_result and refresh_result.success:
+            return {
+                "id": account_id,
+                "success": True,
+                "attempts": attempt,
+            }
+
+        last_error = str(getattr(refresh_result, "error_message", "") or "刷新失败")
+        can_retry = attempt < attempts and _is_retryable_refresh_error(last_error)
+        if can_retry:
+            time.sleep(ACCOUNT_BATCH_REFRESH_RETRY_BASE_DELAY_SECONDS * attempt)
+            continue
+        return {
+            "id": account_id,
+            "success": False,
+            "error": last_error,
+            "attempts": attempt,
+        }
+
+    return {
+        "id": account_id,
+        "success": False,
+        "error": last_error or "刷新失败",
+        "attempts": attempts,
+    }
+
+
+def _run_batch_refresh_task(task_id: str, ids: List[int], proxy: Optional[str]):
+    total = len(ids)
+    success_count = 0
+    failed_count = 0
+    completed_count = 0
+
+    _update_account_async_task(
+        task_id,
+        status="running",
+        started_at=_utc_now_iso(),
+        message=f"开始刷新 Token，共 {total} 个账号",
+        paused=False,
+    )
+
+    if total <= 0:
+        _update_account_async_task(
+            task_id,
+            status="completed",
+            finished_at=_utc_now_iso(),
+            message="没有可刷新的账号",
+            paused=False,
+            result={
+                "success_count": 0,
+                "failed_count": 0,
+                "total": 0,
+                "cancelled": False,
+            },
+        )
+        return
+
+    worker_count = min(ACCOUNT_BATCH_REFRESH_ASYNC_MAX_WORKERS, max(1, total))
+    _update_account_async_task(task_id, message=f"处理中 0/{total}（并发 {worker_count}）")
+
+    next_index = 0
+    running: Dict[Any, int] = {}
+    cancelled = False
+    pool = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="batch_refresh_async")
+    try:
+        while completed_count < total:
+            if not _wait_if_account_async_task_paused(
+                task_id,
+                f"处理中 {completed_count}/{total}（并发 {worker_count}）",
+            ):
+                cancelled = True
+                break
+            if _is_account_async_task_cancel_requested(task_id):
+                cancelled = True
+                break
+
+            while next_index < total and len(running) < worker_count:
+                if not _wait_if_account_async_task_paused(
+                    task_id,
+                    f"处理中 {completed_count}/{total}（并发 {worker_count}）",
+                ):
+                    cancelled = True
+                    break
+                account_id = int(ids[next_index])
+                next_index += 1
+                future = pool.submit(_refresh_one_account_with_retry, account_id, proxy)
+                running[future] = account_id
+
+            if cancelled:
+                break
+            if not running:
+                continue
+
+            done, _ = wait(tuple(running.keys()), timeout=0.6, return_when=FIRST_COMPLETED)
+            if not done:
+                continue
+
+            for future in done:
+                account_id = int(running.pop(future, 0) or 0)
+                if account_id <= 0:
+                    continue
+                try:
+                    detail = future.result()
+                except Exception as exc:
+                    detail = {
+                        "id": account_id,
+                        "success": False,
+                        "error": str(exc),
+                        "attempts": 1,
+                    }
+
+                completed_count += 1
+                if detail.get("success"):
+                    success_count += 1
+                else:
+                    failed_count += 1
+
+                _append_account_async_task_detail(task_id, detail)
+                _set_account_async_task_progress(
+                    task_id,
+                    total=total,
+                    completed=completed_count,
+                    success=success_count,
+                    failed=failed_count,
+                )
+                _update_account_async_task(
+                    task_id,
+                    message=f"处理中 {completed_count}/{total}（并发 {worker_count}）",
+                )
+
+        if cancelled:
+            for future in list(running.keys()):
+                future.cancel()
+            _update_account_async_task(
+                task_id,
+                status="cancelled",
+                finished_at=_utc_now_iso(),
+                message=f"任务已取消，进度 {completed_count}/{total}",
+                paused=False,
+                result={
+                    "success_count": success_count,
+                    "failed_count": failed_count,
+                    "total": total,
+                    "cancelled": True,
+                },
+            )
+            return
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    _update_account_async_task(
+        task_id,
+        status="completed",
+        finished_at=_utc_now_iso(),
+        message=f"刷新完成：成功 {success_count}，失败 {failed_count}",
+        paused=False,
+        result={
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "total": total,
+            "cancelled": False,
+        },
+    )
+
+
+def _is_retryable_validate_error(error_message: Optional[str]) -> bool:
+    text = str(error_message or "").strip().lower()
+    if not text:
+        return False
+    retry_markers = (
+        "network_error",
+        "network",
+        "timeout",
+        "timed out",
+        "connection",
+        "temporarily",
+        "too many requests",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "rate limit",
+    )
+    return any(marker in text for marker in retry_markers)
+
+
+def _calculate_validate_worker_count(total: int, *, async_mode: bool) -> int:
+    """计算批量验证并发数：避免过低并发导致慢，也避免线程过多造成抖动。"""
+    safe_total = max(0, int(total or 0))
+    if safe_total <= 0:
+        return 1
+    max_workers = ACCOUNT_BATCH_VALIDATE_ASYNC_MAX_WORKERS if async_mode else ACCOUNT_BATCH_VALIDATE_SYNC_MAX_WORKERS
+    if safe_total <= 3:
+        return safe_total
+    if safe_total <= 10:
+        return min(max_workers, max(4, safe_total))
+    if safe_total <= 40:
+        return min(max_workers, max(6, safe_total // 2))
+    return min(max_workers, max(8, safe_total // 3))
+
+
+def _derive_account_status_from_validate_result(is_valid: bool, error: Optional[str]) -> str:
+    """
+    将 Token 验证结果映射为账号状态。
+    这里与 token_refresh.validate_account_token 的回写规则保持一致，
+    便于异步任务在进度明细里即时返回最终状态。
+    """
+    if bool(is_valid):
+        return AccountStatus.ACTIVE.value
+
+    error_text = str(error or "").lower()
+    if (
+        "402" in error_text
+        or "payment required" in error_text
+        or "订阅受限" in error_text
+    ):
+        return AccountStatus.EXPIRED.value
+    if (
+        "401" in error_text
+        or "invalid" in error_text
+        or "unauthorized" in error_text
+        or "过期" in error_text
+        or "expired" in error_text
+    ):
+        return AccountStatus.FAILED.value
+    if (
+        "封禁" in error_text
+        or "banned" in error_text
+        or "forbidden" in error_text
+    ):
+        return AccountStatus.BANNED.value
+    return AccountStatus.FAILED.value
+
+
+def _validate_one_account_with_retry(
+    account_id: int,
+    proxy: Optional[str],
+    max_attempts: int = ACCOUNT_BATCH_VALIDATE_RETRY_ATTEMPTS,
+    timeout_seconds: int = ACCOUNT_BATCH_VALIDATE_HTTP_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    attempts = max(1, int(max_attempts or 1))
+    timeout_seconds = max(5, int(timeout_seconds or ACCOUNT_BATCH_VALIDATE_HTTP_TIMEOUT_SECONDS))
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            is_valid, error = do_validate(account_id, proxy, timeout_seconds=timeout_seconds)
+            if is_valid:
+                return {
+                    "id": account_id,
+                    "valid": True,
+                    "status": _derive_account_status_from_validate_result(True, error),
+                    "error": None,
+                    "attempts": attempt,
+                }
+            last_error = str(error or "token_invalid")
+            can_retry = attempt < attempts and _is_retryable_validate_error(last_error)
+            if can_retry:
+                time.sleep(ACCOUNT_BATCH_VALIDATE_RETRY_BASE_DELAY_SECONDS * attempt)
+                continue
+            return {
+                "id": account_id,
+                "valid": False,
+                "status": _derive_account_status_from_validate_result(False, last_error),
+                "error": last_error,
+                "attempts": attempt,
+            }
+        except Exception as exc:
+            last_error = str(exc)
+            can_retry = attempt < attempts and _is_retryable_validate_error(last_error)
+            if can_retry:
+                time.sleep(ACCOUNT_BATCH_VALIDATE_RETRY_BASE_DELAY_SECONDS * attempt)
+                continue
+            return {
+                "id": account_id,
+                "valid": False,
+                "status": _derive_account_status_from_validate_result(False, last_error),
+                "error": last_error,
+                "attempts": attempt,
+            }
+
+    return {
+        "id": account_id,
+        "valid": False,
+        "status": _derive_account_status_from_validate_result(False, last_error or "validation_failed"),
+        "error": last_error or "validation_failed",
+        "attempts": attempts,
+    }
+
+
+def _run_batch_validate_task(task_id: str, ids: List[int], proxy: Optional[str]):
+    started_perf = time.perf_counter()
+    total = len(ids)
+    valid_count = 0
+    invalid_count = 0
+    completed_count = 0
+    retry_count = 0
+
+    _update_account_async_task(
+        task_id,
+        status="running",
+        started_at=_utc_now_iso(),
+        message=f"开始验证 Token，共 {total} 个账号",
+        paused=False,
+    )
+
+    if total <= 0:
+        _update_account_async_task(
+            task_id,
+            status="completed",
+            finished_at=_utc_now_iso(),
+            message="没有可验证的账号",
+            paused=False,
+            result={
+                "valid_count": 0,
+                "invalid_count": 0,
+                "total": 0,
+                "cancelled": False,
+            },
+        )
+        return
+
+    worker_count = _calculate_validate_worker_count(total, async_mode=True)
+    _update_account_async_task(task_id, message=f"处理中 0/{total}（并发 {worker_count}）")
+
+    next_index = 0
+    running: Dict[Any, int] = {}
+    cancelled = False
+    pool = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="batch_validate_async")
+    try:
+        while completed_count < total:
+            if not _wait_if_account_async_task_paused(
+                task_id,
+                f"处理中 {completed_count}/{total}（并发 {worker_count}）",
+            ):
+                cancelled = True
+                break
+            if _is_account_async_task_cancel_requested(task_id):
+                cancelled = True
+                break
+
+            while next_index < total and len(running) < worker_count:
+                if not _wait_if_account_async_task_paused(
+                    task_id,
+                    f"处理中 {completed_count}/{total}（并发 {worker_count}）",
+                ):
+                    cancelled = True
+                    break
+                account_id = int(ids[next_index])
+                next_index += 1
+                future = pool.submit(_validate_one_account_with_retry, account_id, proxy)
+                running[future] = account_id
+
+            if cancelled:
+                break
+            if not running:
+                continue
+
+            done, _ = wait(tuple(running.keys()), timeout=0.6, return_when=FIRST_COMPLETED)
+            if not done:
+                continue
+
+            for future in done:
+                account_id = int(running.pop(future, 0) or 0)
+                if account_id <= 0:
+                    continue
+                try:
+                    detail = future.result()
+                except Exception as exc:
+                    detail = {
+                        "id": account_id,
+                        "valid": False,
+                        "error": str(exc),
+                        "attempts": 1,
+                    }
+
+                completed_count += 1
+                if detail.get("valid"):
+                    valid_count += 1
+                else:
+                    invalid_count += 1
+                attempts = int(detail.get("attempts") or 1)
+                retry_count += max(0, attempts - 1)
+
+                _append_account_async_task_detail(task_id, detail)
+                _set_account_async_task_progress(
+                    task_id,
+                    total=total,
+                    completed=completed_count,
+                    success=valid_count,
+                    failed=invalid_count,
+                )
+                _update_account_async_task(
+                    task_id,
+                    message=f"处理中 {completed_count}/{total}（并发 {worker_count}）",
+                )
+
+                if detail.get("valid"):
+                    logger.info(
+                        "批量验证结果: task_id=%s account_id=%s valid=true attempts=%s",
+                        task_id,
+                        account_id,
+                        detail.get("attempts"),
+                    )
+                else:
+                    logger.warning(
+                        "批量验证结果: task_id=%s account_id=%s valid=false attempts=%s error=%s",
+                        task_id,
+                        account_id,
+                        detail.get("attempts"),
+                        str(detail.get("error") or "")[:220] or "-",
+                    )
+
+        if cancelled:
+            for future in list(running.keys()):
+                future.cancel()
+            _update_account_async_task(
+                task_id,
+                status="cancelled",
+                finished_at=_utc_now_iso(),
+                message=f"任务已取消，进度 {completed_count}/{total}",
+                paused=False,
+                result={
+                    "valid_count": valid_count,
+                    "invalid_count": invalid_count,
+                    "total": total,
+                    "cancelled": True,
+                    "worker_count": worker_count,
+                    "retry_count": retry_count,
+                    "duration_ms": int((time.perf_counter() - started_perf) * 1000),
+                },
+            )
+            return
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    _update_account_async_task(
+        task_id,
+        status="completed",
+        finished_at=_utc_now_iso(),
+        message=f"验证完成：有效 {valid_count}，无效 {invalid_count}",
+        paused=False,
+        result={
+            "valid_count": valid_count,
+            "invalid_count": invalid_count,
+            "total": total,
+            "cancelled": False,
+            "worker_count": worker_count,
+            "retry_count": retry_count,
+            "duration_ms": int((time.perf_counter() - started_perf) * 1000),
+        },
+    )
+    logger.info(
+        "批量验证完成: task_id=%s total=%s valid=%s invalid=%s proxy=%s",
+        task_id,
+        total,
+        valid_count,
+        invalid_count,
+        proxy or "-",
+    )
+
+
+def _is_retryable_overview_refresh_error(error_message: Optional[str]) -> bool:
+    text = str(error_message or "").strip().lower()
+    if not text:
+        return False
+    retry_markers = (
+        "network_error",
+        "network",
+        "timeout",
+        "timed out",
+        "connection",
+        "temporarily",
+        "too many requests",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "rate limit",
+    )
+    return any(marker in text for marker in retry_markers)
+
+
+def _refresh_overview_account_once(account_id: int, force_refresh: bool, proxy: Optional[str]) -> Dict[str, Any]:
+    with get_db() as db:
+        account = crud.get_account_by_id(db, account_id)
+        if not account:
+            return {"id": account_id, "success": False, "error": "账号不存在"}
+
+        if (not _is_paid_subscription(account.subscription_type)) or _is_overview_card_removed(account):
+            return {
+                "id": account.id,
+                "email": account.email,
+                "success": False,
+                "skipped": True,
+                "error": "账号不在 Codex 卡片范围内，已跳过",
+            }
+
+        account_proxy = (account.proxy_used or "").strip() or proxy
+        overview, updated = _get_account_overview_data(
+            db,
+            account,
+            force_refresh=force_refresh,
+            proxy=account_proxy,
+            allow_network=True,
+        )
+        if updated:
+            db.commit()
+
+        hourly_unknown = overview.get("hourly_quota", {}).get("status") == "unknown"
+        weekly_unknown = overview.get("weekly_quota", {}).get("status") == "unknown"
+        if hourly_unknown and weekly_unknown:
+            return {
+                "id": account.id,
+                "email": account.email,
+                "success": False,
+                "error": overview.get("error") or "未获取到配额数据",
+            }
+
+        return {
+            "id": account.id,
+            "email": account.email,
+            "success": True,
+            "plan_type": overview.get("plan_type"),
+        }
+
+
+def _refresh_overview_account_with_retry(
+    account_id: int,
+    force_refresh: bool,
+    proxy: Optional[str],
+    max_attempts: int = ACCOUNT_OVERVIEW_REFRESH_RETRY_ATTEMPTS,
+) -> Dict[str, Any]:
+    attempts = max(1, int(max_attempts or 1))
+    last_detail: Dict[str, Any] = {"id": int(account_id), "success": False, "error": "刷新失败"}
+
+    for attempt in range(1, attempts + 1):
+        try:
+            detail = _refresh_overview_account_once(account_id, force_refresh, proxy)
+        except Exception as exc:
+            detail = {"id": int(account_id), "success": False, "error": str(exc)}
+
+        detail["attempts"] = attempt
+        if detail.get("success") or detail.get("skipped"):
+            return detail
+
+        last_detail = detail
+        error_text = str(detail.get("error") or "")
+        can_retry = attempt < attempts and _is_retryable_overview_refresh_error(error_text)
+        if can_retry:
+            time.sleep(ACCOUNT_OVERVIEW_REFRESH_RETRY_BASE_DELAY_SECONDS * attempt)
+            continue
+        return detail
+
+    return last_detail
+
+
+def _run_overview_refresh_async_task(task_id: str, ids: List[int], force_refresh: bool, proxy: Optional[str]):
+    total = len(ids)
+    success_count = 0
+    failed_count = 0
+    completed_count = 0
+
+    _update_account_async_task(
+        task_id,
+        status="running",
+        started_at=_utc_now_iso(),
+        message=f"开始刷新账号总览，共 {total} 个账号",
+        paused=False,
+    )
+
+    if total <= 0:
+        _update_account_async_task(
+            task_id,
+            status="completed",
+            finished_at=_utc_now_iso(),
+            message="没有可刷新的总览账号",
+            paused=False,
+            result={
+                "success_count": 0,
+                "failed_count": 0,
+                "total": 0,
+                "cancelled": False,
+            },
+        )
+        return
+
+    worker_count = min(ACCOUNT_OVERVIEW_REFRESH_MAX_WORKERS, max(1, total))
+    _update_account_async_task(task_id, message=f"处理中 0/{total}（并发 {worker_count}）")
+
+    next_index = 0
+    running: Dict[Any, int] = {}
+    cancelled = False
+    pool = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="overview_refresh_async")
+    try:
+        while completed_count < total:
+            if not _wait_if_account_async_task_paused(
+                task_id,
+                f"处理中 {completed_count}/{total}（并发 {worker_count}）",
+            ):
+                cancelled = True
+                break
+            if _is_account_async_task_cancel_requested(task_id):
+                cancelled = True
+                break
+
+            while next_index < total and len(running) < worker_count:
+                if not _wait_if_account_async_task_paused(
+                    task_id,
+                    f"处理中 {completed_count}/{total}（并发 {worker_count}）",
+                ):
+                    cancelled = True
+                    break
+                account_id = int(ids[next_index])
+                next_index += 1
+                future = pool.submit(_refresh_overview_account_with_retry, account_id, force_refresh, proxy)
+                running[future] = account_id
+
+            if cancelled:
+                break
+            if not running:
+                continue
+
+            done, _ = wait(tuple(running.keys()), timeout=0.6, return_when=FIRST_COMPLETED)
+            if not done:
+                continue
+
+            for future in done:
+                account_id = int(running.pop(future, 0) or 0)
+                if account_id <= 0:
+                    continue
+                try:
+                    detail = future.result()
+                except Exception as exc:
+                    detail = {"id": account_id, "success": False, "error": str(exc), "attempts": 1}
+
+                completed_count += 1
+                if detail.get("success") is True:
+                    success_count += 1
+                elif not detail.get("skipped"):
+                    failed_count += 1
+
+                _append_account_async_task_detail(task_id, detail)
+                _set_account_async_task_progress(
+                    task_id,
+                    total=total,
+                    completed=completed_count,
+                    success=success_count,
+                    failed=failed_count,
+                )
+                _update_account_async_task(
+                    task_id,
+                    message=f"处理中 {completed_count}/{total}（并发 {worker_count}）",
+                )
+
+        if cancelled:
+            for future in list(running.keys()):
+                future.cancel()
+            _update_account_async_task(
+                task_id,
+                status="cancelled",
+                finished_at=_utc_now_iso(),
+                message=f"任务已取消，进度 {completed_count}/{total}",
+                paused=False,
+                result={
+                    "success_count": success_count,
+                    "failed_count": failed_count,
+                    "total": total,
+                    "cancelled": True,
+                },
+            )
+            return
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    _update_account_async_task(
+        task_id,
+        status="completed",
+        finished_at=_utc_now_iso(),
+        message=f"刷新完成：成功 {success_count}，失败 {failed_count}",
+        paused=False,
+        result={
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "total": total,
+            "cancelled": False,
+        },
+    )
+
+
+@router.get("/tasks/{task_id}")
+def get_account_async_task_status(task_id: str):
+    task = _get_account_async_task_or_404(task_id)
+    return _build_account_async_task_snapshot(task)
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_account_async_task(task_id: str):
+    with _account_async_tasks_lock:
+        task = _account_async_tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if task.get("status") in {"completed", "failed", "cancelled"}:
+            return {
+                "success": True,
+                "task_id": task_id,
+                "status": task.get("status"),
+                "message": "任务已结束，无需取消",
+            }
+        task["cancel_requested"] = True
+        task["pause_requested"] = False
+        task["paused"] = False
+        task["message"] = "已提交取消请求，等待任务停止"
+    task_manager.request_domain_task_cancel("accounts", task_id)
+    return {
+        "success": True,
+        "task_id": task_id,
+        "status": "cancelling",
+    }
+
+
+@router.post("/tasks/{task_id}/pause")
+def pause_account_async_task(task_id: str):
+    with _account_async_tasks_lock:
+        task = _account_async_tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        status = str(task.get("status") or "").strip().lower()
+        if status in {"completed", "failed", "cancelled"}:
+            return {
+                "success": True,
+                "task_id": task_id,
+                "status": status,
+                "message": "任务已结束，无法暂停",
+            }
+        task["pause_requested"] = True
+        task["paused"] = True
+        task["status"] = "paused"
+        task["message"] = "任务已暂停，等待继续"
+    task_manager.request_domain_task_pause("accounts", task_id)
+    return {
+        "success": True,
+        "task_id": task_id,
+        "status": "paused",
+        "message": "任务已暂停",
+    }
+
+
+@router.post("/tasks/{task_id}/resume")
+def resume_account_async_task(task_id: str):
+    with _account_async_tasks_lock:
+        task = _account_async_tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        status = str(task.get("status") or "").strip().lower()
+        if status in {"completed", "failed", "cancelled"}:
+            return {
+                "success": True,
+                "task_id": task_id,
+                "status": status,
+                "message": "任务已结束，无需继续",
+            }
+        task["pause_requested"] = False
+        task["paused"] = False
+        if status == "paused":
+            task["status"] = "running"
+            task["message"] = "任务已继续执行"
+    task_manager.request_domain_task_resume("accounts", task_id)
+    return {
+        "success": True,
+        "task_id": task_id,
+        "status": "running",
+        "message": "任务已继续执行",
+    }
+
+
+def retry_account_async_task(task_id: str) -> Dict[str, Any]:
+    task = _get_account_async_task_or_404(task_id)
+    task_type = str(task.get("task_type") or "").strip().lower()
+    payload = dict(task.get("payload") or {})
+
+    ids = payload.get("ids")
+    if not isinstance(ids, list):
+        ids = []
+    safe_ids = [int(item) for item in ids if str(item).strip().isdigit()]
+
+    common_kwargs = {
+        "ids": safe_ids,
+        "proxy": payload.get("proxy"),
+        "select_all": bool(payload.get("select_all", False)),
+        "status_filter": payload.get("status_filter"),
+        "email_service_filter": payload.get("email_service_filter"),
+        "search_filter": payload.get("search_filter"),
+    }
+
+    if task_type == "batch_refresh":
+        return start_batch_refresh_async(BatchRefreshRequest(**common_kwargs))
+    if task_type == "batch_validate":
+        return start_batch_validate_async(BatchValidateRequest(**common_kwargs))
+    if task_type == "overview_refresh":
+        return start_overview_refresh_async(
+            OverviewRefreshRequest(
+                **common_kwargs,
+                force=bool(payload.get("force", False)),
+            )
+        )
+
+    raise HTTPException(status_code=400, detail=f"不支持重试的任务类型: {task_type or '-'}")
+
+
+@router.post("/batch-refresh/async")
+def start_batch_refresh_async(request: BatchRefreshRequest):
+    proxy = _get_proxy(request.proxy)
+    with get_db() as db:
+        ids = resolve_account_ids(
+            db, request.ids, request.select_all,
+            request.status_filter, request.email_service_filter, request.search_filter
+        )
+
+    task_payload = {
+        "ids": [int(item) for item in ids],
+        "proxy": proxy,
+        "select_all": bool(request.select_all),
+        "status_filter": request.status_filter,
+        "email_service_filter": request.email_service_filter,
+        "search_filter": request.search_filter,
+    }
+    task_id = _create_account_async_task("batch_refresh", total=len(ids), payload=task_payload)
+    if not ids:
+        _update_account_async_task(
+            task_id,
+            status="completed",
+            started_at=_utc_now_iso(),
+            finished_at=_utc_now_iso(),
+            message="没有可刷新的账号",
+            result={"success_count": 0, "failed_count": 0, "total": 0, "cancelled": False},
+        )
+    else:
+        _account_async_executor.submit(
+            _run_account_async_task_guard,
+            task_id,
+            "batch_refresh",
+            _run_batch_refresh_task,
+            ids,
+            proxy,
+        )
+
+    task = _get_account_async_task_or_404(task_id)
+    return _build_account_async_task_snapshot(task)
+
+
+@router.post("/batch-validate/async")
+def start_batch_validate_async(request: BatchValidateRequest):
+    proxy = _get_proxy(request.proxy)
+    with get_db() as db:
+        ids = resolve_account_ids(
+            db, request.ids, request.select_all,
+            request.status_filter, request.email_service_filter, request.search_filter
+        )
+
+    task_payload = {
+        "ids": [int(item) for item in ids],
+        "proxy": proxy,
+        "select_all": bool(request.select_all),
+        "status_filter": request.status_filter,
+        "email_service_filter": request.email_service_filter,
+        "search_filter": request.search_filter,
+    }
+    task_id = _create_account_async_task("batch_validate", total=len(ids), payload=task_payload)
+    if not ids:
+        _update_account_async_task(
+            task_id,
+            status="completed",
+            started_at=_utc_now_iso(),
+            finished_at=_utc_now_iso(),
+            message="没有可验证的账号",
+            result={"valid_count": 0, "invalid_count": 0, "total": 0, "cancelled": False},
+        )
+    else:
+        _account_async_executor.submit(
+            _run_account_async_task_guard,
+            task_id,
+            "batch_validate",
+            _run_batch_validate_task,
+            ids,
+            proxy,
+        )
+
+    task = _get_account_async_task_or_404(task_id)
+    return _build_account_async_task_snapshot(task)
+
+
+@router.post("/overview/refresh/async")
+def start_overview_refresh_async(request: OverviewRefreshRequest):
+    proxy = _get_proxy(request.proxy)
+    with get_db() as db:
+        ids = resolve_account_ids(
+            db,
+            request.ids,
+            request.select_all,
+            request.status_filter,
+            request.email_service_filter,
+            request.search_filter,
+        )
+        if not ids:
+            candidates = db.query(Account).filter(
+                func.lower(Account.subscription_type).in_(PAID_SUBSCRIPTION_TYPES)
+            ).order_by(Account.created_at.desc()).all()
+            ids = [acc.id for acc in candidates if not _is_overview_card_removed(acc)]
+
+    task_payload = {
+        "ids": [int(item) for item in ids],
+        "proxy": proxy,
+        "force": bool(request.force),
+        "select_all": bool(request.select_all),
+        "status_filter": request.status_filter,
+        "email_service_filter": request.email_service_filter,
+        "search_filter": request.search_filter,
+    }
+    task_id = _create_account_async_task("overview_refresh", total=len(ids), payload=task_payload)
+    if not ids:
+        _update_account_async_task(
+            task_id,
+            status="completed",
+            started_at=_utc_now_iso(),
+            finished_at=_utc_now_iso(),
+            message="没有可刷新的总览账号",
+            result={"success_count": 0, "failed_count": 0, "total": 0, "cancelled": False},
+        )
+    else:
+        _account_async_executor.submit(
+            _run_account_async_task_guard,
+            task_id,
+            "overview_refresh",
+            _run_overview_refresh_async_task,
+            ids,
+            bool(request.force),
+            proxy,
+        )
+
+    task = _get_account_async_task_or_404(task_id)
+    return _build_account_async_task_snapshot(task)
+
+
 @router.post("/batch-refresh")
-async def batch_refresh_tokens(request: BatchRefreshRequest, background_tasks: BackgroundTasks):
-    """批量刷新账号 Token"""
+def batch_refresh_tokens(request: BatchRefreshRequest):
+    """批量刷新账号 Token（并发执行，避免长轮询阻塞）。"""
     proxy = _get_proxy(request.proxy)
 
     results = {
@@ -1867,23 +3530,34 @@ async def batch_refresh_tokens(request: BatchRefreshRequest, background_tasks: B
             request.status_filter, request.email_service_filter, request.search_filter
         )
 
-    for account_id in ids:
+    if not ids:
+        return results
+
+    def _refresh_one(account_id: int) -> dict:
         try:
             result = do_refresh(account_id, proxy)
             if result.success:
+                return {"id": account_id, "success": True}
+            return {"id": account_id, "success": False, "error": result.error_message}
+        except Exception as exc:
+            return {"id": account_id, "success": False, "error": str(exc)}
+
+    worker_count = min(6, max(1, len(ids)))
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="batch_refresh") as pool:
+        future_map = {pool.submit(_refresh_one, account_id): account_id for account_id in ids}
+        for future in as_completed(future_map):
+            item = future.result()
+            if item.get("success"):
                 results["success_count"] += 1
             else:
                 results["failed_count"] += 1
-                results["errors"].append({"id": account_id, "error": result.error_message})
-        except Exception as e:
-            results["failed_count"] += 1
-            results["errors"].append({"id": account_id, "error": str(e)})
+                results["errors"].append({"id": item.get("id"), "error": item.get("error")})
 
     return results
 
 
 @router.post("/{account_id}/refresh")
-async def refresh_account_token(account_id: int, request: Optional[TokenRefreshRequest] = Body(default=None)):
+def refresh_account_token(account_id: int, request: Optional[TokenRefreshRequest] = Body(default=None)):
     """刷新单个账号的 Token"""
     proxy = _get_proxy(request.proxy if request else None)
     result = do_refresh(account_id, proxy)
@@ -1902,14 +3576,18 @@ async def refresh_account_token(account_id: int, request: Optional[TokenRefreshR
 
 
 @router.post("/batch-validate")
-async def batch_validate_tokens(request: BatchValidateRequest):
-    """批量验证账号 Token 有效性"""
+def batch_validate_tokens(request: BatchValidateRequest):
+    """批量验证账号 Token 有效性（并发执行）。"""
+    started = time.perf_counter()
     proxy = _get_proxy(request.proxy)
 
     results = {
         "valid_count": 0,
         "invalid_count": 0,
-        "details": []
+        "details": [],
+        "worker_count": 0,
+        "retry_count": 0,
+        "duration_ms": 0,
     }
 
     with get_db() as db:
@@ -1918,46 +3596,58 @@ async def batch_validate_tokens(request: BatchValidateRequest):
             request.status_filter, request.email_service_filter, request.search_filter
         )
 
-    for account_id in ids:
-        try:
-            is_valid, error = do_validate(account_id, proxy)
-            results["details"].append({
-                "id": account_id,
-                "valid": is_valid,
-                "error": error
-            })
-            if is_valid:
+    if not ids:
+        results["duration_ms"] = int((time.perf_counter() - started) * 1000)
+        return results
+
+    worker_count = _calculate_validate_worker_count(len(ids), async_mode=False)
+    results["worker_count"] = worker_count
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="batch_validate") as pool:
+        future_map = {
+            pool.submit(
+                _validate_one_account_with_retry,
+                account_id,
+                proxy,
+                ACCOUNT_BATCH_VALIDATE_RETRY_ATTEMPTS,
+                ACCOUNT_BATCH_VALIDATE_HTTP_TIMEOUT_SECONDS,
+            ): account_id
+            for account_id in ids
+        }
+        for future in as_completed(future_map):
+            detail = future.result()
+            results["details"].append(detail)
+            results["retry_count"] += max(0, int(detail.get("attempts") or 1) - 1)
+            if detail.get("valid"):
                 results["valid_count"] += 1
             else:
                 results["invalid_count"] += 1
-        except Exception as e:
-            # 异常账号兜底打标 failed，保证前端“失败”筛选可见。
-            try:
-                with get_db() as db:
-                    account = crud.get_account_by_id(db, account_id)
-                    if account and account.status != AccountStatus.FAILED.value:
-                        crud.update_account(db, account_id, status=AccountStatus.FAILED.value)
-            except Exception:
-                pass
-            results["invalid_count"] += 1
-            results["details"].append({
-                "id": account_id,
-                "valid": False,
-                "error": str(e)
-            })
 
+    results["details"].sort(key=lambda item: int(item.get("id") or 0))
+    results["duration_ms"] = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "批量验证(同步)完成: total=%s valid=%s invalid=%s workers=%s retries=%s duration_ms=%s proxy=%s",
+        len(ids),
+        results["valid_count"],
+        results["invalid_count"],
+        results["worker_count"],
+        results["retry_count"],
+        results["duration_ms"],
+        proxy or "-",
+    )
     return results
 
 
 @router.post("/{account_id}/validate")
-async def validate_account_token(account_id: int, request: Optional[TokenValidateRequest] = Body(default=None)):
+def validate_account_token(account_id: int, request: Optional[TokenValidateRequest] = Body(default=None)):
     """验证单个账号的 Token 有效性"""
     proxy = _get_proxy(request.proxy if request else None)
     is_valid, error = do_validate(account_id, proxy)
+    next_status = _derive_account_status_from_validate_result(is_valid, error)
 
     return {
         "id": account_id,
         "valid": is_valid,
+        "status": next_status,
         "error": error
     }
 
@@ -1997,6 +3687,8 @@ async def batch_upload_accounts_to_cpa(request: BatchCPAUploadRequest):
                 raise HTTPException(status_code=404, detail="指定的 CPA 服务不存在")
             cpa_api_url = svc.api_url
             cpa_api_token = svc.api_token
+            if not request.proxy:
+                proxy = getattr(svc, "proxy_url", None) or proxy
 
     with get_db() as db:
         ids = resolve_account_ids(
@@ -2025,6 +3717,8 @@ async def upload_account_to_cpa(account_id: int, request: Optional[CPAUploadRequ
                 raise HTTPException(status_code=404, detail="指定的 CPA 服务不存在")
             cpa_api_url = svc.api_url
             cpa_api_token = svc.api_token
+            if not (request and request.proxy):
+                proxy = getattr(svc, "proxy_url", None) or proxy
 
     with get_db() as db:
         account = crud.get_account_by_id(db, account_id)
@@ -2078,6 +3772,7 @@ async def batch_upload_accounts_to_sub2api(request: BatchSub2ApiUploadRequest):
     # 解析指定的 Sub2API 服务
     api_url = None
     api_key = None
+    target_type = "sub2api"
     if request.service_id:
         with get_db() as db:
             svc = crud.get_sub2api_service_by_id(db, request.service_id)
@@ -2085,12 +3780,14 @@ async def batch_upload_accounts_to_sub2api(request: BatchSub2ApiUploadRequest):
                 raise HTTPException(status_code=404, detail="指定的 Sub2API 服务不存在")
             api_url = svc.api_url
             api_key = svc.api_key
+            target_type = getattr(svc, "target_type", "sub2api")
     else:
         with get_db() as db:
             svcs = crud.get_sub2api_services(db, enabled=True)
             if svcs:
                 api_url = svcs[0].api_url
                 api_key = svcs[0].api_key
+                target_type = getattr(svcs[0], "target_type", "sub2api")
 
     if not api_url or not api_key:
         raise HTTPException(status_code=400, detail="未找到可用的 Sub2API 服务，请先在设置中配置")
@@ -2105,7 +3802,7 @@ async def batch_upload_accounts_to_sub2api(request: BatchSub2ApiUploadRequest):
         ids, api_url, api_key,
         concurrency=request.concurrency,
         priority=request.priority,
-        target_type=locals().get("target_type", "sub2api"),
+        target_type=target_type,
     )
     return results
 
@@ -2120,6 +3817,7 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
 
     api_url = None
     api_key = None
+    target_type = "sub2api"
     if service_id:
         with get_db() as db:
             svc = crud.get_sub2api_service_by_id(db, service_id)
@@ -2127,12 +3825,14 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
                 raise HTTPException(status_code=404, detail="指定的 Sub2API 服务不存在")
             api_url = svc.api_url
             api_key = svc.api_key
+            target_type = getattr(svc, "target_type", "sub2api")
     else:
         with get_db() as db:
             svcs = crud.get_sub2api_services(db, enabled=True)
             if svcs:
                 api_url = svcs[0].api_url
                 api_key = svcs[0].api_key
+                target_type = getattr(svcs[0], "target_type", "sub2api")
 
     if not api_url or not api_key:
         raise HTTPException(status_code=400, detail="未找到可用的 Sub2API 服务，请先在设置中配置")
@@ -2147,7 +3847,7 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
         success, message = upload_to_sub2api(
             [account], api_url, api_key,
             concurrency=concurrency, priority=priority,
-            target_type=locals().get("target_type", "sub2api")
+            target_type=target_type
         )
         if success:
             return {"success": True, "message": message}
@@ -2186,7 +3886,6 @@ async def batch_upload_accounts_to_tm(request: BatchUploadTMRequest):
 
         api_url = svc.api_url
         api_key = svc.api_key
-        target_type = getattr(svc, "target_type", "sub2api")
 
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
@@ -2215,7 +3914,6 @@ async def upload_account_to_tm(account_id: int, request: Optional[UploadTMReques
 
         api_url = svc.api_url
         api_key = svc.api_key
-        target_type = getattr(svc, "target_type", "sub2api")
 
         account = crud.get_account_by_id(db, account_id)
         if not account:
@@ -2238,16 +3936,6 @@ def _build_inbox_config(db, service_type, email: str) -> dict:
             "base_url": settings.tempmail_base_url,
             "timeout": settings.tempmail_timeout,
             "max_retries": settings.tempmail_max_retries,
-        }
-
-    if service_type == EST.YYDS_MAIL:
-        settings = get_settings()
-        return {
-            "base_url": settings.yyds_mail_base_url,
-            "api_key": settings.yyds_mail_api_key.get_secret_value() if settings.yyds_mail_api_key else "",
-            "default_domain": settings.yyds_mail_default_domain,
-            "timeout": settings.yyds_mail_timeout,
-            "max_retries": settings.yyds_mail_max_retries,
         }
 
     if service_type == EST.MOE_MAIL:

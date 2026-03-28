@@ -84,7 +84,6 @@ a = Analysis(
         'src.core.utils',
         'src.services.base',
         'src.services.tempmail',
-        'src.services.yyds_mail',
         'src.services.moe_mail',
         'src.services.outlook',
         'src.services.outlook.account',

@@ -1,0 +1,41 @@
+{
+  "release_tag": "phase3_net_ui_20260326",
+  "created_at": "2026-03-26 10:37:30 +08:00",
+  "source_repo": "K:\\\\github\\\\codex-console2",
+  "target_bundle": "K:\\\\github\\\\codex-console2-win-test",
+  "summary": "Phase-3 network-resilience, anti-freeze polling, and purple-blue UI unification",
+  "files": [
+    {
+      "path": "static/js/utils.js",
+      "sha256": "E55A66BC898FF0882066612401F25E95DEAD095F26B1023D05A20BE3EF480B50"
+    },
+    {
+      "path": "static/js/app.js",
+      "sha256": "199E2545F721F69D6A572D0262D3881E8C8EDC74115A6CF75F40B43B76793070"
+    },
+    {
+      "path": "static/js/payment.js",
+      "sha256": "78B28B0DA417CD57D1A20DA834C7E4BD08E5231AE30F0EE10FC3E31FD40393DD"
+    },
+    {
+      "path": "static/js/accounts_overview.js",
+      "sha256": "366A74C2B53D62A351D712A4416959C74099326B4434285434BB4FE0AE5B1B30"
+    },
+    {
+      "path": "templates/index.html",
+      "sha256": "C6D88A37CF4C40C5CCFF11D35AB7E4D33C479E746C7B07E91629F2DEE4D2DAC9"
+    },
+    {
+      "path": "templates/payment.html",
+      "sha256": "E862A5C1F450077AA4ACC74F216D9C8237465DD9AA06EB0E81252BDA4A654D3F"
+    },
+    {
+      "path": "templates/auto_team.html",
+      "sha256": "9D13B3C940D2761A186C360A6897FE51D4DB7AB13F78AF3BAB60EEC4F4102D5A"
+    },
+    {
+      "path": "release/qa-phase3-2026-03-26.md",
+      "sha256": "BA3060B0189700F3B08DD260A819E720346560AB2CF777A6C7F16D6B9DAD5089"
+    }
+  ]
+}

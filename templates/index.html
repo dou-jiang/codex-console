@@ -88,6 +88,56 @@
             filter: blur(0);
         }
 
+        .recent-role-cell {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .recent-role-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 44px;
+            height: 22px;
+            padding: 0 8px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+            font-size: 0.75rem;
+            font-weight: 600;
+            line-height: 1;
+            white-space: nowrap;
+        }
+
+        .recent-role-badge.parent {
+            color: #4f46e5;
+            background: rgba(99, 102, 241, 0.14);
+            border-color: rgba(99, 102, 241, 0.32);
+        }
+
+        .recent-role-badge.child {
+            color: #1d4ed8;
+            background: rgba(59, 130, 246, 0.14);
+            border-color: rgba(59, 130, 246, 0.32);
+        }
+
+        .recent-role-badge.none {
+            color: #64748b;
+            background: rgba(148, 163, 184, 0.12);
+            border-color: rgba(148, 163, 184, 0.3);
+        }
+
+        .recent-role-select {
+            min-width: 66px;
+            height: 24px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--surface-color);
+            color: var(--text-primary);
+            font-size: 0.75rem;
+            padding: 0 6px;
+        }
+
         .today-stats-strip {
             width: 100%;
             margin-left: 0;
@@ -161,18 +211,18 @@
             color: var(--stat-color, #60a5fa);
         }
 
-        .today-stat-total { --stat-color: #60a5fa; }
-        .today-stat-success { --stat-color: #22c55e; }
+        .today-stat-total { --stat-color: var(--secondary-accent); }
+        .today-stat-success { --stat-color: var(--primary-color); }
         .today-stat-failed { --stat-color: #ef4444; }
         .today-stat-rate { --stat-color: #f59e0b; }
 
         .today-stat-rate .today-stat-value {
             font-size: clamp(1.7rem, 2.3vw, 2.05rem);
         }
-        .today-stat-rate .today-stat-value.rate-high { color: #22c55e; }
+        .today-stat-rate .today-stat-value.rate-high { color: var(--primary-color); }
         .today-stat-rate .today-stat-value.rate-low { color: #ef4444; }
         .today-stat-rate .today-stat-value.rate-mid { color: #f59e0b; }
-        .today-stat-rate.rate-high { --stat-color: #22c55e; }
+        .today-stat-rate.rate-high { --stat-color: var(--primary-color); }
         .today-stat-rate.rate-low { --stat-color: #ef4444; }
         .today-stat-rate.rate-mid { --stat-color: #f59e0b; }
 
@@ -240,7 +290,6 @@
     </style>
 </head>
 <body>
-    {% include "partials/site_notice.html" %}
     <div class="container">
         <!-- 导航栏 -->
         <nav class="navbar">
@@ -250,18 +299,18 @@
             <div class="nav-links">
                 <a href="/" class="nav-link active">注册</a>
                 <a href="/accounts" class="nav-link">账号管理</a>
-                <a href="/accounts-overview" class="nav-link">账号总览</a>
                 <a href="/email-services" class="nav-link">邮箱服务</a>
                 <a href="/payment" class="nav-link">支付</a>
                 <a href="/card-pool" class="nav-link">卡池</a>
-                <a href="/auto-team" class="nav-link">自动进team</a>
+                <a href="/auto-team" class="nav-link">team</a>
                 <a href="/logs" class="nav-link">后台日志</a>
                 <a href="/settings" class="nav-link">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
-            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">
-                🌙
-            </button>
+                        <div class="nav-actions">
+            <a href="/selfcheck" class="selfcheck-toggle" title="系统自检">⚙️</a>
+            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </div>
         </nav>
 
         <!-- 主内容区 - 两栏布局 -->
@@ -306,7 +355,6 @@
                                     <label for="email-service">邮箱服务</label>
                                     <select id="email-service" name="email_service" required>
                                         <option value="tempmail:default">Tempmail.lol (临时邮箱)</option>
-                                        <option value="yyds_mail:default">YYDS Mail</option>
                                         <option value="outlook">Outlook</option>
                                         <option value="moe_mail">MoeMail</option>
                                         <option value="temp_mail">Temp-Mail 自部署</option>
@@ -366,6 +414,15 @@
                                     <select id="reg-mode" name="reg_mode">
                                         <option value="single">单次注册</option>
                                         <option value="batch">批量注册</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group" id="registration-type-group">
+                                    <label for="registration-type">注册类型</label>
+                                    <select id="registration-type" name="registration_type">
+                                        <option value="none" selected>普通</option>
+                                        <option value="mother">母号</option>
+                                        <option value="child">子号</option>
                                     </select>
                                 </div>
 
@@ -518,6 +575,7 @@
                                             <th style="width: 50px;">ID</th>
                                             <th>邮箱</th>
                                             <th style="width: 120px;">密码</th>
+                                            <th style="width: 150px;">标签</th>
                                             <th style="width: 80px;">状态</th>
                                         </tr>
                                     </thead>
@@ -544,3 +602,10 @@
     <script src="/static/js/app.js?v={{ static_version }}"></script>
 </body>
 </html>
+
+
+
+
+
+
+
