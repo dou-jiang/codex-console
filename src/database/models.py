@@ -233,6 +233,22 @@ class TeamManagerService(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class NewApiService(Base):
+    """new-api 服务配置表"""
+    __tablename__ = 'new_api_services'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    api_url = Column(String(500), nullable=False)
+    username = Column(String(100))
+    password = Column(Text)
+    api_key = Column(Text, nullable=False, default='')
+    enabled = Column(Boolean, default=True)
+    priority = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ScheduledRegistrationJob(Base):
     """计划注册任务表"""
     __tablename__ = 'scheduled_registration_jobs'

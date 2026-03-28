@@ -105,6 +105,10 @@ function initEventListeners() {
     document.getElementById('batch-upload-cpa-item').addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadCpa(); });
     document.getElementById('batch-upload-sub2api-item').addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadSub2Api(); });
     document.getElementById('batch-upload-tm-item').addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadTm(); });
+    const batchUploadNewApiItem = document.getElementById('batch-upload-new-api-item');
+    if (batchUploadNewApiItem) {
+        batchUploadNewApiItem.addEventListener('click', (e) => { e.preventDefault(); uploadMenu.classList.remove('active'); handleBatchUploadNewApi(); });
+    }
 
     // 批量删除
     elements.batchDeleteBtn.addEventListener('click', handleBatchDelete);
@@ -913,6 +917,7 @@ async function uploadAccount(id) {
         { label: '☁️ 上传到 CPA', value: 'cpa' },
         { label: '🔗 上传到 Sub2API', value: 'sub2api' },
         { label: '🚀 上传到 Team Manager', value: 'tm' },
+        { label: '🆕 上传到 new-api', value: 'new-api' },
     ];
 
     const choice = await new Promise((resolve) => {
@@ -942,6 +947,7 @@ async function uploadAccount(id) {
     if (choice === 'cpa') return uploadToCpa(id);
     if (choice === 'sub2api') return uploadToSub2Api(id);
     if (choice === 'tm') return uploadToTm(id);
+    if (choice === 'new-api') return uploadToNewApi(id);
 }
 
 // 上传单个账号到CPA
@@ -1138,6 +1144,97 @@ async function handleBatchUploadSub2Api() {
         loadAccounts();
     } catch (error) {
         toast.error('批量上传失败: ' + error.message);
+    } finally {
+        updateBatchButtons();
+    }
+}
+
+// ============== new-api 上传 ==============
+
+function selectNewApiService() {
+    return new Promise(async (resolve) => {
+        const services = await api.get('/new-api-services?enabled=true').catch(() => []);
+        if (!services || services.length === 0) {
+            toast.warning('暂无已启用的 new-api 服务');
+            resolve(null);
+            return;
+        }
+        if (services.length === 1) {
+            resolve({ service_id: services[0].id });
+            return;
+        }
+
+        const modal = document.createElement('div');
+        modal.className = 'modal active';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width:420px;">
+                <div class="modal-header">
+                    <h3>🆕 选择 new-api 服务</h3>
+                    <button class="modal-close" id="_newapi-close">&times;</button>
+                </div>
+                <div class="modal-body" style="display:flex;flex-direction:column;gap:8px;">
+                    ${services.map(s => `
+                        <button class="btn btn-secondary" data-val="${s.id}" style="text-align:left;">
+                            ${escapeHtml(s.name)}
+                        </button>
+                    `).join('')}
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+        modal.querySelector('#_newapi-close').addEventListener('click', () => { modal.remove(); resolve(null); });
+        modal.addEventListener('click', (e) => { if (e.target === modal) { modal.remove(); resolve(null); } });
+        modal.querySelectorAll('button[data-val]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                modal.remove();
+                resolve({ service_id: parseInt(btn.dataset.val) });
+            });
+        });
+    });
+}
+
+async function uploadToNewApi(id) {
+    const choice = await selectNewApiService();
+    if (choice === null) return;
+    try {
+        toast.info('正在上传到 new-api...');
+        const payload = {};
+        if (choice.service_id != null) payload.service_id = choice.service_id;
+        const result = await api.post(`/accounts/${id}/upload-new-api`, payload);
+        if (result.success) {
+            toast.success(result.message || '上传成功');
+            loadAccounts();
+        } else {
+            toast.error('上传失败: ' + (result.error || result.message || '未知错误'));
+        }
+    } catch (e) {
+        toast.error('上传失败: ' + e.message);
+    }
+}
+
+async function handleBatchUploadNewApi() {
+    const count = getEffectiveCount();
+    if (count === 0) return;
+
+    const choice = await selectNewApiService();
+    if (choice === null) return;
+
+    const confirmed = await confirm(`确定要将选中的 ${count} 个账号上传到 new-api 吗？`);
+    if (!confirmed) return;
+
+    elements.batchUploadBtn.disabled = true;
+    elements.batchUploadBtn.textContent = '上传中...';
+
+    try {
+        const payload = buildBatchPayload();
+        if (choice.service_id != null) payload.service_id = choice.service_id;
+        const result = await api.post('/accounts/batch-upload-new-api', payload);
+        let message = `成功: ${result.success_count}`;
+        if (result.failed_count > 0) message += `, 失败: ${result.failed_count}`;
+        if (result.skipped_count > 0) message += `, 跳过: ${result.skipped_count}`;
+        toast.success(message);
+        loadAccounts();
+    } catch (e) {
+        toast.error('批量上传失败: ' + e.message);
     } finally {
         updateBatchButtons();
     }

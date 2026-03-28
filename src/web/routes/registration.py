@@ -73,11 +73,13 @@ class RegistrationTaskCreate(BaseModel):
     email_service_config: Optional[dict] = None
     email_service_id: Optional[int] = None
     auto_upload_cpa: bool = False
-    cpa_service_ids: List[int] = []  # 指定 CPA 服务 ID 列表，空则取第一个启用的
+    cpa_service_ids: List[int] = []
     auto_upload_sub2api: bool = False
-    sub2api_service_ids: List[int] = []  # 指定 Sub2API 服务 ID 列表
+    sub2api_service_ids: List[int] = []
     auto_upload_tm: bool = False
-    tm_service_ids: List[int] = []  # 指定 TM 服务 ID 列表
+    tm_service_ids: List[int] = []
+    auto_upload_new_api: bool = False
+    new_api_service_ids: List[int] = []
 
 
 class BatchRegistrationRequest(BaseModel):
@@ -97,6 +99,8 @@ class BatchRegistrationRequest(BaseModel):
     sub2api_service_ids: List[int] = []
     auto_upload_tm: bool = False
     tm_service_ids: List[int] = []
+    auto_upload_new_api: bool = False
+    new_api_service_ids: List[int] = []
 
 
 class RegistrationTaskResponse(BaseModel):
@@ -165,6 +169,8 @@ class OutlookBatchRegistrationRequest(BaseModel):
     sub2api_service_ids: List[int] = []
     auto_upload_tm: bool = False
     tm_service_ids: List[int] = []
+    auto_upload_new_api: bool = False
+    new_api_service_ids: List[int] = []
 
 
 class OutlookBatchRegistrationResponse(BaseModel):
@@ -297,7 +303,7 @@ def _normalize_email_service_config(
     return normalized
 
 
-def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
+def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, auto_upload_new_api: bool = False, new_api_service_ids: List[int] = None):
     """
     在线程池中执行的同步注册任务
 
@@ -584,6 +590,35 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     except Exception as tm_err:
                         log_callback(f"[TM] 上传异常: {tm_err}")
 
+                if auto_upload_new_api:
+                    try:
+                        from ...core.upload.new_api_upload import upload_to_new_api
+                        from ...database.models import Account as AccountModel
+                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
+                        if saved_account and saved_account.access_token:
+                            _new_api_ids = new_api_service_ids or []
+                            if not _new_api_ids:
+                                _new_api_ids = [s.id for s in crud.get_new_api_services(db, enabled=True)]
+                            if not _new_api_ids:
+                                log_callback("[NewAPI] 无可用 new-api 服务，跳过上传")
+                            for _sid in _new_api_ids:
+                                try:
+                                    _svc = crud.get_new_api_service_by_id(db, _sid)
+                                    if not _svc:
+                                        continue
+                                    log_callback(f"[NewAPI] 正在把账号发往服务站: {_svc.name}")
+                                    _ok, _msg = upload_to_new_api(
+                                        [saved_account],
+                                        _svc.api_url,
+                                        getattr(_svc, 'username', None),
+                                        getattr(_svc, 'password', None),
+                                    )
+                                    log_callback(f"[NewAPI] {'成功' if _ok else '失败'}({_svc.name}): {_msg}")
+                                except Exception as _e:
+                                    log_callback(f"[NewAPI] 异常({_sid}): {_e}")
+                    except Exception as new_api_err:
+                        log_callback(f"[NewAPI] 上传异常: {new_api_err}")
+
                 # 更新任务状态
                 crud.update_registration_task(
                     db, task_uuid,
@@ -628,7 +663,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 pass
 
 
-async def run_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
+async def run_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, auto_upload_new_api: bool = False, new_api_service_ids: List[int] = None):
     """
     异步执行注册任务
 
@@ -661,6 +696,8 @@ async def run_registration_task(task_uuid: str, email_service_type: str, proxy: 
             sub2api_service_ids or [],
             auto_upload_tm,
             tm_service_ids or [],
+            auto_upload_new_api,
+            new_api_service_ids or [],
         )
     except Exception as e:
         logger.error(f"线程池执行异常: {task_uuid}, 错误: {e}")
@@ -713,6 +750,8 @@ async def run_batch_parallel(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    auto_upload_new_api: bool = False,
+    new_api_service_ids: List[int] = None,
 ):
     """
     并行模式：所有任务同时提交，Semaphore 控制最大并发数
@@ -732,6 +771,7 @@ async def run_batch_parallel(
                 auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids or [],
                 auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids or [],
                 auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids or [],
+                auto_upload_new_api=auto_upload_new_api, new_api_service_ids=new_api_service_ids or [],
             )
         with get_db() as db:
             t = crud.get_registration_task(db, uuid)
@@ -779,6 +819,8 @@ async def run_batch_pipeline(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    auto_upload_new_api: bool = False,
+    new_api_service_ids: List[int] = None,
 ):
     """
     流水线模式：每隔 interval 秒启动一个新任务，Semaphore 限制最大并发数
@@ -798,6 +840,7 @@ async def run_batch_pipeline(
                 auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids or [],
                 auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids or [],
                 auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids or [],
+                auto_upload_new_api=auto_upload_new_api, new_api_service_ids=new_api_service_ids or [],
             )
             with get_db() as db:
                 t = crud.get_registration_task(db, uuid)
@@ -869,6 +912,8 @@ async def run_batch_registration(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    auto_upload_new_api: bool = False,
+    new_api_service_ids: List[int] = None,
 ):
     """根据 mode 分发到并行或流水线执行"""
     if mode == "parallel":
@@ -878,6 +923,7 @@ async def run_batch_registration(
             auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids,
             auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids,
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
+            auto_upload_new_api=auto_upload_new_api, new_api_service_ids=new_api_service_ids,
         )
     else:
         await run_batch_pipeline(
@@ -887,6 +933,7 @@ async def run_batch_registration(
             auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids,
             auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids,
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
+            auto_upload_new_api=auto_upload_new_api, new_api_service_ids=new_api_service_ids,
         )
 
 
@@ -945,6 +992,8 @@ async def _start_single_registration_internal(
         request.sub2api_service_ids,
         request.auto_upload_tm,
         request.tm_service_ids,
+        request.auto_upload_new_api,
+        request.new_api_service_ids,
     )
     return task_to_response(task)
 
@@ -1003,6 +1052,8 @@ async def _start_batch_registration_internal(
         request.sub2api_service_ids,
         request.auto_upload_tm,
         request.tm_service_ids,
+        request.auto_upload_new_api,
+        request.new_api_service_ids,
     )
 
     return BatchRegistrationResponse(
@@ -1093,6 +1144,8 @@ async def _start_outlook_batch_registration_internal(
         request.sub2api_service_ids,
         request.auto_upload_tm,
         request.tm_service_ids,
+        request.auto_upload_new_api,
+        request.new_api_service_ids,
     )
 
     return OutlookBatchRegistrationResponse(
@@ -1130,6 +1183,8 @@ async def dispatch_registration_config(
             sub2api_service_ids=config.get('sub2api_service_ids') or [],
             auto_upload_tm=bool(config.get('auto_upload_tm', False)),
             tm_service_ids=config.get('tm_service_ids') or [],
+            auto_upload_new_api=bool(config.get('auto_upload_new_api', False)),
+            new_api_service_ids=config.get('new_api_service_ids') or [],
         )
         response = await _start_outlook_batch_registration_internal(request, background_tasks)
         return {
@@ -1157,6 +1212,8 @@ async def dispatch_registration_config(
             sub2api_service_ids=config.get('sub2api_service_ids') or [],
             auto_upload_tm=bool(config.get('auto_upload_tm', False)),
             tm_service_ids=config.get('tm_service_ids') or [],
+            auto_upload_new_api=bool(config.get('auto_upload_new_api', False)),
+            new_api_service_ids=config.get('new_api_service_ids') or [],
         )
         response = await _start_batch_registration_internal(request, background_tasks)
         return {
@@ -1176,6 +1233,8 @@ async def dispatch_registration_config(
         sub2api_service_ids=config.get('sub2api_service_ids') or [],
         auto_upload_tm=bool(config.get('auto_upload_tm', False)),
         tm_service_ids=config.get('tm_service_ids') or [],
+        auto_upload_new_api=bool(config.get('auto_upload_new_api', False)),
+        new_api_service_ids=config.get('new_api_service_ids') or [],
     )
     response = await _start_single_registration_internal(request, background_tasks)
     return {
@@ -1673,6 +1732,8 @@ async def run_outlook_batch_registration(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    auto_upload_new_api: bool = False,
+    new_api_service_ids: List[int] = None,
 ):
     """
     异步执行 Outlook 批量注册任务，复用通用并发逻辑
@@ -1716,6 +1777,8 @@ async def run_outlook_batch_registration(
         sub2api_service_ids=sub2api_service_ids,
         auto_upload_tm=auto_upload_tm,
         tm_service_ids=tm_service_ids,
+        auto_upload_new_api=auto_upload_new_api,
+        new_api_service_ids=new_api_service_ids,
     )
 
 

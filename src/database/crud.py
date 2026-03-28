@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, asc, func
 
-from .models import Account, EmailService, RegistrationTask, Setting, Proxy, CpaService, Sub2ApiService, TeamManagerService, ScheduledRegistrationJob
+from .models import Account, EmailService, RegistrationTask, Setting, Proxy, CpaService, Sub2ApiService, TeamManagerService, NewApiService, ScheduledRegistrationJob
 
 
 # ============================================================================
@@ -599,7 +599,6 @@ def create_sub2api_service(
     name: str,
     api_url: str,
     api_key: str,
-    target_type: str = 'sub2api',
     enabled: bool = True,
     priority: int = 0
 ) -> Sub2ApiService:
@@ -709,6 +708,71 @@ def update_tm_service(db: Session, service_id: int, **kwargs):
 def delete_tm_service(db: Session, service_id: int) -> bool:
     """删除 Team Manager 服务配置"""
     svc = get_tm_service_by_id(db, service_id)
+    if not svc:
+        return False
+    db.delete(svc)
+    db.commit()
+    return True
+
+
+# ============================================================================
+# new-api 服务 CRUD
+# ============================================================================
+
+def create_new_api_service(
+    db: Session,
+    name: str,
+    api_url: str,
+    username: str,
+    password: str,
+    enabled: bool = True,
+    priority: int = 0,
+) -> NewApiService:
+    """创建 new-api 服务配置"""
+    svc = NewApiService(
+        name=name,
+        api_url=api_url,
+        username=username,
+        password=password,
+        api_key='',
+        enabled=enabled,
+        priority=priority,
+    )
+    db.add(svc)
+    db.commit()
+    db.refresh(svc)
+    return svc
+
+
+def get_new_api_service_by_id(db: Session, service_id: int) -> Optional[NewApiService]:
+    """按 ID 获取 new-api 服务"""
+    return db.query(NewApiService).filter(NewApiService.id == service_id).first()
+
+
+def get_new_api_services(db: Session, enabled: Optional[bool] = None) -> List[NewApiService]:
+    """获取 new-api 服务列表"""
+    query = db.query(NewApiService)
+    if enabled is not None:
+        query = query.filter(NewApiService.enabled == enabled)
+    return query.order_by(asc(NewApiService.priority), asc(NewApiService.id)).all()
+
+
+def update_new_api_service(db: Session, service_id: int, **kwargs) -> Optional[NewApiService]:
+    """更新 new-api 服务配置"""
+    svc = get_new_api_service_by_id(db, service_id)
+    if not svc:
+        return None
+    for key, value in kwargs.items():
+        if hasattr(svc, key):
+            setattr(svc, key, value)
+    db.commit()
+    db.refresh(svc)
+    return svc
+
+
+def delete_new_api_service(db: Session, service_id: int) -> bool:
+    """删除 new-api 服务配置"""
+    svc = get_new_api_service_by_id(db, service_id)
     if not svc:
         return False
     db.delete(svc)

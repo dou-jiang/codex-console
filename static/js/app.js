@@ -114,6 +114,9 @@ const elements = {
     autoUploadTm: document.getElementById('auto-upload-tm'),
     tmServiceSelectGroup: document.getElementById('tm-service-select-group'),
     tmServiceSelect: document.getElementById('tm-service-select'),
+    autoUploadNewApi: document.getElementById('auto-upload-new-api'),
+    newApiServiceSelectGroup: document.getElementById('new-api-service-select-group'),
+    newApiServiceSelect: document.getElementById('new-api-service-select'),
     scheduleForm: document.getElementById('schedule-form'),
     scheduleName: document.getElementById('schedule-name'),
     scheduleTriggerType: document.getElementById('schedule-trigger-type'),
@@ -146,12 +149,13 @@ document.addEventListener('DOMContentLoaded', () => {
     loadScheduledJobs();
 });
 
-// 初始化注册后自动操作选项（CPA / Sub2API / TM）
+// 初始化注册后自动操作选项（CPA / Sub2API / TM / new-api）
 async function initAutoUploadOptions() {
     await Promise.all([
         loadServiceSelect('/cpa-services?enabled=true', elements.cpaServiceSelect, elements.autoUploadCpa, elements.cpaServiceSelectGroup),
         loadServiceSelect('/sub2api-services?enabled=true', elements.sub2apiServiceSelect, elements.autoUploadSub2api, elements.sub2apiServiceSelectGroup),
         loadServiceSelect('/tm-services?enabled=true', elements.tmServiceSelect, elements.autoUploadTm, elements.tmServiceSelectGroup),
+        loadServiceSelect('/new-api-services?enabled=true', elements.newApiServiceSelect, elements.autoUploadNewApi, elements.newApiServiceSelectGroup),
     ]);
 }
 
@@ -548,6 +552,8 @@ function buildCurrentRegistrationConfig() {
         sub2api_service_ids: elements.autoUploadSub2api && elements.autoUploadSub2api.checked ? getSelectedServiceIds(elements.sub2apiServiceSelect) : [],
         auto_upload_tm: elements.autoUploadTm ? elements.autoUploadTm.checked : false,
         tm_service_ids: elements.autoUploadTm && elements.autoUploadTm.checked ? getSelectedServiceIds(elements.tmServiceSelect) : [],
+        auto_upload_new_api: elements.autoUploadNewApi ? elements.autoUploadNewApi.checked : false,
+        new_api_service_ids: elements.autoUploadNewApi && elements.autoUploadNewApi.checked ? getSelectedServiceIds(elements.newApiServiceSelect) : [],
     };
 
     if (isOutlookBatchMode) {
@@ -677,10 +683,17 @@ function setRegistrationConfigToForm(config) {
     elements.sub2apiServiceSelectGroup.style.display = elements.autoUploadSub2api.checked ? 'block' : 'none';
     elements.autoUploadTm.checked = !!registrationConfig.auto_upload_tm;
     elements.tmServiceSelectGroup.style.display = elements.autoUploadTm.checked ? 'block' : 'none';
+    if (elements.autoUploadNewApi) {
+        elements.autoUploadNewApi.checked = !!registrationConfig.auto_upload_new_api;
+    }
+    if (elements.newApiServiceSelectGroup && elements.autoUploadNewApi) {
+        elements.newApiServiceSelectGroup.style.display = elements.autoUploadNewApi.checked ? 'block' : 'none';
+    }
 
     setSelectedServiceIds(elements.cpaServiceSelect, registrationConfig.cpa_service_ids || []);
     setSelectedServiceIds(elements.sub2apiServiceSelect, registrationConfig.sub2api_service_ids || []);
     setSelectedServiceIds(elements.tmServiceSelect, registrationConfig.tm_service_ids || []);
+    setSelectedServiceIds(elements.newApiServiceSelect, registrationConfig.new_api_service_ids || []);
 
     if (emailServiceType === 'outlook_batch') {
         isOutlookBatchMode = true;
@@ -1762,6 +1775,8 @@ async function handleOutlookBatchRegistration() {
         sub2api_service_ids: elements.autoUploadSub2api && elements.autoUploadSub2api.checked ? getSelectedServiceIds(elements.sub2apiServiceSelect) : [],
         auto_upload_tm: elements.autoUploadTm ? elements.autoUploadTm.checked : false,
         tm_service_ids: elements.autoUploadTm && elements.autoUploadTm.checked ? getSelectedServiceIds(elements.tmServiceSelect) : [],
+        auto_upload_new_api: elements.autoUploadNewApi ? elements.autoUploadNewApi.checked : false,
+        new_api_service_ids: elements.autoUploadNewApi && elements.autoUploadNewApi.checked ? getSelectedServiceIds(elements.newApiServiceSelect) : [],
     };
 
     addLog('info', `[系统] 正在启动 Outlook 批量注册 (${selectedIds.length} 个账户)...`);
