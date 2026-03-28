@@ -11,6 +11,7 @@ from typing import Dict, Optional, Any
 
 from curl_cffi import requests as _requests
 
+from ...core.dynamic_proxy import get_effective_proxy_url
 from .base import ProviderType, TokenEndpoint, TokenInfo
 from .account import OutlookAccount
 
@@ -151,16 +152,14 @@ class TokenManager:
             "Accept": "application/json",
         }
 
-        proxies = None
-        if self.proxy_url:
-            proxies = {"http": self.proxy_url, "https": self.proxy_url}
+        proxy_url = get_effective_proxy_url(self.proxy_url)
 
         try:
             resp = _requests.post(
                 self.token_url,
                 data=data,
                 headers=headers,
-                proxies=proxies,
+                proxy=proxy_url,
                 timeout=self.timeout,
                 impersonate="chrome110",
             )

@@ -4,13 +4,48 @@
 """
 
 import logging
-import re
 from typing import Optional
+
+from ..config.settings import build_proxy_mapping, get_settings, normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
 
-def fetch_dynamic_proxy(api_url: str, api_key: str = "", api_key_header: str = "X-API-Key", result_field: str = "") -> Optional[str]:
+def get_effective_proxy_url(proxy_url: Optional[str] = None, prefer_dynamic: bool = False) -> Optional[str]:
+    explicit_proxy_url = normalize_proxy_url(proxy_url)
+    if explicit_proxy_url:
+        return explicit_proxy_url
+
+    settings = get_settings()
+
+    if prefer_dynamic and settings.proxy_dynamic_enabled and settings.proxy_dynamic_api_url:
+        api_key = settings.proxy_dynamic_api_key.get_secret_value() if settings.proxy_dynamic_api_key else ""
+        dynamic_proxy_url = fetch_dynamic_proxy(
+            api_url=settings.proxy_dynamic_api_url,
+            api_key=api_key,
+            api_key_header=settings.proxy_dynamic_api_key_header,
+            result_field=settings.proxy_dynamic_result_field,
+            proxy_url=settings.effective_proxy_url,
+        )
+        if dynamic_proxy_url:
+            return dynamic_proxy_url
+
+        logger.warning("动态代理获取失败，回退到静态/系统代理")
+
+    return settings.effective_proxy_url
+
+
+def get_effective_proxy_mapping(proxy_url: Optional[str] = None, prefer_dynamic: bool = False) -> Optional[dict[str, str]]:
+    return build_proxy_mapping(get_effective_proxy_url(proxy_url=proxy_url, prefer_dynamic=prefer_dynamic))
+
+
+def fetch_dynamic_proxy(
+    api_url: str,
+    api_key: str = "",
+    api_key_header: str = "X-API-Key",
+    result_field: str = "",
+    proxy_url: Optional[str] = None,
+) -> Optional[str]:
     """
     从代理 API 获取代理 URL
 
@@ -33,6 +68,7 @@ def fetch_dynamic_proxy(api_url: str, api_key: str = "", api_key_header: str = "
         response = cffi_requests.get(
             api_url,
             headers=headers,
+            proxy=normalize_proxy_url(proxy_url),
             timeout=10,
             impersonate="chrome110"
         )
@@ -79,8 +115,10 @@ def fetch_dynamic_proxy(api_url: str, api_key: str = "", api_key_header: str = "
             return None
 
         # 若未包含协议头，默认加 http://
-        if not re.match(r'^(http|socks5)://', proxy_url):
-            proxy_url = "http://" + proxy_url
+        proxy_url = normalize_proxy_url(proxy_url)
+        if not proxy_url:
+            logger.warning("动态代理 URL 标准化失败")
+            return None
 
         logger.info(f"动态代理获取成功: {proxy_url[:40]}..." if len(proxy_url) > 40 else f"动态代理获取成功: {proxy_url}")
         return proxy_url
@@ -98,21 +136,4 @@ def get_proxy_url_for_task() -> Optional[str]:
     Returns:
         代理 URL 或 None
     """
-    from ..config.settings import get_settings
-    settings = get_settings()
-
-    # 优先使用动态代理
-    if settings.proxy_dynamic_enabled and settings.proxy_dynamic_api_url:
-        api_key = settings.proxy_dynamic_api_key.get_secret_value() if settings.proxy_dynamic_api_key else ""
-        proxy_url = fetch_dynamic_proxy(
-            api_url=settings.proxy_dynamic_api_url,
-            api_key=api_key,
-            api_key_header=settings.proxy_dynamic_api_key_header,
-            result_field=settings.proxy_dynamic_result_field,
-        )
-        if proxy_url:
-            return proxy_url
-        logger.warning("动态代理获取失败，回退到静态代理")
-
-    # 使用静态代理
-    return settings.proxy_url
+    return get_effective_proxy_url(prefer_dynamic=True)

@@ -11,9 +11,11 @@ import logging
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests import Session, Response
+from curl_cffi.requests.impersonate import BrowserTypeLiteral
+from curl_cffi.requests.session import HttpMethod
 
 from ..config.constants import ERROR_MESSAGES
-from ..config.settings import get_settings
+from .dynamic_proxy import get_effective_proxy_mapping
 from .openai.sentinel import SentinelPOWError, build_sentinel_pow_token
 
 
@@ -26,7 +28,7 @@ class RequestConfig:
     timeout: int = 30
     max_retries: int = 3
     retry_delay: float = 1.0
-    impersonate: str = "chrome"
+    impersonate: BrowserTypeLiteral = "chrome"
     verify_ssl: bool = True
     follow_redirects: bool = True
 
@@ -61,21 +63,20 @@ class HTTPClient:
         self._session = session
 
     @property
-    def proxies(self) -> Optional[Dict[str, str]]:
+    def proxies(self) -> Optional[dict[str, str]]:
         """获取代理配置"""
-        if not self.proxy_url:
-            return None
-        return {
-            "http": self.proxy_url,
-            "https": self.proxy_url,
-        }
+        return get_effective_proxy_mapping(self.proxy_url)
+
+    @property
+    def proxy(self) -> Optional[str]:
+        return self.proxies["https"] if self.proxies else None
 
     @property
     def session(self) -> Session:
         """获取会话对象（单例）"""
         if self._session is None:
             self._session = Session(
-                proxies=self.proxies,
+                proxy=self.proxy,
                 impersonate=self.config.impersonate,
                 verify=self.config.verify_ssl,
                 timeout=self.config.timeout
@@ -84,7 +85,7 @@ class HTTPClient:
 
     def request(
         self,
-        method: str,
+        method: HttpMethod,
         url: str,
         **kwargs
     ) -> Response:
@@ -107,8 +108,8 @@ class HTTPClient:
         kwargs.setdefault("allow_redirects", self.config.follow_redirects)
 
         # 添加代理配置
-        if self.proxies and "proxies" not in kwargs:
-            kwargs["proxies"] = self.proxies
+        if self.proxy and "proxy" not in kwargs and "proxies" not in kwargs:
+            kwargs["proxy"] = self.proxy
 
         last_exception = None
         for attempt in range(self.config.max_retries):
@@ -294,7 +295,7 @@ class OpenAIHTTPClient(HTTPClient):
     def send_openai_request(
         self,
         endpoint: str,
-        method: str = "POST",
+        method: HttpMethod = "POST",
         data: Optional[Dict[str, Any]] = None,
         json_data: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,

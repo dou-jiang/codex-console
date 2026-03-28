@@ -10,6 +10,7 @@ from datetime import datetime
 
 from curl_cffi import requests as _requests
 
+from ....core.dynamic_proxy import get_effective_proxy_url
 from ..base import ProviderType, EmailMessage
 from ..account import OutlookAccount
 from ..token_manager import TokenManager
@@ -106,8 +107,12 @@ class GraphAPIProvider(OutlookProvider):
                 return []
 
         try:
-            # 获取 Access Token
-            token = self._token_manager.get_access_token()
+            token_manager = self._token_manager
+            if token_manager is None:
+                self.record_failure("Token 管理器未初始化")
+                return []
+
+            token = token_manager.get_access_token()
             if not token:
                 self.record_failure("无法获取 Access Token")
                 return []
@@ -126,9 +131,7 @@ class GraphAPIProvider(OutlookProvider):
                 params["$filter"] = "isRead eq false"
 
             # 构建代理配置
-            proxies = None
-            if self.config.proxy_url:
-                proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url}
+            proxy_url = get_effective_proxy_url(self.config.proxy_url)
 
             # 发送请求（curl_cffi 自动对 params 进行 URL 编码）
             resp = _requests.get(
@@ -139,7 +142,7 @@ class GraphAPIProvider(OutlookProvider):
                     "Accept": "application/json",
                     "Prefer": "outlook.body-content-type='text'",
                 },
-                proxies=proxies,
+                proxy=proxy_url,
                 timeout=self.config.timeout,
                 impersonate="chrome110",
             )

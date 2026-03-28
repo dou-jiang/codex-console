@@ -10,6 +10,8 @@ import random
 import string
 from typing import Optional, Dict, Any, List
 
+from curl_cffi.requests.session import HttpMethod
+
 from .base import BaseEmailService, EmailServiceError, EmailServiceType
 from ..core.http_client import HTTPClient, RequestConfig
 from ..config.constants import OTP_CODE_PATTERN
@@ -23,7 +25,7 @@ class FreemailService(BaseEmailService):
     基于自部署 Cloudflare Worker 的临时邮箱
     """
 
-    def __init__(self, config: Dict[str, Any] = None, name: str = None):
+    def __init__(self, config: Dict[str, Any] | None = None, name: str = ""):
         """
         初始化 Freemail 服务
 
@@ -36,7 +38,7 @@ class FreemailService(BaseEmailService):
                 - max_retries: 最大重试次数，默认 3
             name: 服务名称
         """
-        super().__init__(EmailServiceType.FREEMAIL, name)
+        super().__init__(EmailServiceType.FREEMAIL, name or "")
 
         required_keys = ["base_url", "admin_token"]
         missing_keys = [key for key in required_keys if not (config or {}).get(key)]
@@ -56,8 +58,9 @@ class FreemailService(BaseEmailService):
         )
         self.http_client = HTTPClient(proxy_url=None, config=http_config)
 
-        # 缓存 domain 列表
         self._domains = []
+        self._consumed_mail_ids: Dict[str, set[str]] = {}
+        self._consumed_codes: Dict[str, set[str]] = {}
 
     def _get_headers(self) -> Dict[str, str]:
         """构造 admin 请求头"""
@@ -67,7 +70,7 @@ class FreemailService(BaseEmailService):
             "Accept": "application/json",
         }
 
-    def _make_request(self, method: str, path: str, **kwargs) -> Any:
+    def _make_request(self, method: HttpMethod, path: str, **kwargs) -> Any:
         """
         发送请求并返回 JSON 数据
 
@@ -120,7 +123,7 @@ class FreemailService(BaseEmailService):
             except Exception as e:
                 logger.warning(f"获取 Freemail 域名列表失败: {e}")
 
-    def create_email(self, config: Dict[str, Any] = None) -> Dict[str, Any]:
+    def create_email(self, config: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """
         通过 API 创建临时邮箱
 
@@ -180,7 +183,7 @@ class FreemailService(BaseEmailService):
     def get_verification_code(
         self,
         email: str,
-        email_id: str = None,
+        email_id: Optional[str] = None,
         timeout: int = 120,
         pattern: str = OTP_CODE_PATTERN,
         otp_sent_at: Optional[float] = None,
@@ -193,7 +196,7 @@ class FreemailService(BaseEmailService):
             email_id: 未使用，保留接口兼容
             timeout: 超时时间（秒）
             pattern: 验证码正则
-            otp_sent_at: OTP 发送时间戳（暂未使用）
+            otp_sent_at: OTP 发送时间戳，用于过滤旧邮件
 
         Returns:
             验证码字符串，超时返回 None
@@ -201,7 +204,9 @@ class FreemailService(BaseEmailService):
         logger.info(f"正在从 Freemail 邮箱 {email} 获取验证码...")
 
         start_time = time.time()
-        seen_mail_ids: set = set()
+        seen_mail_ids: set[str] = set()
+        consumed_mail_ids = self._consumed_mail_ids.setdefault(email, set())
+        consumed_codes = self._consumed_codes.setdefault(email, set())
 
         while time.time() - start_time < timeout:
             try:
@@ -211,8 +216,8 @@ class FreemailService(BaseEmailService):
                     continue
 
                 for mail in mails:
-                    mail_id = mail.get("id")
-                    if not mail_id or mail_id in seen_mail_ids:
+                    mail_id = str(mail.get("id") or "").strip()
+                    if not mail_id or mail_id in seen_mail_ids or mail_id in consumed_mail_ids:
                         continue
 
                     seen_mail_ids.add(mail_id)
@@ -227,8 +232,10 @@ class FreemailService(BaseEmailService):
                         continue
 
                     # 尝试直接使用 Freemail 提取的验证码
-                    v_code = mail.get("verification_code")
-                    if v_code:
+                    v_code = str(mail.get("verification_code") or "").strip()
+                    if v_code and v_code not in consumed_codes:
+                        consumed_mail_ids.add(mail_id)
+                        consumed_codes.add(v_code)
                         logger.info(f"从 Freemail 邮箱 {email} 找到验证码: {v_code}")
                         self.update_status(True)
                         return v_code
@@ -237,6 +244,10 @@ class FreemailService(BaseEmailService):
                     match = re.search(pattern, content)
                     if match:
                         code = match.group(1)
+                        if code in consumed_codes:
+                            continue
+                        consumed_mail_ids.add(mail_id)
+                        consumed_codes.add(code)
                         logger.info(f"从 Freemail 邮箱 {email} 找到验证码: {code}")
                         self.update_status(True)
                         return code
@@ -248,6 +259,10 @@ class FreemailService(BaseEmailService):
                         match = re.search(pattern, full_content)
                         if match:
                             code = match.group(1)
+                            if code in consumed_codes:
+                                continue
+                            consumed_mail_ids.add(mail_id)
+                            consumed_codes.add(code)
                             logger.info(f"从 Freemail 邮箱 {email} 找到验证码: {code}")
                             self.update_status(True)
                             return code

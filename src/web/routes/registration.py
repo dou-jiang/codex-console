@@ -339,7 +339,10 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                             logger.info(f"跳过已注册的 Outlook 账户: {email}")
 
                     if selected_service and selected_service.config:
-                        config = selected_service.config.copy()
+                        # Ensure we pass a plain dict to the normalizer to satisfy
+                        # runtime and static type expectations.
+                        stored_cfg = dict(selected_service.config or {})
+                        config = _normalize_email_service_config(service_type, stored_cfg, actual_proxy_url)
                         crud.update_registration_task(db, task_uuid, email_service_id=selected_service.id)
                         logger.info(f"使用数据库 Outlook 账户: {selected_service.name}")
                     else:

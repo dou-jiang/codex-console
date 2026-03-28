@@ -10,6 +10,7 @@ from email.header import decode_header
 from email.utils import parsedate_to_datetime
 from typing import List, Optional
 
+from src.services.imap_proxy import create_imap_client
 from ..base import ProviderType, EmailMessage
 from ..account import OutlookAccount
 from ..token_manager import TokenManager
@@ -43,7 +44,7 @@ class IMAPNewProvider(OutlookProvider):
         super().__init__(account, config)
 
         # IMAP 连接
-        self._conn: Optional[imaplib.IMAP4_SSL] = None
+        self._conn: Optional[imaplib.IMAP4] = None
 
         # Token 管理器
         self._token_manager: Optional[TokenManager] = None
@@ -78,10 +79,12 @@ class IMAPNewProvider(OutlookProvider):
             logger.debug(f"[{self.account.email}] 正在连接 IMAP ({self.IMAP_HOST})...")
 
             # 创建连接
-            self._conn = imaplib.IMAP4_SSL(
+            self._conn = create_imap_client(
                 self.IMAP_HOST,
                 self.IMAP_PORT,
+                use_ssl=True,
                 timeout=self.config.timeout,
+                proxy_url=self.config.proxy_url,
             )
 
             # XOAUTH2 认证
@@ -121,9 +124,14 @@ class IMAPNewProvider(OutlookProvider):
             return False
 
         try:
+            conn = self._conn
+            if conn is None:
+                return False
+            assert conn is not None
+
             # 构建 XOAUTH2 认证字符串
             auth_string = f"user={self.account.email}\x01auth=Bearer {token}\x01\x01"
-            self._conn.authenticate("XOAUTH2", lambda _: auth_string.encode("utf-8"))
+            conn.authenticate("XOAUTH2", lambda _: auth_string.encode("utf-8"))
             return True
         except Exception as e:
             logger.error(f"[{self.account.email}] XOAUTH2 认证异常: {e}")
@@ -166,12 +174,17 @@ class IMAPNewProvider(OutlookProvider):
                 return []
 
         try:
+            conn = self._conn
+            if conn is None:
+                self.record_failure("IMAP 连接未初始化")
+                return []
+
             # 选择收件箱
-            self._conn.select("INBOX", readonly=True)
+            conn.select("INBOX", readonly=True)
 
             # 搜索邮件
             flag = "UNSEEN" if only_unseen else "ALL"
-            status, data = self._conn.search(None, flag)
+            status, data = conn.search(None, flag)
 
             if status != "OK" or not data or not data[0]:
                 return []
@@ -198,7 +211,11 @@ class IMAPNewProvider(OutlookProvider):
 
     def _fetch_email(self, msg_id: bytes) -> Optional[EmailMessage]:
         """获取并解析单封邮件"""
-        status, data = self._conn.fetch(msg_id, "(RFC822)")
+        conn = self._conn
+        if conn is None:
+            return None
+
+        status, data = conn.fetch(msg_id.decode("ascii", errors="ignore"), "(RFC822)")
         if status != "OK" or not data or not data[0]:
             return None
 
@@ -223,8 +240,11 @@ class IMAPNewProvider(OutlookProvider):
         """测试 IMAP 连接"""
         try:
             with self:
-                self._conn.select("INBOX", readonly=True)
-                self._conn.search(None, "ALL")
+                conn = self._conn
+                if conn is None:
+                    return False
+                conn.select("INBOX", readonly=True)
+                conn.search(None, "ALL")
             return True
         except Exception as e:
             logger.warning(f"[{self.account.email}] 新版 IMAP 连接测试失败: {e}")

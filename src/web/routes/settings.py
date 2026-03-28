@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ...config.settings import get_settings, update_settings
+from ...config.settings import build_proxy_mapping, get_settings, update_settings
 from ...database import crud
 from ...database.session import get_db
 
@@ -154,6 +154,7 @@ async def update_dynamic_proxy_settings(request: DynamicProxySettings):
 async def test_dynamic_proxy(request: DynamicProxySettings):
     """测试动态代理 API"""
     from ...core.dynamic_proxy import fetch_dynamic_proxy
+    settings = get_settings()
 
     if not request.api_url:
         raise HTTPException(status_code=400, detail="请填写动态代理 API 地址")
@@ -161,7 +162,6 @@ async def test_dynamic_proxy(request: DynamicProxySettings):
     # 若未传入 api_key，使用已保存的
     api_key = request.api_key or ""
     if not api_key:
-        settings = get_settings()
         if settings.proxy_dynamic_api_key:
             api_key = settings.proxy_dynamic_api_key.get_secret_value()
 
@@ -170,6 +170,7 @@ async def test_dynamic_proxy(request: DynamicProxySettings):
         api_key=api_key,
         api_key_header=request.api_key_header,
         result_field=request.result_field,
+        proxy_url=settings.effective_proxy_url,
     )
 
     if not proxy_url:
@@ -179,11 +180,13 @@ async def test_dynamic_proxy(request: DynamicProxySettings):
     import time
     from curl_cffi import requests as cffi_requests
     try:
-        proxies = {"http": proxy_url, "https": proxy_url}
+        effective_proxy_url = get_settings().effective_proxy_url if not proxy_url else proxy_url
+        if not effective_proxy_url:
+            return {"success": False, "proxy_url": proxy_url, "message": "代理 URL 无效"}
         start = time.time()
         resp = cffi_requests.get(
             "https://api.ipify.org?format=json",
-            proxies=proxies,
+            proxy=effective_proxy_url,
             timeout=10,
             impersonate="chrome110"
         )
@@ -572,14 +575,15 @@ async def test_proxy_item(proxy_id: int):
         start_time = time.time()
 
         try:
-            proxies = {
-                "http": proxy_url,
-                "https": proxy_url
-            }
+            if not proxy_url:
+                return {
+                    "success": False,
+                    "message": "代理 URL 无效"
+                }
 
             response = cffi_requests.get(
                 test_url,
-                proxies=proxies,
+                proxy=proxy_url,
                 timeout=3,
                 impersonate="chrome110"
             )
@@ -623,14 +627,18 @@ async def test_all_proxies():
             start_time = time.time()
 
             try:
-                proxies_dict = {
-                    "http": proxy_url,
-                    "https": proxy_url
-                }
+                if not proxy_url:
+                    results.append({
+                        "id": proxy.id,
+                        "name": proxy.name,
+                        "success": False,
+                        "message": "代理 URL 无效"
+                    })
+                    continue
 
                 response = cffi_requests.get(
                     test_url,
-                    proxies=proxies_dict,
+                    proxy=proxy_url,
                     timeout=3,
                     impersonate="chrome110"
                 )

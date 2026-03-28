@@ -4,7 +4,7 @@ Outlook 邮箱服务实现
 """
 
 import imaplib
-import email
+import email as email_module
 import re
 import time
 import threading
@@ -20,6 +20,7 @@ from email.header import decode_header
 from email.utils import parsedate_to_datetime
 from urllib.error import HTTPError
 
+from src.services.imap_proxy import create_imap_client
 from .base import BaseEmailService, EmailServiceError, EmailServiceType
 from ..config.constants import (
     OTP_CODE_PATTERN,
@@ -97,13 +98,15 @@ class OutlookIMAPClient:
         account: OutlookAccount,
         host: str = "outlook.office365.com",
         port: int = 993,
-        timeout: int = 20
+        timeout: int = 20,
+        proxy_url: Optional[str] = None,
     ):
         self.account = account
         self.host = host
         self.port = port
         self.timeout = timeout
-        self._conn: Optional[imaplib.IMAP4_SSL] = None
+        self.proxy_url = proxy_url
+        self._conn: Optional[imaplib.IMAP4] = None
 
     @staticmethod
     def refresh_ms_token(account: OutlookAccount, timeout: int = 15) -> str:
@@ -153,13 +156,24 @@ class OutlookIMAPClient:
 
     def connect(self):
         """连接到 IMAP 服务器"""
-        self._conn = imaplib.IMAP4_SSL(self.host, self.port, timeout=self.timeout)
+        self._conn = create_imap_client(
+            self.host,
+            self.port,
+            use_ssl=True,
+            timeout=self.timeout,
+            proxy_url=self.proxy_url,
+        )
 
         # 优先使用 XOAUTH2 认证
         if self.account.has_oauth():
             try:
+                conn = self._conn
+                if conn is None:
+                    raise RuntimeError("IMAP 连接未初始化")
+                assert conn is not None
+
                 token = self.refresh_ms_token(self.account)
-                self._conn.authenticate(
+                conn.authenticate(
                     "XOAUTH2",
                     lambda _: self._build_xoauth2(self.account.email, token)
                 )
@@ -169,7 +183,12 @@ class OutlookIMAPClient:
                 logger.warning(f"XOAUTH2 认证失败，回退密码认证: {e}")
 
         # 回退到密码认证
-        self._conn.login(self.account.email, self.account.password)
+        conn = self._conn
+        if conn is None:
+            raise RuntimeError("IMAP 连接未初始化")
+        assert conn is not None
+
+        conn.login(self.account.email, self.account.password)
         logger.debug(f"使用密码认证连接: {self.account.email}")
 
     def _ensure_connection(self):
@@ -202,10 +221,14 @@ class OutlookIMAPClient:
         """
         self._ensure_connection()
 
-        flag = "UNSEEN" if only_unseen else "ALL"
-        self._conn.select("INBOX", readonly=True)
+        conn = self._conn
+        if conn is None:
+            return []
 
-        _, data = self._conn.search(None, flag)
+        flag = "UNSEEN" if only_unseen else "ALL"
+        conn.select("INBOX", readonly=True)
+
+        _, data = conn.search(None, flag)
         if not data or not data[0]:
             return []
 
@@ -215,7 +238,7 @@ class OutlookIMAPClient:
 
         for mid in reversed(ids):
             try:
-                _, payload = self._conn.fetch(mid, "(RFC822)")
+                _, payload = conn.fetch(mid.decode("ascii", errors="ignore"), "(RFC822)")
                 if not payload:
                     continue
 
@@ -239,7 +262,7 @@ class OutlookIMAPClient:
         if raw.startswith(b"\xef\xbb\xbf"):
             raw = raw[3:]
 
-        msg = email.message_from_bytes(raw)
+        msg = email_module.message_from_bytes(raw)
 
         # 解析邮件头
         subject = OutlookIMAPClient._decode_header(msg.get("Subject", ""))
@@ -355,7 +378,7 @@ class OutlookService(BaseEmailService):
     支持多个 Outlook 账户的轮询和验证码获取
     """
 
-    def __init__(self, config: Dict[str, Any] = None, name: str = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, name: str | None = None):
         """
         初始化 Outlook 服务
 
@@ -372,7 +395,7 @@ class OutlookService(BaseEmailService):
                 - max_retries: 最大重试次数 (默认: 3)
             name: 服务名称
         """
-        super().__init__(EmailServiceType.OUTLOOK, name)
+        super().__init__(EmailServiceType.OUTLOOK, name or "")
 
         # 默认配置
         default_config = {
@@ -421,7 +444,7 @@ class OutlookService(BaseEmailService):
         # 验证码去重机制：email -> set of used codes
         self._used_codes: Dict[str, set] = {}
 
-    def create_email(self, config: Dict[str, Any] = None) -> Dict[str, Any]:
+    def create_email(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         选择可用的 Outlook 账户
 
@@ -459,8 +482,8 @@ class OutlookService(BaseEmailService):
     def get_verification_code(
         self,
         email: str,
-        email_id: str = None,
-        timeout: int = None,
+        email_id: Optional[str] = None,
+        timeout: Optional[int] = None,
         pattern: str = OTP_CODE_PATTERN,
         otp_sent_at: Optional[float] = None,
     ) -> Optional[str]:
@@ -520,7 +543,8 @@ class OutlookService(BaseEmailService):
                         account,
                         host=self.config["imap_host"],
                         port=self.config["imap_port"],
-                        timeout=10
+                        timeout=10,
+                        proxy_url=self.config.get("proxy_url"),
                     ) as client:
                         connect_elapsed = time.time() - connect_start
                         logger.debug(f"[{email}] IMAP 连接耗时 {connect_elapsed:.2f}s")
@@ -611,12 +635,16 @@ class OutlookService(BaseEmailService):
                     test_account,
                     host=self.config["imap_host"],
                     port=self.config["imap_port"],
-                    timeout=10
-                ) as client:
-                    # 尝试列出邮箱（快速测试）
-                    client._conn.select("INBOX", readonly=True)
-                    self.update_status(True)
-                    return True
+                    timeout=10,
+                    proxy_url=self.config.get("proxy_url"),
+                    ) as client:
+                        conn = client._conn
+                        if conn is None:
+                            raise EmailServiceError("IMAP 连接未初始化")
+                        # 尝试列出邮箱（快速测试）
+                        conn.select("INBOX", readonly=True)
+                        self.update_status(True)
+                        return True
         except Exception as e:
             logger.warning(f"Outlook 健康检查失败 ({test_account.email}): {e}")
             self.update_status(False, e)
@@ -631,7 +659,7 @@ class OutlookService(BaseEmailService):
     def _is_openai_verification_mail(
         self,
         mail: Dict[str, Any],
-        target_email: str = None
+        target_email: Optional[str] = None
     ) -> bool:
         """
         严格判断是否为 OpenAI 验证邮件

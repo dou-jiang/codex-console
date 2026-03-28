@@ -1,17 +1,18 @@
 """
 IMAP 邮箱服务
 支持 Gmail / QQ / 163 / Yahoo / Outlook 等标准 IMAP 协议邮件服务商。
-仅用于接收验证码，强制直连（imaplib 不支持代理）。
+仅用于接收验证码，支持在可用时通过代理建立 IMAP 连接。
 """
 
+import email as email_module
 import imaplib
-import email
 import re
 import time
 import logging
 from email.header import decode_header
 from typing import Any, Dict, Optional
 
+from src.services.imap_proxy import create_imap_client
 from .base import BaseEmailService, EmailServiceError
 from ..config.constants import (
     EmailServiceType,
@@ -24,10 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 class ImapMailService(BaseEmailService):
-    """标准 IMAP 邮箱服务（仅接收验证码，强制直连）"""
+    """标准 IMAP 邮箱服务（仅接收验证码，支持代理连接）"""
 
-    def __init__(self, config: Dict[str, Any] = None, name: str = None):
-        super().__init__(EmailServiceType.IMAP_MAIL, name)
+    def __init__(self, config: Optional[Dict[str, Any]] = None, name: str | None = None):
+        super().__init__(EmailServiceType.IMAP_MAIL, name or "")
 
         cfg = config or {}
         required_keys = ["host", "email", "password"]
@@ -42,13 +43,18 @@ class ImapMailService(BaseEmailService):
         self.password: str = str(cfg["password"])
         self.timeout: int = int(cfg.get("timeout", 30))
         self.max_retries: int = int(cfg.get("max_retries", 3))
+        self.proxy_url: Optional[str] = cfg.get("proxy_url") or None
 
     def _connect(self) -> imaplib.IMAP4:
         """建立 IMAP 连接并登录，返回 mail 对象"""
-        if self.use_ssl:
-            mail = imaplib.IMAP4_SSL(self.host, self.port)
-        else:
-            mail = imaplib.IMAP4(self.host, self.port)
+        mail = create_imap_client(
+            self.host,
+            self.port,
+            use_ssl=self.use_ssl,
+            timeout=self.timeout,
+            proxy_url=self.proxy_url,
+        )
+        if not self.use_ssl:
             mail.starttls()
         mail.login(self.email_addr, self.password)
         return mail
@@ -105,7 +111,7 @@ class ImapMailService(BaseEmailService):
             return match.group(1)
         return None
 
-    def create_email(self, config: Dict[str, Any] = None) -> Dict[str, Any]:
+    def create_email(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """IMAP 模式不创建新邮箱，直接返回配置中的固定地址"""
         self.update_status(True)
         return {
@@ -117,24 +123,24 @@ class ImapMailService(BaseEmailService):
     def get_verification_code(
         self,
         email: str,
-        email_id: str = None,
+        email_id: Optional[str] = None,
         timeout: int = 60,
-        pattern: str = None,
+        pattern: Optional[str] = None,
         otp_sent_at: Optional[float] = None,
     ) -> Optional[str]:
         """轮询 IMAP 收件箱，获取 OpenAI 验证码"""
         start_time = time.time()
-        seen_ids: set = set()
-        mail = None
+        seen_ids: set[str] = set()
+        mail_client: imaplib.IMAP4 | None = None
 
         try:
-            mail = self._connect()
-            mail.select("INBOX")
+            mail_client = self._connect()
+            mail_client.select("INBOX")
 
             while time.time() - start_time < timeout:
                 try:
                     # 搜索所有未读邮件
-                    status, data = mail.search(None, "UNSEEN")
+                    status, data = mail_client.search(None, "UNSEEN")
                     if status != "OK" or not data or not data[0]:
                         time.sleep(3)
                         continue
@@ -147,12 +153,18 @@ class ImapMailService(BaseEmailService):
                         seen_ids.add(id_str)
 
                         # 获取邮件
-                        status, msg_data = mail.fetch(msg_id, "(RFC822)")
+                        status, msg_data = mail_client.fetch(msg_id.decode("ascii", errors="ignore"), "(RFC822)")
                         if status != "OK" or not msg_data:
                             continue
 
-                        raw = msg_data[0][1]
-                        msg = email.message_from_bytes(raw)
+                        first_part = msg_data[0]
+                        if not isinstance(first_part, tuple) or len(first_part) < 2:
+                            continue
+
+                        raw = first_part[1]
+                        if not isinstance(raw, (bytes, bytearray)):
+                            continue
+                        msg = email_module.message_from_bytes(raw)
 
                         # 检查发件人
                         from_addr = self._decode_str(msg.get("From", ""))
@@ -164,7 +176,7 @@ class ImapMailService(BaseEmailService):
                         code = self._extract_otp(body)
                         if code:
                             # 标记已读
-                            mail.store(msg_id, "+FLAGS", "\\Seen")
+                            mail_client.store(msg_id.decode("ascii", errors="ignore"), "+FLAGS", "\\Seen")
                             self.update_status(True)
                             logger.info(f"IMAP 获取验证码成功: {code}")
                             return code
@@ -173,7 +185,7 @@ class ImapMailService(BaseEmailService):
                     logger.debug(f"IMAP 搜索邮件失败: {e}")
                     # 尝试重新连接
                     try:
-                        mail.select("INBOX")
+                        mail_client.select("INBOX")
                     except Exception:
                         pass
 
@@ -181,11 +193,11 @@ class ImapMailService(BaseEmailService):
 
         except Exception as e:
             logger.warning(f"IMAP 连接/轮询失败: {e}")
-            self.update_status(False, str(e))
+            self.update_status(False, e)
         finally:
-            if mail:
+            if mail_client:
                 try:
-                    mail.logout()
+                    mail_client.logout()
                 except Exception:
                     pass
 
@@ -208,7 +220,7 @@ class ImapMailService(BaseEmailService):
                 except Exception:
                     pass
 
-    def list_emails(self, **kwargs) -> list:
+    def list_emails(self, **kwargs) -> list[Dict[str, str]]:
         """IMAP 单账号模式，返回固定地址"""
         return [{"email": self.email_addr, "id": self.email_addr}]
 

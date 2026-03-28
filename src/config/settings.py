@@ -4,6 +4,8 @@
 """
 
 import os
+import re
+from urllib.request import getproxies
 from typing import Optional, Dict, Any, Type, List
 from enum import Enum
 from pydantic import BaseModel, field_validator
@@ -416,7 +418,7 @@ SETTING_TYPES: Dict[str, Type] = {
 SECRET_FIELDS = {name for name, defn in SETTING_DEFINITIONS.items() if defn.is_secret}
 
 
-def _convert_value(attr_name: str, value: str) -> Any:
+def _convert_value(attr_name: str, value: Any) -> Any:
     """将数据库字符串值转换为正确的类型"""
     if attr_name in SECRET_FIELDS:
         return SecretStr(value) if value else SecretStr("")
@@ -469,6 +471,45 @@ def _normalize_database_url(url: str) -> str:
     if url.startswith("postgresql://"):
         return "postgresql+psycopg://" + url[len("postgresql://"):]
     return url
+
+
+def normalize_proxy_url(proxy_url: Optional[str]) -> Optional[str]:
+    if not proxy_url:
+        return None
+
+    normalized = str(proxy_url).strip()
+    if not normalized:
+        return None
+
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", normalized):
+        normalized = f"http://{normalized}"
+
+    return normalized
+
+
+def get_system_proxy_url() -> Optional[str]:
+    try:
+        system_proxies = getproxies()
+    except Exception:
+        return None
+
+    for scheme in ("https", "http", "all"):
+        proxy_url = normalize_proxy_url(system_proxies.get(scheme))
+        if proxy_url:
+            return proxy_url
+
+    return None
+
+
+def build_proxy_mapping(proxy_url: Optional[str]) -> Optional[dict[str, str]]:
+    normalized_proxy_url = normalize_proxy_url(proxy_url)
+    if not normalized_proxy_url:
+        return None
+
+    return {
+        "http": normalized_proxy_url,
+        "https": normalized_proxy_url,
+    }
 
 
 def _value_to_string(value: Any) -> str:
@@ -529,7 +570,7 @@ def _load_settings_from_db() -> Dict[str, Any]:
             for attr_name, defn in SETTING_DEFINITIONS.items():
                 db_setting = get_setting(db, defn.db_key)
                 if db_setting:
-                    settings_dict[attr_name] = _convert_value(attr_name, db_setting.value)
+                    settings_dict[attr_name] = _convert_value(attr_name, str(db_setting.value))
                 else:
                     # 数据库中没有此设置，使用默认值
                     settings_dict[attr_name] = _convert_value(attr_name, _value_to_string(defn.default_value))
@@ -655,7 +696,19 @@ class Settings(BaseModel):
         if self.proxy_username and self.proxy_password:
             auth = f"{self.proxy_username}:{self.proxy_password.get_secret_value()}@"
 
-        return f"{scheme}://{auth}{self.proxy_host}:{self.proxy_port}"
+        return normalize_proxy_url(f"{scheme}://{auth}{self.proxy_host}:{self.proxy_port}")
+
+    @property
+    def system_proxy_url(self) -> Optional[str]:
+        return get_system_proxy_url()
+
+    @property
+    def effective_proxy_url(self) -> Optional[str]:
+        return self.proxy_url or self.system_proxy_url
+
+    @property
+    def effective_proxy_mapping(self) -> Optional[dict[str, str]]:
+        return build_proxy_mapping(self.effective_proxy_url)
 
     # 注册配置
     registration_max_retries: int = 3
