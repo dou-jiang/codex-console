@@ -41,12 +41,42 @@ const elements = {
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
+    populateServiceFilterOptions();
     loadStats();
     loadAccounts();
     initEventListeners();
     updateBatchButtons();  // 初始化按钮状态
     renderSelectAllBanner();
 });
+
+const ACCOUNT_EMAIL_SERVICE_OPTIONS = [
+    'tempmail',
+    'yyds_mail',
+    'outlook',
+    'moe_mail',
+    'temp_mail',
+    'cloudmail',
+    'duck_mail',
+    'freemail',
+    'imap_mail'
+];
+
+function populateServiceFilterOptions() {
+    if (!elements.filterService) return;
+
+    const selectedValue = elements.filterService.value;
+    elements.filterService.innerHTML = '<option value="">全部邮箱服务</option>';
+
+    ACCOUNT_EMAIL_SERVICE_OPTIONS.forEach((serviceType) => {
+        const option = document.createElement('option');
+        option.value = serviceType;
+        option.textContent = getServiceTypeText(serviceType);
+        if (serviceType === selectedValue) {
+            option.selected = true;
+        }
+        elements.filterService.appendChild(option);
+    });
+}
 
 // 事件监听
 function initEventListeners() {
