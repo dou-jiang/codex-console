@@ -14,6 +14,8 @@ let todayStatsResetInterval = null;
 let isBatchMode = false;
 let isOutlookBatchMode = false;
 let outlookAccounts = [];
+let editingScheduleJobUuid = null;
+let scheduledJobs = [];
 let taskCompleted = false;  // 标记任务是否已完成
 let batchCompleted = false;  // 标记批量任务是否已完成
 let taskFinalStatus = null;  // 保存任务的最终状态
@@ -112,6 +114,20 @@ const elements = {
     autoUploadTm: document.getElementById('auto-upload-tm'),
     tmServiceSelectGroup: document.getElementById('tm-service-select-group'),
     tmServiceSelect: document.getElementById('tm-service-select'),
+    scheduleForm: document.getElementById('schedule-form'),
+    scheduleName: document.getElementById('schedule-name'),
+    scheduleTriggerType: document.getElementById('schedule-trigger-type'),
+    scheduleEnabled: document.getElementById('schedule-enabled'),
+    scheduleIntervalFields: document.getElementById('schedule-interval-fields'),
+    scheduleIntervalMinutes: document.getElementById('schedule-interval-minutes'),
+    scheduleTimepointFields: document.getElementById('schedule-timepoint-fields'),
+    scheduleEveryNDays: document.getElementById('schedule-every-n-days'),
+    scheduleTimeOfDay: document.getElementById('schedule-time-of-day'),
+    scheduleStartDate: document.getElementById('schedule-start-date'),
+    saveScheduleBtn: document.getElementById('save-schedule-btn'),
+    cancelScheduleEditBtn: document.getElementById('cancel-schedule-edit-btn'),
+    refreshSchedulesBtn: document.getElementById('refresh-schedules-btn'),
+    scheduleJobsTable: document.getElementById('schedule-jobs-table'),
 };
 
 // 初始化
@@ -126,6 +142,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initVisibilityReconnect();
     restoreActiveTask();
     initAutoUploadOptions();
+    initScheduleForm();
+    loadScheduledJobs();
 });
 
 // 初始化注册后自动操作选项（CPA / Sub2API / TM）
@@ -239,6 +257,10 @@ function initEventListeners() {
     elements.outlookConcurrencyMode.addEventListener('change', () => {
         handleConcurrencyModeChange(elements.outlookConcurrencyMode, elements.outlookConcurrencyHint, elements.outlookIntervalGroup);
     });
+
+    if (elements.refreshSchedulesBtn) {
+        elements.refreshSchedulesBtn.addEventListener('click', () => loadScheduledJobs());
+    }
 }
 
 // 加载可用的邮箱服务
@@ -249,6 +271,13 @@ async function loadAvailableServices() {
 
         // 更新邮箱服务选择框
         updateEmailServiceOptions();
+
+        if (editingScheduleJobUuid) {
+            const currentJob = scheduledJobs.find(item => item.job_uuid === editingScheduleJobUuid);
+            if (currentJob) {
+                setRegistrationConfigToForm(currentJob.registration_config || {});
+            }
+        }
 
         addLog('info', '[系统] 邮箱服务列表已加载');
     } catch (error) {
@@ -485,12 +514,347 @@ function handleConcurrencyModeChange(selectEl, hintEl, intervalGroupEl) {
     }
 }
 
+function initScheduleForm() {
+    if (!elements.scheduleForm) return;
+    if (!elements.scheduleStartDate.value) {
+        elements.scheduleStartDate.value = new Date().toISOString().slice(0, 10);
+    }
+    elements.scheduleForm.addEventListener('submit', handleScheduleSubmit);
+    elements.scheduleTriggerType.addEventListener('change', updateScheduleTriggerFields);
+    elements.cancelScheduleEditBtn.addEventListener('click', resetScheduleForm);
+    updateScheduleTriggerFields();
+}
+
+function updateScheduleTriggerFields() {
+    if (!elements.scheduleTriggerType) return;
+    const triggerType = elements.scheduleTriggerType.value;
+    elements.scheduleIntervalFields.style.display = triggerType === 'interval' ? 'block' : 'none';
+    elements.scheduleTimepointFields.style.display = triggerType === 'timepoint' ? 'block' : 'none';
+}
+
+function buildCurrentRegistrationConfig() {
+    const selectedValue = elements.emailService.value;
+    if (!selectedValue) {
+        throw new Error('请选择一个邮箱服务');
+    }
+
+    const [emailServiceType, serviceId] = selectedValue.split(':');
+    const baseConfig = {
+        email_service_type: emailServiceType,
+        reg_mode: isOutlookBatchMode ? 'outlook_batch' : (isBatchMode ? 'batch' : 'single'),
+        auto_upload_cpa: elements.autoUploadCpa ? elements.autoUploadCpa.checked : false,
+        cpa_service_ids: elements.autoUploadCpa && elements.autoUploadCpa.checked ? getSelectedServiceIds(elements.cpaServiceSelect) : [],
+        auto_upload_sub2api: elements.autoUploadSub2api ? elements.autoUploadSub2api.checked : false,
+        sub2api_service_ids: elements.autoUploadSub2api && elements.autoUploadSub2api.checked ? getSelectedServiceIds(elements.sub2apiServiceSelect) : [],
+        auto_upload_tm: elements.autoUploadTm ? elements.autoUploadTm.checked : false,
+        tm_service_ids: elements.autoUploadTm && elements.autoUploadTm.checked ? getSelectedServiceIds(elements.tmServiceSelect) : [],
+    };
+
+    if (isOutlookBatchMode) {
+        const selectedIds = [];
+        document.querySelectorAll('.outlook-account-checkbox:checked').forEach(cb => {
+            selectedIds.push(parseInt(cb.value));
+        });
+        return {
+            ...baseConfig,
+            email_service_type: 'outlook_batch',
+            service_ids: selectedIds,
+            skip_registered: elements.outlookSkipRegistered.checked,
+            interval_min: parseInt(elements.outlookIntervalMin.value) || 5,
+            interval_max: parseInt(elements.outlookIntervalMax.value) || 30,
+            concurrency: Math.min(50, Math.max(1, parseInt(elements.outlookConcurrencyCount.value) || 3)),
+            mode: elements.outlookConcurrencyMode.value || 'pipeline',
+        };
+    }
+
+    if (serviceId && serviceId !== 'default') {
+        baseConfig.email_service_id = parseInt(serviceId);
+    }
+
+    if (isBatchMode) {
+        return {
+            ...baseConfig,
+            batch_count: parseInt(elements.batchCount.value) || 1,
+            interval_min: parseInt(elements.intervalMin.value) || 5,
+            interval_max: parseInt(elements.intervalMax.value) || 30,
+            concurrency: Math.min(50, Math.max(1, parseInt(elements.concurrencyCount.value) || 1)),
+            mode: elements.concurrencyMode.value || 'pipeline',
+        };
+    }
+
+    return baseConfig;
+}
+
+function buildScheduleConfig() {
+    const triggerType = elements.scheduleTriggerType.value;
+    if (triggerType === 'interval') {
+        return {
+            schedule_type: 'interval',
+            schedule_config: {
+                interval_minutes: parseInt(elements.scheduleIntervalMinutes.value) || 1,
+            },
+        };
+    }
+
+    return {
+        schedule_type: 'timepoint',
+        schedule_config: {
+            every_n_days: parseInt(elements.scheduleEveryNDays.value) || 1,
+            time_of_day: elements.scheduleTimeOfDay.value || '09:00',
+            start_date: elements.scheduleStartDate.value || null,
+        },
+    };
+}
+
+async function handleScheduleSubmit(e) {
+    e.preventDefault();
+
+    try {
+        const registrationConfig = buildCurrentRegistrationConfig();
+        if (registrationConfig.email_service_type === 'outlook_batch' && (!registrationConfig.service_ids || registrationConfig.service_ids.length === 0)) {
+            toast.error('请至少选择一个 Outlook 账户后再保存计划');
+            return;
+        }
+
+        const { schedule_type, schedule_config } = buildScheduleConfig();
+        const payload = {
+            name: (elements.scheduleName.value || '').trim(),
+            enabled: elements.scheduleEnabled.value === 'true',
+            schedule_type,
+            schedule_config,
+            registration_config: registrationConfig,
+            timezone: 'local',
+        };
+
+        if (!payload.name) {
+            toast.error('请输入计划名称');
+            return;
+        }
+
+        const endpoint = editingScheduleJobUuid
+            ? `/registration/schedules/${editingScheduleJobUuid}`
+            : '/registration/schedules';
+        const method = editingScheduleJobUuid ? 'put' : 'post';
+
+        await api[method](endpoint, payload);
+        toast.success(editingScheduleJobUuid ? '计划任务已更新' : '计划任务已创建');
+        resetScheduleForm();
+        await loadScheduledJobs();
+    } catch (error) {
+        toast.error(error.message);
+    }
+}
+
+function resetScheduleForm() {
+    editingScheduleJobUuid = null;
+    if (!elements.scheduleForm) return;
+    elements.scheduleForm.reset();
+    elements.scheduleEnabled.value = 'true';
+    elements.scheduleTriggerType.value = 'interval';
+    elements.scheduleIntervalMinutes.value = '60';
+    elements.scheduleEveryNDays.value = '1';
+    elements.scheduleTimeOfDay.value = '09:00';
+    elements.scheduleStartDate.value = new Date().toISOString().slice(0, 10);
+    elements.saveScheduleBtn.textContent = '保存计划任务';
+    elements.cancelScheduleEditBtn.style.display = 'none';
+    updateScheduleTriggerFields();
+}
+
+function setRegistrationConfigToForm(config) {
+    const registrationConfig = config || {};
+    const emailServiceType = registrationConfig.email_service_type || 'tempmail';
+    const emailServiceId = registrationConfig.email_service_id;
+    const serviceValue = emailServiceType === 'outlook_batch'
+        ? 'outlook_batch:all'
+        : `${emailServiceType}:${emailServiceId ?? 'default'}`;
+
+    elements.emailService.value = serviceValue;
+    handleServiceChange({ target: elements.emailService });
+
+    elements.autoUploadCpa.checked = !!registrationConfig.auto_upload_cpa;
+    elements.cpaServiceSelectGroup.style.display = elements.autoUploadCpa.checked ? 'block' : 'none';
+    elements.autoUploadSub2api.checked = !!registrationConfig.auto_upload_sub2api;
+    elements.sub2apiServiceSelectGroup.style.display = elements.autoUploadSub2api.checked ? 'block' : 'none';
+    elements.autoUploadTm.checked = !!registrationConfig.auto_upload_tm;
+    elements.tmServiceSelectGroup.style.display = elements.autoUploadTm.checked ? 'block' : 'none';
+
+    setSelectedServiceIds(elements.cpaServiceSelect, registrationConfig.cpa_service_ids || []);
+    setSelectedServiceIds(elements.sub2apiServiceSelect, registrationConfig.sub2api_service_ids || []);
+    setSelectedServiceIds(elements.tmServiceSelect, registrationConfig.tm_service_ids || []);
+
+    if (emailServiceType === 'outlook_batch') {
+        isOutlookBatchMode = true;
+        elements.outlookBatchSection.style.display = 'block';
+        elements.regModeGroup.style.display = 'none';
+        elements.batchCountGroup.style.display = 'none';
+        elements.batchOptions.style.display = 'none';
+        if (Array.isArray(registrationConfig.service_ids) && registrationConfig.service_ids.length) {
+            const selectedSet = new Set(registrationConfig.service_ids.map(item => parseInt(item)));
+            document.querySelectorAll('.outlook-account-checkbox').forEach(cb => {
+                cb.checked = selectedSet.has(parseInt(cb.value));
+            });
+        }
+        elements.outlookSkipRegistered.checked = registrationConfig.skip_registered !== false;
+        elements.outlookIntervalMin.value = registrationConfig.interval_min || 5;
+        elements.outlookIntervalMax.value = registrationConfig.interval_max || 30;
+        elements.outlookConcurrencyCount.value = registrationConfig.concurrency || 3;
+        elements.outlookConcurrencyMode.value = registrationConfig.mode || 'pipeline';
+        handleConcurrencyModeChange(elements.outlookConcurrencyMode, elements.outlookConcurrencyHint, elements.outlookIntervalGroup);
+        return;
+    }
+
+    isOutlookBatchMode = false;
+    elements.outlookBatchSection.style.display = 'none';
+    elements.regModeGroup.style.display = 'block';
+    elements.regMode.value = registrationConfig.reg_mode === 'batch' ? 'batch' : 'single';
+    handleModeChange({ target: elements.regMode });
+    elements.batchCount.value = registrationConfig.batch_count || 1;
+    elements.intervalMin.value = registrationConfig.interval_min || 5;
+    elements.intervalMax.value = registrationConfig.interval_max || 30;
+    elements.concurrencyCount.value = registrationConfig.concurrency || 1;
+    elements.concurrencyMode.value = registrationConfig.mode || 'pipeline';
+    handleConcurrencyModeChange(elements.concurrencyMode, elements.concurrencyHint, elements.intervalGroup);
+}
+
+function setSelectedServiceIds(container, selectedIds) {
+    if (!container) return;
+    const selectedSet = new Set((selectedIds || []).map(item => parseInt(item)));
+    container.querySelectorAll('.msd-item input').forEach(cb => {
+        cb.checked = selectedSet.size === 0 ? true : selectedSet.has(parseInt(cb.value));
+    });
+    const dropdownId = `${container.id}-dd`;
+    updateMsdLabel(dropdownId);
+}
+
+function formatScheduleDateTime(value) {
+    if (!value) return '-';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString('zh-CN', { hour12: false });
+}
+
+function getScheduleStatusClass(job) {
+    if (!job.enabled) return 'cancelled';
+    if (job.status === 'failed') return 'failed';
+    if (job.is_running || job.status === 'running') return 'running';
+    if (job.status === 'scheduled') return 'completed';
+    return 'pending';
+}
+
+async function loadScheduledJobs() {
+    if (!elements.scheduleJobsTable) return;
+    try {
+        const data = await api.get('/registration/schedules?page=1&page_size=100');
+        scheduledJobs = data.jobs || [];
+        if (editingScheduleJobUuid) {
+            const currentJob = scheduledJobs.find(item => item.job_uuid === editingScheduleJobUuid);
+            if (currentJob) {
+                setRegistrationConfigToForm(currentJob.registration_config || {});
+            }
+        }
+        renderScheduledJobs();
+    } catch (error) {
+        elements.scheduleJobsTable.innerHTML = `<tr><td colspan="6"><div class="empty-state" style="padding: var(--spacing-md);"><div class="empty-state-title">加载失败：${escapeHtml(error.message)}</div></div></td></tr>`;
+    }
+}
+
+function renderScheduledJobs() {
+    if (!elements.scheduleJobsTable) return;
+    if (!scheduledJobs.length) {
+        elements.scheduleJobsTable.innerHTML = `<tr><td colspan="6"><div class="empty-state" style="padding: var(--spacing-md);"><div class="empty-state-icon">🗓️</div><div class="empty-state-title">暂无计划任务</div></div></td></tr>`;
+        return;
+    }
+
+    elements.scheduleJobsTable.innerHTML = scheduledJobs.map(job => `
+        <tr>
+            <td>
+                <div style="font-weight: 600;">${escapeHtml(job.name)}</div>
+                <div class="schedule-muted">${job.enabled ? '已启用' : '已暂停'}</div>
+            </td>
+            <td>${escapeHtml(job.schedule_description || '-')}</td>
+            <td>${escapeHtml(formatScheduleDateTime(job.next_run_at))}</td>
+            <td>${escapeHtml(formatScheduleDateTime(job.last_run_at))}</td>
+            <td><span class="status-badge ${getScheduleStatusClass(job)}">${escapeHtml(job.status || 'idle')}</span></td>
+            <td>
+                <div class="schedule-table-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="editScheduledJob('${job.job_uuid}')">编辑</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="toggleScheduledJob('${job.job_uuid}', ${job.enabled ? 'false' : 'true'})">${job.enabled ? '暂停' : '启用'}</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="runScheduledJobNow('${job.job_uuid}')">立即执行</button>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="deleteScheduledJob('${job.job_uuid}')">删除</button>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+async function editScheduledJob(jobUuid) {
+    try {
+        const job = await api.get(`/registration/schedules/${jobUuid}`);
+        editingScheduleJobUuid = jobUuid;
+        elements.scheduleName.value = job.name || '';
+        elements.scheduleEnabled.value = job.enabled ? 'true' : 'false';
+        elements.scheduleTriggerType.value = job.schedule_type || 'interval';
+        if (job.schedule_type === 'interval') {
+            elements.scheduleIntervalMinutes.value = job.schedule_config?.interval_minutes || 60;
+        } else {
+            elements.scheduleEveryNDays.value = job.schedule_config?.every_n_days || 1;
+            elements.scheduleTimeOfDay.value = job.schedule_config?.time_of_day || '09:00';
+            elements.scheduleStartDate.value = job.schedule_config?.start_date || new Date().toISOString().slice(0, 10);
+        }
+        setRegistrationConfigToForm(job.registration_config || {});
+        elements.saveScheduleBtn.textContent = '更新计划任务';
+        elements.cancelScheduleEditBtn.style.display = 'block';
+        updateScheduleTriggerFields();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (error) {
+        toast.error(error.message);
+    }
+}
+
+async function toggleScheduledJob(jobUuid, shouldEnable) {
+    try {
+        const endpoint = shouldEnable ? `/registration/schedules/${jobUuid}/enable` : `/registration/schedules/${jobUuid}/pause`;
+        await api.post(endpoint, {});
+        toast.success(shouldEnable ? '计划任务已启用' : '计划任务已暂停');
+        await loadScheduledJobs();
+    } catch (error) {
+        toast.error(error.message);
+    }
+}
+
+async function runScheduledJobNow(jobUuid) {
+    try {
+        const data = await api.post(`/registration/schedules/${jobUuid}/run`, {});
+        toast.success(data.message || '计划任务已触发执行');
+        await loadScheduledJobs();
+    } catch (error) {
+        toast.error(error.message);
+    }
+}
+
+async function deleteScheduledJob(jobUuid) {
+    try {
+        await api.delete(`/registration/schedules/${jobUuid}`);
+        toast.success('计划任务已删除');
+        if (editingScheduleJobUuid === jobUuid) {
+            resetScheduleForm();
+        }
+        await loadScheduledJobs();
+    } catch (error) {
+        toast.error(error.message);
+    }
+}
+
+window.editScheduledJob = editScheduledJob;
+window.toggleScheduledJob = toggleScheduledJob;
+window.runScheduledJobNow = runScheduledJobNow;
+window.deleteScheduledJob = deleteScheduledJob;
+
 // 开始注册
 async function handleStartRegistration(e) {
     e.preventDefault();
 
-    const selectedValue = elements.emailService.value;
-    if (!selectedValue) {
+    if (!elements.emailService.value) {
         toast.error('请选择一个邮箱服务');
         return;
     }
@@ -501,8 +865,6 @@ async function handleStartRegistration(e) {
         return;
     }
 
-    const [emailServiceType, serviceId] = selectedValue.split(':');
-
     // 禁用开始按钮
     elements.startBtn.disabled = true;
     elements.cancelBtn.disabled = false;
@@ -510,21 +872,7 @@ async function handleStartRegistration(e) {
     // 清空日志
     elements.consoleLog.innerHTML = '';
 
-    // 构建请求数据（代理从设置中自动获取）
-    const requestData = {
-        email_service_type: emailServiceType,
-        auto_upload_cpa: elements.autoUploadCpa ? elements.autoUploadCpa.checked : false,
-        cpa_service_ids: elements.autoUploadCpa && elements.autoUploadCpa.checked ? getSelectedServiceIds(elements.cpaServiceSelect) : [],
-        auto_upload_sub2api: elements.autoUploadSub2api ? elements.autoUploadSub2api.checked : false,
-        sub2api_service_ids: elements.autoUploadSub2api && elements.autoUploadSub2api.checked ? getSelectedServiceIds(elements.sub2apiServiceSelect) : [],
-        auto_upload_tm: elements.autoUploadTm ? elements.autoUploadTm.checked : false,
-        tm_service_ids: elements.autoUploadTm && elements.autoUploadTm.checked ? getSelectedServiceIds(elements.tmServiceSelect) : [],
-    };
-
-    // 如果选择了数据库中的服务，传递 service_id
-    if (serviceId && serviceId !== 'default') {
-        requestData.email_service_id = parseInt(serviceId);
-    }
+    const requestData = buildCurrentRegistrationConfig();
 
     if (isBatchMode) {
         await handleBatchRegistration(requestData);

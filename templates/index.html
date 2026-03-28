@@ -102,6 +102,33 @@
             align-items: center;
         }
 
+        .panel-stack {
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-lg);
+        }
+
+        .schedule-form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: var(--spacing-sm) var(--spacing-md);
+        }
+
+        .schedule-form-grid .form-group.full-width {
+            grid-column: 1 / -1;
+        }
+
+        .schedule-table-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .schedule-muted {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
         .today-stats-reset {
             font-size: 0.75rem;
             color: var(--text-muted);
@@ -236,6 +263,10 @@
             .today-stats-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
+
+            .schedule-form-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
@@ -296,6 +327,7 @@
             <div class="two-column-layout">
                 <!-- 左侧面板 - 注册设置 -->
                 <div class="left-panel">
+                    <div class="panel-stack">
                     <div class="card">
                         <div class="card-header">
                             <h3>📝 注册设置</h3>
@@ -444,6 +476,67 @@
                             </form>
                         </div>
                     </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>⏰ 计划注册-上传</h3>
+                        </div>
+                        <div class="card-body">
+                            <form id="schedule-form">
+                                <div class="schedule-form-grid">
+                                    <div class="form-group full-width">
+                                        <label for="schedule-name">计划名称</label>
+                                        <input type="text" id="schedule-name" maxlength="100" placeholder="例如：每 3 天定时注册并上传">
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label for="schedule-trigger-type">触发方式</label>
+                                        <select id="schedule-trigger-type">
+                                            <option value="interval">固定间隔</option>
+                                            <option value="timepoint">周期性时间点</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label for="schedule-enabled">启用状态</label>
+                                        <select id="schedule-enabled">
+                                            <option value="true">启用</option>
+                                            <option value="false">暂停</option>
+                                        </select>
+                                    </div>
+
+                                    <div id="schedule-interval-fields" class="form-group full-width">
+                                        <label for="schedule-interval-minutes">间隔分钟数</label>
+                                        <input type="number" id="schedule-interval-minutes" min="1" value="60">
+                                    </div>
+
+                                    <div id="schedule-timepoint-fields" class="full-width" style="display: none;">
+                                        <div class="schedule-form-grid">
+                                            <div class="form-group">
+                                                <label for="schedule-every-n-days">每几天触发</label>
+                                                <input type="number" id="schedule-every-n-days" min="1" value="1">
+                                            </div>
+                                            <div class="form-group">
+                                                <label for="schedule-time-of-day">触发时间</label>
+                                                <input type="time" id="schedule-time-of-day" value="09:00">
+                                            </div>
+                                            <div class="form-group full-width">
+                                                <label for="schedule-start-date">开始日期</label>
+                                                <input type="date" id="schedule-start-date">
+                                                <div class="schedule-muted">不填则默认从今天开始计算周期。</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="form-actions" style="margin-top: var(--spacing-md); flex-direction: column;">
+                                    <button type="submit" class="btn btn-primary" id="save-schedule-btn" style="width: 100%;">保存计划任务</button>
+                                    <button type="button" class="btn btn-secondary" id="cancel-schedule-edit-btn" style="width: 100%; display: none;">取消编辑</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                    </div>
                 </div>
 
                 <!-- 右侧面板 -->
@@ -498,6 +591,37 @@
                             <div id="console-log" class="console-log">
                                 <div class="log-line info">[系统] 准备就绪，等待开始注册...</div>
                             </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>🗓️ 计划任务列表</h3>
+                            <button class="btn btn-ghost btn-sm" id="refresh-schedules-btn">🔄 刷新</button>
+                        </div>
+                        <div class="card-body" style="padding: 0;">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>计划名称</th>
+                                        <th>触发方式</th>
+                                        <th>下次执行</th>
+                                        <th>最近执行</th>
+                                        <th>状态</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="schedule-jobs-table">
+                                    <tr>
+                                        <td colspan="6">
+                                            <div class="empty-state" style="padding: var(--spacing-md);">
+                                                <div class="empty-state-icon">🗓️</div>
+                                                <div class="empty-state-title">暂无计划任务</div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 
