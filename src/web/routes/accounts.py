@@ -25,6 +25,7 @@ from ...core.openai.token_refresh import validate_account_token as do_validate
 from ...core.upload.cpa_upload import generate_token_json, batch_upload_to_cpa, upload_to_cpa
 from ...core.upload.team_manager_upload import upload_to_team_manager, batch_upload_to_team_manager
 from ...core.upload.sub2api_upload import batch_upload_to_sub2api, upload_to_sub2api
+from ...core.upload.new_api_upload import batch_upload_to_new_api, upload_to_new_api
 
 from ...core.dynamic_proxy import get_proxy_url_for_task
 from ...database import crud
@@ -2105,7 +2106,6 @@ async def batch_upload_accounts_to_sub2api(request: BatchSub2ApiUploadRequest):
         ids, api_url, api_key,
         concurrency=request.concurrency,
         priority=request.priority,
-        target_type=locals().get("target_type", "sub2api"),
     )
     return results
 
@@ -2147,12 +2147,83 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
         success, message = upload_to_sub2api(
             [account], api_url, api_key,
             concurrency=concurrency, priority=priority,
-            target_type=locals().get("target_type", "sub2api")
+            target_type="sub2api"
         )
         if success:
             return {"success": True, "message": message}
         else:
             return {"success": False, "error": message}
+
+
+class NewApiUploadRequest(BaseModel):
+    """单账号 new-api 上传请求"""
+    service_id: Optional[int] = None
+
+
+class BatchNewApiUploadRequest(BaseModel):
+    """批量 new-api 上传请求"""
+    ids: List[int] = []
+    select_all: bool = False
+    status_filter: Optional[str] = None
+    email_service_filter: Optional[str] = None
+    search_filter: Optional[str] = None
+    service_id: Optional[int] = None
+
+
+@router.post("/batch-upload-new-api")
+async def batch_upload_accounts_to_new_api(request: BatchNewApiUploadRequest):
+    """批量上传账号到 new-api。"""
+    with get_db() as db:
+        if request.service_id:
+            service = crud.get_new_api_service_by_id(db, request.service_id)
+        else:
+            services = crud.get_new_api_services(db, enabled=True)
+            service = services[0] if services else None
+
+        if not service:
+            raise HTTPException(status_code=400, detail="未找到可用的 new-api 服务，请先在设置中配置")
+
+        ids = resolve_account_ids(
+            db, request.ids, request.select_all,
+            request.status_filter, request.email_service_filter, request.search_filter
+        )
+
+    return batch_upload_to_new_api(
+        ids,
+        service.api_url,
+        getattr(service, 'username', None),
+        getattr(service, 'password', None),
+    )
+
+
+@router.post("/{account_id}/upload-new-api")
+async def upload_account_to_new_api(account_id: int, request: Optional[NewApiUploadRequest] = Body(default=None)):
+    """上传单个账号到 new-api。"""
+    service_id = request.service_id if request else None
+
+    with get_db() as db:
+        if service_id:
+            service = crud.get_new_api_service_by_id(db, service_id)
+        else:
+            services = crud.get_new_api_services(db, enabled=True)
+            service = services[0] if services else None
+
+        if not service:
+            raise HTTPException(status_code=400, detail="未找到可用的 new-api 服务，请先在设置中配置")
+
+        account = crud.get_account_by_id(db, account_id)
+        if not account:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        if not account.access_token:
+            return {"success": False, "error": "账号缺少 Token，无法上传"}
+
+        success, message = upload_to_new_api(
+            [account],
+            service.api_url,
+            getattr(service, 'username', None),
+            getattr(service, 'password', None),
+        )
+        return {"success": success, "message": message if success else None, "error": None if success else message}
 
 
 # ============== Team Manager 上传 ==============
@@ -2186,7 +2257,6 @@ async def batch_upload_accounts_to_tm(request: BatchUploadTMRequest):
 
         api_url = svc.api_url
         api_key = svc.api_key
-        target_type = getattr(svc, "target_type", "sub2api")
 
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
@@ -2215,7 +2285,6 @@ async def upload_account_to_tm(account_id: int, request: Optional[UploadTMReques
 
         api_url = svc.api_url
         api_key = svc.api_key
-        target_type = getattr(svc, "target_type", "sub2api")
 
         account = crud.get_account_by_id(db, account_id)
         if not account:

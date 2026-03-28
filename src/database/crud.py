@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, asc, func
 
-from .models import Account, EmailService, RegistrationTask, Setting, Proxy, CpaService, Sub2ApiService
+from .models import Account, EmailService, RegistrationTask, Setting, Proxy, CpaService, Sub2ApiService, TeamManagerService, NewApiService, ScheduledRegistrationJob
 
 
 # ============================================================================
@@ -599,7 +599,6 @@ def create_sub2api_service(
     name: str,
     api_url: str,
     api_key: str,
-    target_type: str = 'sub2api',
     enabled: bool = True,
     priority: int = 0
 ) -> Sub2ApiService:
@@ -668,7 +667,6 @@ def create_tm_service(
     priority: int = 0,
 ):
     """创建 Team Manager 服务配置"""
-    from .models import TeamManagerService
     svc = TeamManagerService(
         name=name,
         api_url=api_url,
@@ -684,13 +682,11 @@ def create_tm_service(
 
 def get_tm_service_by_id(db: Session, service_id: int):
     """按 ID 获取 Team Manager 服务"""
-    from .models import TeamManagerService
     return db.query(TeamManagerService).filter(TeamManagerService.id == service_id).first()
 
 
 def get_tm_services(db: Session, enabled=None):
     """获取 Team Manager 服务列表"""
-    from .models import TeamManagerService
     q = db.query(TeamManagerService)
     if enabled is not None:
         q = q.filter(TeamManagerService.enabled == enabled)
@@ -717,3 +713,255 @@ def delete_tm_service(db: Session, service_id: int) -> bool:
     db.delete(svc)
     db.commit()
     return True
+
+
+# ============================================================================
+# new-api 服务 CRUD
+# ============================================================================
+
+def create_new_api_service(
+    db: Session,
+    name: str,
+    api_url: str,
+    username: str,
+    password: str,
+    enabled: bool = True,
+    priority: int = 0,
+) -> NewApiService:
+    """创建 new-api 服务配置"""
+    svc = NewApiService(
+        name=name,
+        api_url=api_url,
+        username=username,
+        password=password,
+        api_key='',
+        enabled=enabled,
+        priority=priority,
+    )
+    db.add(svc)
+    db.commit()
+    db.refresh(svc)
+    return svc
+
+
+def get_new_api_service_by_id(db: Session, service_id: int) -> Optional[NewApiService]:
+    """按 ID 获取 new-api 服务"""
+    return db.query(NewApiService).filter(NewApiService.id == service_id).first()
+
+
+def get_new_api_services(db: Session, enabled: Optional[bool] = None) -> List[NewApiService]:
+    """获取 new-api 服务列表"""
+    query = db.query(NewApiService)
+    if enabled is not None:
+        query = query.filter(NewApiService.enabled == enabled)
+    return query.order_by(asc(NewApiService.priority), asc(NewApiService.id)).all()
+
+
+def update_new_api_service(db: Session, service_id: int, **kwargs) -> Optional[NewApiService]:
+    """更新 new-api 服务配置"""
+    svc = get_new_api_service_by_id(db, service_id)
+    if not svc:
+        return None
+    for key, value in kwargs.items():
+        if hasattr(svc, key):
+            setattr(svc, key, value)
+    db.commit()
+    db.refresh(svc)
+    return svc
+
+
+def delete_new_api_service(db: Session, service_id: int) -> bool:
+    """删除 new-api 服务配置"""
+    svc = get_new_api_service_by_id(db, service_id)
+    if not svc:
+        return False
+    db.delete(svc)
+    db.commit()
+    return True
+
+
+# ============================================================================
+# 计划注册任务 CRUD
+# ============================================================================
+
+def create_scheduled_registration_job(
+    db: Session,
+    job_uuid: str,
+    name: str,
+    schedule_type: str,
+    schedule_config: Dict[str, Any],
+    registration_config: Dict[str, Any],
+    next_run_at: Optional[datetime],
+    enabled: bool = True,
+    timezone: str = 'local',
+    status: str = 'idle',
+) -> ScheduledRegistrationJob:
+    """创建计划注册任务"""
+    job = ScheduledRegistrationJob(
+        job_uuid=job_uuid,
+        name=name,
+        enabled=enabled,
+        status=status,
+        schedule_type=schedule_type,
+        schedule_config=schedule_config,
+        registration_config=registration_config,
+        timezone=timezone,
+        next_run_at=next_run_at,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def get_scheduled_registration_job_by_uuid(db: Session, job_uuid: str) -> Optional[ScheduledRegistrationJob]:
+    """按 UUID 获取计划注册任务"""
+    return db.query(ScheduledRegistrationJob).filter(ScheduledRegistrationJob.job_uuid == job_uuid).first()
+
+
+def get_scheduled_registration_job_by_id(db: Session, job_id: int) -> Optional[ScheduledRegistrationJob]:
+    """按 ID 获取计划注册任务"""
+    return db.query(ScheduledRegistrationJob).filter(ScheduledRegistrationJob.id == job_id).first()
+
+
+def get_scheduled_registration_jobs(
+    db: Session,
+    enabled: Optional[bool] = None,
+    skip: int = 0,
+    limit: int = 100,
+) -> List[ScheduledRegistrationJob]:
+    """获取计划注册任务列表"""
+    query = db.query(ScheduledRegistrationJob)
+    if enabled is not None:
+        query = query.filter(ScheduledRegistrationJob.enabled == enabled)
+    return query.order_by(ScheduledRegistrationJob.created_at.desc()).offset(skip).limit(limit).all()
+
+
+def get_due_scheduled_registration_jobs(db: Session, now: datetime) -> List[ScheduledRegistrationJob]:
+    """获取到期的计划注册任务"""
+    return db.query(ScheduledRegistrationJob).filter(
+        ScheduledRegistrationJob.enabled == True,
+        ScheduledRegistrationJob.is_running == False,
+        ScheduledRegistrationJob.next_run_at.isnot(None),
+        ScheduledRegistrationJob.next_run_at <= now,
+    ).order_by(ScheduledRegistrationJob.next_run_at.asc(), ScheduledRegistrationJob.id.asc()).all()
+
+
+def get_running_scheduled_registration_jobs(db: Session) -> List[ScheduledRegistrationJob]:
+    """获取执行中的计划注册任务"""
+    return db.query(ScheduledRegistrationJob).filter(
+        ScheduledRegistrationJob.is_running == True,
+    ).order_by(ScheduledRegistrationJob.updated_at.asc(), ScheduledRegistrationJob.id.asc()).all()
+
+
+def update_scheduled_registration_job(
+    db: Session,
+    job_uuid: str,
+    **kwargs,
+) -> Optional[ScheduledRegistrationJob]:
+    """更新计划注册任务"""
+    job = get_scheduled_registration_job_by_uuid(db, job_uuid)
+    if not job:
+        return None
+    for key, value in kwargs.items():
+        if hasattr(job, key):
+            setattr(job, key, value)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def delete_scheduled_registration_job(db: Session, job_uuid: str) -> bool:
+    """删除计划注册任务"""
+    job = get_scheduled_registration_job_by_uuid(db, job_uuid)
+    if not job:
+        return False
+    db.delete(job)
+    db.commit()
+    return True
+
+
+def claim_scheduled_registration_job(
+    db: Session,
+    job_uuid: str,
+    next_run_at: Optional[datetime],
+    now: datetime,
+) -> Optional[ScheduledRegistrationJob]:
+    """抢占计划注册任务执行权"""
+    updated = db.query(ScheduledRegistrationJob).filter(
+        ScheduledRegistrationJob.job_uuid == job_uuid,
+        ScheduledRegistrationJob.enabled == True,
+        ScheduledRegistrationJob.is_running == False,
+    ).update({
+        'is_running': True,
+        'status': 'running',
+        'last_run_at': now,
+        'next_run_at': next_run_at,
+        'updated_at': now,
+    })
+    if not updated:
+        db.rollback()
+        return None
+    db.commit()
+    return get_scheduled_registration_job_by_uuid(db, job_uuid)
+
+
+def mark_scheduled_registration_job_success(
+    db: Session,
+    job_uuid: str,
+    now: datetime,
+    task_uuid: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    status: str = 'scheduled',
+) -> Optional[ScheduledRegistrationJob]:
+    """标记计划注册任务已成功触发执行"""
+    job = get_scheduled_registration_job_by_uuid(db, job_uuid)
+    if not job:
+        return None
+    job.is_running = False
+    job.status = status
+    job.last_success_at = now
+    job.last_error = None
+    job.run_count = (job.run_count or 0) + 1
+    job.consecutive_failures = 0
+    job.last_triggered_task_uuid = task_uuid
+    job.last_triggered_batch_id = batch_id
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def mark_scheduled_registration_job_failure(
+    db: Session,
+    job_uuid: str,
+    error_message: str,
+    now: datetime,
+) -> Optional[ScheduledRegistrationJob]:
+    """标记计划注册任务执行失败"""
+    job = get_scheduled_registration_job_by_uuid(db, job_uuid)
+    if not job:
+        return None
+    job.is_running = False
+    job.status = 'failed'
+    job.last_error = error_message
+    job.run_count = (job.run_count or 0) + 1
+    job.consecutive_failures = (job.consecutive_failures or 0) + 1
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def mark_scheduled_registration_job_skipped(
+    db: Session,
+    job_uuid: str,
+    error_message: str,
+) -> Optional[ScheduledRegistrationJob]:
+    """标记计划注册任务跳过执行"""
+    job = get_scheduled_registration_job_by_uuid(db, job_uuid)
+    if not job:
+        return None
+    job.last_error = error_message
+    job.status = 'idle' if job.enabled else 'paused'
+    db.commit()
+    db.refresh(job)
+    return job

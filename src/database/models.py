@@ -233,6 +233,48 @@ class TeamManagerService(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class NewApiService(Base):
+    """new-api 服务配置表"""
+    __tablename__ = 'new_api_services'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    api_url = Column(String(500), nullable=False)
+    username = Column(String(100))
+    password = Column(Text)
+    api_key = Column(Text, nullable=False, default='')
+    enabled = Column(Boolean, default=True)
+    priority = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ScheduledRegistrationJob(Base):
+    """计划注册任务表"""
+    __tablename__ = 'scheduled_registration_jobs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_uuid = Column(String(36), unique=True, nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    enabled = Column(Boolean, default=True, index=True)
+    status = Column(String(20), default='idle')
+    schedule_type = Column(String(20), nullable=False)
+    schedule_config = Column(JSONEncodedDict, nullable=False)
+    registration_config = Column(JSONEncodedDict, nullable=False)
+    timezone = Column(String(50), default='local')
+    next_run_at = Column(DateTime, index=True)
+    last_run_at = Column(DateTime)
+    last_success_at = Column(DateTime)
+    last_error = Column(Text)
+    run_count = Column(Integer, default=0)
+    consecutive_failures = Column(Integer, default=0)
+    is_running = Column(Boolean, default=False, index=True)
+    last_triggered_task_uuid = Column(String(36))
+    last_triggered_batch_id = Column(String(36))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Proxy(Base):
     """代理列表表"""
     __tablename__ = 'proxies'

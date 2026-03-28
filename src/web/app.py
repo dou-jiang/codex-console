@@ -22,6 +22,7 @@ from ..config.project_notice import PROJECT_NOTICE
 from .routes import api_router
 from .routes.websocket import router as ws_router
 from .task_manager import task_manager
+from .scheduler import scheduled_registration_service
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,8 @@ def create_app() -> FastAPI:
         # 启动时先执行一次，再开启定时任务
         await run_log_cleanup_once()
         app.state.log_cleanup_task = asyncio.create_task(periodic_log_cleanup())
+        await scheduled_registration_service.start()
+        app.state.scheduled_registration_service = scheduled_registration_service
 
         logger.info("=" * 50)
         logger.info(f"{settings.app_name} v{settings.app_version} 启动中，程序正在伸懒腰...")
@@ -282,6 +285,9 @@ def create_app() -> FastAPI:
         cleanup_task = getattr(app.state, "log_cleanup_task", None)
         if cleanup_task:
             cleanup_task.cancel()
+        scheduler_service = getattr(app.state, "scheduled_registration_service", None)
+        if scheduler_service:
+            await scheduler_service.stop()
         logger.info("应用关闭，今天先收摊啦")
 
     return app

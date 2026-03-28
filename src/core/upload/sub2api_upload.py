@@ -22,7 +22,6 @@ def upload_to_sub2api(
     api_key: str,
     concurrency: int = 3,
     priority: int = 50,
-    target_type: str = "sub2api",
 ) -> Tuple[bool, str]:
     """
     上传账号列表到 Sub2API 平台（不走代理）
@@ -90,7 +89,7 @@ def upload_to_sub2api(
 
     payload = {
         "data": {
-            "type": "newapi-data" if str(target_type).lower() == "newapi" else "sub2api-data",
+            "type": "sub2api-data",
             "version": 1,
             "exported_at": exported_at,
             "proxies": [],
@@ -139,7 +138,6 @@ def batch_upload_to_sub2api(
     api_key: str,
     concurrency: int = 3,
     priority: int = 50,
-    target_type: str = "sub2api",
 ) -> dict:
     """
     批量上传指定 ID 的账号到 Sub2API 平台
@@ -171,7 +169,7 @@ def batch_upload_to_sub2api(
         if not accounts:
             return results
 
-        success, message = upload_to_sub2api(accounts, api_url, api_key, concurrency, priority, target_type)
+        success, message = upload_to_sub2api(accounts, api_url, api_key, concurrency, priority)
 
         if success:
             for acc in accounts:
