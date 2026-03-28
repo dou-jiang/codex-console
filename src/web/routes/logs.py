@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 
 from ...core.db_logs import cleanup_database_logs
-from ...core.timezone_utils import to_shanghai_iso
+from ...core.timezone_utils import to_shanghai_iso, utcnow_naive
 from ...database.models import AppLog
 from ...database.session import get_db
 
@@ -60,7 +60,7 @@ def list_logs(
             )
 
         if since_minutes:
-            since_at = datetime.utcnow() - timedelta(minutes=since_minutes)
+            since_at = utcnow_naive() - timedelta(minutes=since_minutes)
             query = query.filter(AppLog.created_at >= since_at)
 
         total = query.count()

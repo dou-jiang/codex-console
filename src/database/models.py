@@ -2,15 +2,18 @@
 SQLAlchemy ORM 模型定义
 """
 
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Optional, Dict, Any
 import json
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.types import TypeDecorator
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
+
+
+def utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class JSONEncodedDict(TypeDecorator):
@@ -45,7 +48,7 @@ class Account(Base):
     email_service = Column(String(50), nullable=False)  # 'tempmail', 'outlook', 'moe_mail'
     email_service_id = Column(String(255))  # 邮箱服务中的ID
     proxy_used = Column(String(255))
-    registered_at = Column(DateTime, default=datetime.utcnow)
+    registered_at = Column(DateTime, default=utcnow)
     last_refresh = Column(DateTime)  # 最后刷新时间
     expires_at = Column(DateTime)  # Token 过期时间
     status = Column(String(20), default='active')  # 'active', 'expired', 'banned', 'failed'
@@ -56,8 +59,8 @@ class Account(Base):
     subscription_type = Column(String(20))  # None / 'plus' / 'team'
     subscription_at = Column(DateTime)  # 订阅开通时间
     cookies = Column(Text)  # 完整 cookie 字符串，用于支付请求
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
     bind_card_tasks = relationship("BindCardTask", back_populates="account")
 
     def to_dict(self) -> Dict[str, Any]:
@@ -96,8 +99,8 @@ class EmailService(Base):
     enabled = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # 使用优先级
     last_used = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class RegistrationTask(Base):
@@ -112,7 +115,7 @@ class RegistrationTask(Base):
     logs = Column(Text)  # 注册过程日志
     result = Column(JSONEncodedDict)  # 注册结果
     error_message = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
 
@@ -143,8 +146,8 @@ class BindCardTask(Base):
     opened_at = Column(DateTime)
     last_checked_at = Column(DateTime)
     completed_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     # 关系
     account = relationship("Account", back_populates="bind_card_tasks")
@@ -162,7 +165,7 @@ class AppLog(Base):
     lineno = Column(Integer)
     message = Column(Text, nullable=False)
     exception = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=utcnow, index=True)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -186,7 +189,7 @@ class Setting(Base):
     value = Column(Text)
     description = Column(Text)
     category = Column(String(50), default='general')  # 'general', 'email', 'proxy', 'openai'
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class CpaService(Base):
@@ -200,8 +203,8 @@ class CpaService(Base):
     proxy_url = Column(String(1000))  # ?? URL
     enabled = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # 优先级
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class Sub2ApiService(Base):
@@ -215,8 +218,8 @@ class Sub2ApiService(Base):
     target_type = Column(String(50), nullable=False, default='sub2api')  # sub2api/newapi
     enabled = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # 优先级
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class TeamManagerService(Base):
@@ -229,8 +232,8 @@ class TeamManagerService(Base):
     api_key = Column(Text, nullable=False)  # X-API-Key
     enabled = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # 优先级
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class Proxy(Base):
@@ -248,8 +251,8 @@ class Proxy(Base):
     is_default = Column(Boolean, default=False)  # 是否为默认代理
     priority = Column(Integer, default=0)  # 优先级（保留字段）
     last_used = Column(DateTime)  # 最后使用时间
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     def to_dict(self, include_password: bool = False) -> Dict[str, Any]:
         """转换为字典"""

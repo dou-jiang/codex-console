@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Body
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func
 
 from ...config.constants import AccountStatus
@@ -27,6 +27,7 @@ from ...core.upload.team_manager_upload import upload_to_team_manager, batch_upl
 from ...core.upload.sub2api_upload import batch_upload_to_sub2api, upload_to_sub2api
 
 from ...core.dynamic_proxy import get_proxy_url_for_task
+from ...core.timezone_utils import utcnow_naive
 from ...database import crud
 from ...database.models import Account
 from ...database.session import get_db
@@ -99,8 +100,7 @@ class AccountResponse(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AccountListResponse(BaseModel):
@@ -587,7 +587,7 @@ def _get_account_overview_data(
             # 避免把本地已确认的付费订阅（plus/team）被远端偶发 free/basic 覆盖降级。
             if detected_sub and current_sub != detected_sub:
                 account.subscription_type = detected_sub
-                account.subscription_at = datetime.utcnow() if detected_sub else None
+                account.subscription_at = utcnow_naive() if detected_sub else None
                 updated = True
             elif not detected_sub and current_sub in PAID_SUBSCRIPTION_TYPES:
                 logger.info(
@@ -660,7 +660,7 @@ async def create_manual_account(request: ManualAccountCreateRequest):
             )
             if subscription_type:
                 account.subscription_type = subscription_type
-                account.subscription_at = datetime.utcnow()
+                account.subscription_at = utcnow_naive()
                 db.commit()
                 db.refresh(account)
         except Exception as exc:
@@ -821,14 +821,14 @@ async def import_accounts(request: ImportAccountsRequest):
                         "proxy_used": _safe_text(item.proxy_used),
                         "source": source,
                         "extra_data": metadata,
-                        "last_refresh": datetime.utcnow(),
+                        "last_refresh": utcnow_naive(),
                     }
                     clean_update_payload = {k: v for k, v in update_payload.items() if v is not None}
                     account = crud.update_account(db, exists.id, **clean_update_payload)
                     if account is None:
                         raise RuntimeError("更新账号失败")
                     account.subscription_type = subscription_type
-                    account.subscription_at = datetime.utcnow() if subscription_type else None
+                    account.subscription_at = utcnow_naive() if subscription_type else None
                     db.commit()
                     result["updated"] += 1
                     continue
@@ -853,7 +853,7 @@ async def import_accounts(request: ImportAccountsRequest):
                 )
                 if subscription_type:
                     account.subscription_type = subscription_type
-                    account.subscription_at = datetime.utcnow()
+                    account.subscription_at = utcnow_naive()
                     db.commit()
                 result["created"] += 1
             except Exception as exc:
@@ -1341,7 +1341,7 @@ async def get_account_tokens(account_id: int):
         # 若 DB 为空但 cookies 可解析到 session_token，自动回写，避免后续重复解析。
         if resolved_session_token and not str(account.session_token or "").strip():
             account.session_token = resolved_session_token
-            account.last_refresh = datetime.utcnow()
+            account.last_refresh = utcnow_naive()
             db.commit()
             db.refresh(account)
 
@@ -1384,7 +1384,7 @@ async def update_account(account_id: int, request: AccountUpdateRequest):
         if request.session_token is not None:
             # 留空则清空，非空则更新
             update_data["session_token"] = request.session_token or None
-            update_data["last_refresh"] = datetime.utcnow()
+            update_data["last_refresh"] = utcnow_naive()
 
         account = crud.update_account(db, account_id, **update_data)
         return account_to_response(account)
@@ -2045,7 +2045,7 @@ async def upload_account_to_cpa(account_id: int, request: Optional[CPAUploadRequ
 
         if success:
             account.cpa_uploaded = True
-            account.cpa_uploaded_at = datetime.utcnow()
+            account.cpa_uploaded_at = utcnow_naive()
             db.commit()
             return {"success": True, "message": message}
         else:
