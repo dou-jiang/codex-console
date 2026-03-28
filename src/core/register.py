@@ -1309,10 +1309,7 @@ class RegistrationEngine:
                 self._log("处理 OAuth 回调，准备把 token 请出来...")
                 token_info = self._handle_oauth_callback(callback_url)
                 if token_info:
-                    result.account_id = token_info.get("account_id", "")
-                    result.access_token = token_info.get("access_token", "") or result.access_token
-                    result.refresh_token = token_info.get("refresh_token", "")
-                    result.id_token = token_info.get("id_token", "")
+                    self._apply_oauth_token_info(result, token_info)
                 elif captured:
                     self._log("OAuth 回调失败，但 session/access 已拿到，继续后续流程", "warning")
                 else:
@@ -1517,10 +1514,7 @@ class RegistrationEngine:
             result.error_message = "处理 OAuth 回调失败"
             return False
 
-        result.account_id = token_info.get("account_id", "")
-        result.access_token = token_info.get("access_token", "")
-        result.refresh_token = token_info.get("refresh_token", "")
-        result.id_token = token_info.get("id_token", "")
+        self._apply_oauth_token_info(result, token_info)
         result.password = self.password or ""
         result.source = "login" if self._is_existing_account else "register"
         result.device_id = result.device_id or str(self.device_id or "")
@@ -1621,10 +1615,7 @@ class RegistrationEngine:
             result.error_message = "处理 OAuth 回调失败"
             return False
 
-        result.account_id = str(token_info.get("account_id") or result.account_id or "").strip()
-        result.access_token = str(token_info.get("access_token") or result.access_token or "").strip()
-        result.refresh_token = str(token_info.get("refresh_token") or result.refresh_token or "").strip()
-        result.id_token = str(token_info.get("id_token") or result.id_token or "").strip()
+        self._apply_oauth_token_info(result, token_info)
         result.password = self.password or ""
         result.source = "login" if self._is_existing_account else "register"
         result.device_id = result.device_id or str(self.device_id or "")
@@ -1740,10 +1731,7 @@ class RegistrationEngine:
             if callback_url and (not callback_has_error):
                 token_info = self._handle_oauth_callback(callback_url)
                 if token_info:
-                    result.account_id = str(token_info.get("account_id") or result.account_id or "").strip()
-                    result.access_token = str(token_info.get("access_token") or result.access_token or "").strip()
-                    result.refresh_token = str(token_info.get("refresh_token") or result.refresh_token or "").strip()
-                    result.id_token = str(token_info.get("id_token") or result.id_token or "").strip()
+                    self._apply_oauth_token_info(result, token_info)
                     self._log(
                         "原生入口 token 抓取结果: "
                         f"account_id={'有' if bool(result.account_id) else '无'}, "
@@ -2613,6 +2601,14 @@ class RegistrationEngine:
         except Exception as e:
             self._log(f"处理 OAuth 回调失败: {e}", "error")
             return None
+
+    def _apply_oauth_token_info(self, result: RegistrationResult, token_info: Dict[str, Any]) -> None:
+        """统一应用 OAuth callback 返回的 token/account/workspace 信息。"""
+        result.account_id = str(token_info.get("account_id") or result.account_id or "").strip()
+        result.workspace_id = str(token_info.get("workspace_id") or result.workspace_id or "").strip()
+        result.access_token = str(token_info.get("access_token") or result.access_token or "").strip()
+        result.refresh_token = str(token_info.get("refresh_token") or result.refresh_token or "").strip()
+        result.id_token = str(token_info.get("id_token") or result.id_token or "").strip()
 
     def run(self) -> RegistrationResult:
         """
