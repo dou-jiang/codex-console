@@ -15,6 +15,7 @@ from sqlalchemy import func
 from ..config.settings import get_settings
 from ..database.models import AppLog
 from ..database.session import get_db
+from .timezone_utils import utcnow_naive
 
 
 _INSTALL_LOCK = threading.Lock()
@@ -120,7 +121,7 @@ def cleanup_database_logs(
     keep_days = int(retention_days if retention_days is not None else settings.log_retention_days or 30)
     keep_days = max(1, keep_days)
     max_rows = max(1000, int(max_rows))
-    cutoff = datetime.utcnow() - timedelta(days=keep_days)
+    cutoff = utcnow_naive() - timedelta(days=keep_days)
 
     deleted_by_age = 0
     deleted_by_limit = 0

@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..task_manager import task_manager
+from .registration import _cancel_batch_tasks
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -145,6 +146,7 @@ async def batch_websocket(websocket: WebSocket, batch_id: str):
                 # 处理取消请求
                 elif data.get("type") == "cancel":
                     task_manager.cancel_batch(batch_id)
+                    _cancel_batch_tasks(batch_id)
                     await websocket.send_json({
                         "type": "status",
                         "batch_id": batch_id,

@@ -38,6 +38,10 @@ def now_shanghai() -> datetime:
     return datetime.now(UTC).astimezone(SHANGHAI_TZ)
 
 
+def utcnow_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 def to_utc(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None

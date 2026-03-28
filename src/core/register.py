@@ -96,7 +96,8 @@ class RegistrationEngine:
         email_service: BaseEmailService,
         proxy_url: Optional[str] = None,
         callback_logger: Optional[Callable[[str], None]] = None,
-        task_uuid: Optional[str] = None
+        task_uuid: Optional[str] = None,
+        cancel_requested: Optional[Callable[[], bool]] = None
     ):
         """
         初始化注册引擎
@@ -111,6 +112,7 @@ class RegistrationEngine:
         self.proxy_url = proxy_url
         self.callback_logger = callback_logger or (lambda msg: logger.info(msg))
         self.task_uuid = task_uuid
+        self.cancel_requested = cancel_requested or (lambda: False)
 
         # 创建 HTTP 客户端
         self.http_client = OpenAIHTTPClient(proxy_url=proxy_url)
@@ -152,6 +154,24 @@ class RegistrationEngine:
         self._last_otp_validation_code: Optional[str] = None
         self._last_otp_validation_status_code: Optional[int] = None
         self._last_otp_validation_outcome: str = ""  # success/http_non_200/network_timeout/network_error
+
+    def _is_cancelled(self) -> bool:
+        try:
+            return bool(self.cancel_requested())
+        except Exception:
+            return False
+
+    def _raise_if_cancelled(self) -> None:
+        if self._is_cancelled():
+            raise RuntimeError("任务已取消")
+
+    def _sleep_with_cancel(self, seconds: float) -> None:
+        remaining = max(0.0, float(seconds or 0))
+        while remaining > 0:
+            self._raise_if_cancelled()
+            chunk = min(0.5, remaining)
+            time.sleep(chunk)
+            remaining -= chunk
 
     def _log(self, message: str, level: str = "info"):
         """记录日志"""
@@ -449,7 +469,7 @@ class RegistrationEngine:
                 )
 
             if attempt < max_attempts:
-                time.sleep(attempt)
+                self._sleep_with_cancel(attempt)
                 self.http_client.close()
                 self.session = self.http_client.session
 
@@ -536,7 +556,7 @@ class RegistrationEngine:
                         f"{log_label}命中限流 429（第 {attempt}/{max_attempts} 次），{wait_seconds}s 后自动重试...",
                         "warning",
                     )
-                    time.sleep(wait_seconds)
+                    self._sleep_with_cancel(wait_seconds)
                     continue
 
                 # 部分网络/会话边界情况下会返回 409，做自愈重试而非直接失败。
@@ -560,7 +580,7 @@ class RegistrationEngine:
                             self.session.get(str(self.oauth_start.auth_url), timeout=12)
                     except Exception:
                         pass
-                    time.sleep(wait_seconds)
+                    self._sleep_with_cancel(wait_seconds)
                     continue
 
                 if response.status_code != 200:
@@ -603,7 +623,7 @@ class RegistrationEngine:
                         f"{log_label}异常（第 {attempt}/{max_attempts} 次）: {e}，准备重试...",
                         "warning",
                     )
-                    time.sleep(2 * attempt)
+                    self._sleep_with_cancel(2 * attempt)
                     continue
                 self._log(f"{log_label}失败: {e}", "error")
                 return SignupFormResult(success=False, error_message=str(e))
@@ -680,7 +700,7 @@ class RegistrationEngine:
                         f"提交登录密码命中限流 429（第 {attempt}/{max_attempts} 次），{wait_seconds}s 后自动重试...",
                         "warning",
                     )
-                    time.sleep(wait_seconds)
+                    self._sleep_with_cancel(wait_seconds)
                     continue
 
                 if response.status_code == 401 and attempt < max_attempts:
@@ -692,7 +712,7 @@ class RegistrationEngine:
                             f"疑似密码尚未生效或历史账号密码不一致，{wait_seconds}s 后自动重试...",
                             "warning",
                         )
-                        time.sleep(wait_seconds)
+                        self._sleep_with_cancel(wait_seconds)
                         continue
 
                 if response.status_code != 200:
@@ -723,7 +743,7 @@ class RegistrationEngine:
                         f"提交登录密码异常（第 {attempt}/{max_attempts} 次）: {e}，准备重试...",
                         "warning",
                     )
-                    time.sleep(2 * attempt)
+                    self._sleep_with_cancel(2 * attempt)
                     continue
                 self._log(f"提交登录密码失败: {e}", "error")
                 return SignupFormResult(success=False, error_message=str(e))
@@ -2103,6 +2123,7 @@ class RegistrationEngine:
     def _get_verification_code(self, timeout: Optional[int] = None) -> Optional[str]:
         """获取验证码"""
         try:
+            self._raise_if_cancelled()
             mailbox_email = str(self.inbox_email or self.email or "").strip()
             self._log(f"正在等待邮箱 {mailbox_email} 的验证码...")
 
@@ -2239,7 +2260,7 @@ class RegistrationEngine:
                         f"{stage_label}第 {attempt}/{max_attempts} 次未取到验证码，稍后重试...",
                         "warning",
                     )
-                    time.sleep(2)
+                    self._sleep_with_cancel(2)
                     continue
                 return False
 
@@ -2257,7 +2278,7 @@ class RegistrationEngine:
                     if self._validate_verification_code(code):
                         return True
                     if attempt < max_attempts:
-                        time.sleep(2)
+                        self._sleep_with_cancel(2)
                         continue
                     return False
 
@@ -2266,7 +2287,7 @@ class RegistrationEngine:
                         f"{stage_label}第 {attempt}/{max_attempts} 次命中重复验证码 {code}，等待新邮件...",
                         "warning",
                     )
-                    time.sleep(2)
+                    self._sleep_with_cancel(2)
                     continue
                 return False
 
@@ -2280,7 +2301,7 @@ class RegistrationEngine:
                     f"{stage_label}第 {attempt}/{max_attempts} 次校验未通过，疑似旧验证码，自动重试下一封...",
                     "warning",
                 )
-                time.sleep(2)
+                self._sleep_with_cancel(2)
 
         return False
 
@@ -2638,6 +2659,7 @@ class RegistrationEngine:
             self._create_account_refresh_token = None
             self._last_validate_otp_continue_url = None
             self._last_validate_otp_workspace_id = None
+            self._raise_if_cancelled()
 
             self._log("=" * 60)
             self._log("注册流程启动，开始替你敲门")
@@ -2660,6 +2682,7 @@ class RegistrationEngine:
                 return result
 
             self._log(f"IP 位置: {location}")
+            self._raise_if_cancelled()
 
             # 2. 创建邮箱
             self._log("2. 开个新邮箱，准备收信...")
@@ -2668,6 +2691,7 @@ class RegistrationEngine:
                 return result
 
             result.email = self.email
+            self._raise_if_cancelled()
 
             # 3. 准备首轮授权流程
             did, sen_token = self._prepare_authorize_flow("首次授权")
@@ -2678,6 +2702,7 @@ class RegistrationEngine:
             if not sen_token:
                 result.error_message = "Sentinel POW 验证失败"
                 return result
+            self._raise_if_cancelled()
 
             # 4. 提交注册入口邮箱
             self._log("4. 递上邮箱，看看 OpenAI 这球怎么接...")
@@ -2710,6 +2735,7 @@ class RegistrationEngine:
                 if not self._create_user_account():
                     result.error_message = "创建用户账户失败"
                     return result
+                self._raise_if_cancelled()
 
                 if effective_entry_flow in {"native", "outlook"}:
                     login_ready, login_error = self._restart_login_flow()

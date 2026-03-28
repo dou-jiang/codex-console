@@ -4,7 +4,7 @@ CPA 服务管理 API 路由
 
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ....database import crud
 from ....database.session import get_db
@@ -44,8 +44,7 @@ class CpaServiceResponse(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CpaServiceTestRequest(BaseModel):

@@ -10,8 +10,13 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from ...config.settings import get_settings, update_settings
+from ...core.auto_registration import (
+    trigger_auto_registration_check,
+    update_auto_registration_state,
+)
 from ...database import crud
 from ...database.session import get_db
+from ...services import EmailServiceType
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,6 +55,17 @@ class RegistrationSettings(BaseModel):
     sleep_min: int = 5
     sleep_max: int = 30
     entry_flow: str = "native"
+    auto_enabled: bool = False
+    auto_check_interval: int = 60
+    auto_min_ready_auth_files: int = 1
+    auto_email_service_type: str = "tempmail"
+    auto_email_service_id: int = 0
+    auto_proxy: Optional[str] = None
+    auto_interval_min: int = 5
+    auto_interval_max: int = 30
+    auto_concurrency: int = 1
+    auto_mode: str = "pipeline"
+    auto_cpa_service_id: int = 0
 
 
 class WebUISettings(BaseModel):
@@ -98,6 +114,17 @@ async def get_all_settings():
             "sleep_min": settings.registration_sleep_min,
             "sleep_max": settings.registration_sleep_max,
             "entry_flow": entry_flow,
+            "auto_enabled": settings.registration_auto_enabled,
+            "auto_check_interval": settings.registration_auto_check_interval,
+            "auto_min_ready_auth_files": settings.registration_auto_min_ready_auth_files,
+            "auto_email_service_type": settings.registration_auto_email_service_type,
+            "auto_email_service_id": settings.registration_auto_email_service_id,
+            "auto_proxy": settings.registration_auto_proxy,
+            "auto_interval_min": settings.registration_auto_interval_min,
+            "auto_interval_max": settings.registration_auto_interval_max,
+            "auto_concurrency": settings.registration_auto_concurrency,
+            "auto_mode": settings.registration_auto_mode,
+            "auto_cpa_service_id": settings.registration_auto_cpa_service_id,
         },
         "webui": {
             "host": settings.webui_host,
@@ -228,17 +255,80 @@ async def get_registration_settings():
         "sleep_min": settings.registration_sleep_min,
         "sleep_max": settings.registration_sleep_max,
         "entry_flow": entry_flow,
+        "auto_enabled": settings.registration_auto_enabled,
+        "auto_check_interval": settings.registration_auto_check_interval,
+        "auto_min_ready_auth_files": settings.registration_auto_min_ready_auth_files,
+        "auto_email_service_type": settings.registration_auto_email_service_type,
+        "auto_email_service_id": settings.registration_auto_email_service_id,
+        "auto_proxy": settings.registration_auto_proxy,
+        "auto_interval_min": settings.registration_auto_interval_min,
+        "auto_interval_max": settings.registration_auto_interval_max,
+        "auto_concurrency": settings.registration_auto_concurrency,
+        "auto_mode": settings.registration_auto_mode,
+        "auto_cpa_service_id": settings.registration_auto_cpa_service_id,
     }
 
 
 @router.post("/registration")
 async def update_registration_settings(request: RegistrationSettings):
     """更新注册设置"""
+    if request.timeout < 30 or request.timeout > 600:
+        raise HTTPException(status_code=400, detail="注册超时时间必须在 30-600 秒之间")
+
+    if request.default_password_length < 8 or request.default_password_length > 64:
+        raise HTTPException(status_code=400, detail="密码长度必须在 8-64 之间")
+
+    if request.sleep_min < 1 or request.sleep_max < request.sleep_min:
+        raise HTTPException(status_code=400, detail="注册等待时间参数无效")
+
     flow_raw = (request.entry_flow or "native").strip().lower()
     # 兼容旧前端历史值：outlook -> native（Outlook 邮箱会在运行时自动走 outlook 链路）。
     flow = "native" if flow_raw == "outlook" else flow_raw
     if flow not in {"native", "abcard"}:
         raise HTTPException(status_code=400, detail="entry_flow 仅支持 native / abcard")
+
+    if request.auto_check_interval < 5 or request.auto_check_interval > 3600:
+        raise HTTPException(status_code=400, detail="自动注册检查间隔必须在 5-3600 秒之间")
+
+    if request.auto_min_ready_auth_files < 1 or request.auto_min_ready_auth_files > 10000:
+        raise HTTPException(status_code=400, detail="自动注册保底数量必须在 1-10000 之间")
+
+    try:
+        EmailServiceType(request.auto_email_service_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="自动注册邮箱服务类型无效") from exc
+
+    normalized_auto_email_service_type = (
+        "imap_mail" if request.auto_email_service_type == "catchall_imap" else request.auto_email_service_type
+    )
+
+    if request.auto_interval_min < 0 or request.auto_interval_max < request.auto_interval_min:
+        raise HTTPException(status_code=400, detail="自动注册间隔时间参数无效")
+
+    if request.auto_concurrency < 1 or request.auto_concurrency > 100:
+        raise HTTPException(status_code=400, detail="自动注册并发数必须在 1-100 之间")
+
+    if request.auto_mode not in ("parallel", "pipeline"):
+        raise HTTPException(status_code=400, detail="自动注册模式必须为 parallel 或 pipeline")
+
+    if request.auto_enabled and request.auto_cpa_service_id <= 0:
+        raise HTTPException(status_code=400, detail="启用自动注册时必须选择一个 CPA 服务")
+
+    with get_db() as db:
+        if request.auto_enabled:
+            cpa_service = crud.get_cpa_service_by_id(db, request.auto_cpa_service_id)
+            if not cpa_service or not cpa_service.enabled:
+                raise HTTPException(status_code=400, detail="自动注册选择的 CPA 服务不存在或已禁用")
+
+        if request.auto_email_service_id > 0:
+            email_service = crud.get_email_service_by_id(db, request.auto_email_service_id)
+            if not email_service or not email_service.enabled:
+                raise HTTPException(status_code=400, detail="自动注册选择的邮箱服务不存在或已禁用")
+            normalized_service_type = (
+                "imap_mail" if email_service.service_type == "catchall_imap" else email_service.service_type
+            )
+            if normalized_service_type != normalized_auto_email_service_type:
+                raise HTTPException(status_code=400, detail="自动注册邮箱服务类型与指定服务不匹配")
 
     update_settings(
         registration_max_retries=request.max_retries,
@@ -247,7 +337,36 @@ async def update_registration_settings(request: RegistrationSettings):
         registration_sleep_min=request.sleep_min,
         registration_sleep_max=request.sleep_max,
         registration_entry_flow=flow,
+        registration_auto_enabled=request.auto_enabled,
+        registration_auto_check_interval=request.auto_check_interval,
+        registration_auto_min_ready_auth_files=request.auto_min_ready_auth_files,
+        registration_auto_email_service_type=normalized_auto_email_service_type,
+        registration_auto_email_service_id=max(0, request.auto_email_service_id),
+        registration_auto_proxy=(request.auto_proxy or "").strip(),
+        registration_auto_interval_min=request.auto_interval_min,
+        registration_auto_interval_max=request.auto_interval_max,
+        registration_auto_concurrency=request.auto_concurrency,
+        registration_auto_mode=request.auto_mode,
+        registration_auto_cpa_service_id=max(0, request.auto_cpa_service_id),
     )
+
+    if request.auto_enabled:
+        update_auto_registration_state(
+            enabled=True,
+            status="checking",
+            message="自动注册设置已更新，正在立即检查库存",
+            target_ready_count=request.auto_min_ready_auth_files,
+        )
+        trigger_auto_registration_check()
+    else:
+        update_auto_registration_state(
+            enabled=False,
+            status="disabled",
+            message="自动注册已禁用",
+            current_batch_id=None,
+            current_ready_count=None,
+            target_ready_count=request.auto_min_ready_auth_files,
+        )
 
     return {"success": True, "message": "注册设置已更新"}
 
@@ -432,9 +551,10 @@ async def cleanup_database(
     keep_failed: bool = True
 ):
     """清理过期数据"""
-    from datetime import datetime, timedelta
+    from datetime import timedelta
+    from ...core.timezone_utils import utcnow_naive
 
-    cutoff_date = datetime.utcnow() - timedelta(days=days)
+    cutoff_date = utcnow_naive() - timedelta(days=days)
 
     with get_db() as db:
         from ...database.models import RegistrationTask
