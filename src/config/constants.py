@@ -40,6 +40,7 @@ class EmailServiceType(str, Enum):
     FREEMAIL = "freemail"
     IMAP_MAIL = "imap_mail"
     CLOUDMAIL = "cloudmail"
+    LUCKMAIL = "luckmail"
 
 
 # ============================================================================
@@ -149,6 +150,20 @@ EMAIL_SERVICE_DEFAULTS = {
         "password": "",
         "timeout": 30,
         "max_retries": 3,
+    },
+    "luckmail": {
+        "base_url": "https://mails.luckyous.com/",
+        "api_key": "",
+        "project_code": "openai",
+        "email_type": "ms_graph",
+        "preferred_domain": "",
+        "inbox_mode": "purchase",
+        "reuse_existing_purchases": True,
+        "purchase_scan_pages": 5,
+        "purchase_scan_page_size": 100,
+        "timeout": 30,
+        "max_retries": 3,
+        "poll_interval": 3.0,
     }
 }
 

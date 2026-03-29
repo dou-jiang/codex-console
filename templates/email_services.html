@@ -256,6 +256,7 @@
                             <option value="yydsmail">YYDS Mail (YYDS Mail API)</option>
                             <option value="tempmail">TempMail（自部署 Cloudflare Worker）</option>
                             <option value="duckmail">DuckMail（DuckMail API）</option>
+                            <option value="luckmail">LuckMail（接码平台）</option>
                             <option value="freemail">Freemail（自部署 Cloudflare Worker）</option>
                             <option value="imap">标准 IMAP（Gmail/QQ/163等）</option>
                         </select>
@@ -321,6 +322,34 @@
                         <div class="form-group">
                             <label for="custom-dm-password-length">随机密码长度</label>
                             <input type="number" id="custom-dm-password-length" name="dm_password_length" min="6" max="64" value="12">
+                        </div>
+                    </div>
+                    <!-- LuckMail 字段 -->
+                    <div id="add-luckmail-fields" style="display:none;">
+                        <div class="form-group">
+                            <label for="custom-lm-base-url">平台地址</label>
+                            <input type="text" id="custom-lm-base-url" name="lm_base_url" placeholder="https://mails.luckyous.com/">
+                        </div>
+                        <div class="form-group">
+                            <label for="custom-lm-api-key">API Key</label>
+                            <input type="password" id="custom-lm-api-key" name="lm_api_key" placeholder="ak_xxx">
+                        </div>
+                        <div class="form-group">
+                            <label for="custom-lm-project-code">项目编码</label>
+                            <input type="text" id="custom-lm-project-code" name="lm_project_code" value="openai" placeholder="openai">
+                        </div>
+                        <div class="form-group">
+                            <label for="custom-lm-email-type">邮箱类型</label>
+                            <select id="custom-lm-email-type" name="lm_email_type">
+                                <option value="ms_graph">微软 Graph</option>
+                                <option value="ms_imap">微软 IMAP</option>
+                                <option value="self_built">自建邮箱</option>
+                                <option value="google_variant">谷歌变种</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="custom-lm-preferred-domain">优先域名 (可选)</label>
+                            <input type="text" id="custom-lm-preferred-domain" name="lm_preferred_domain" placeholder="outlook.com / gmail.com">
                         </div>
                     </div>
                     <!-- Freemail 字段 -->
@@ -473,6 +502,35 @@
                         <div class="form-group">
                             <label for="edit-dm-password-length">随机密码长度</label>
                             <input type="number" id="edit-dm-password-length" name="dm_password_length" min="6" max="64" value="12">
+                        </div>
+                    </div>
+                    <!-- LuckMail 字段 -->
+                    <div id="edit-luckmail-fields" style="display:none;">
+                        <div class="form-group">
+                            <label for="edit-lm-base-url">平台地址</label>
+                            <input type="text" id="edit-lm-base-url" name="lm_base_url" placeholder="https://mails.luckyous.com/">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-lm-api-key">API Key</label>
+                            <input type="password" id="edit-lm-api-key" name="lm_api_key" placeholder="留空则不修改">
+                            <small style="color: var(--text-muted);">留空则保持原值不变</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-lm-project-code">项目编码</label>
+                            <input type="text" id="edit-lm-project-code" name="lm_project_code" placeholder="openai">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-lm-email-type">邮箱类型</label>
+                            <select id="edit-lm-email-type" name="lm_email_type">
+                                <option value="ms_graph">微软 Graph</option>
+                                <option value="ms_imap">微软 IMAP</option>
+                                <option value="self_built">自建邮箱</option>
+                                <option value="google_variant">谷歌变种</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-lm-preferred-domain">优先域名 (可选)</label>
+                            <input type="text" id="edit-lm-preferred-domain" name="lm_preferred_domain" placeholder="outlook.com / gmail.com">
                         </div>
                     </div>
                     <!-- Freemail 字段 -->

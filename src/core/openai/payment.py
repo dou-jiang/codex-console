@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urljoin, unquote
 from curl_cffi import requests as cffi_requests
 
 from ...database.models import Account
-from .overview import fetch_codex_overview
+from .overview import fetch_codex_overview, AccountDeactivatedError
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,29 @@ def _build_proxies(proxy: Optional[str]) -> Optional[dict]:
     if proxy:
         return {"http": proxy, "https": proxy}
     return None
+
+
+def _raise_if_deactivated(resp, source: str) -> None:
+    if resp is None:
+        return
+    if getattr(resp, "status_code", None) != 401:
+        return
+    text = str(getattr(resp, "text", "") or "")
+    if "deactivated" in text.lower():
+        raise AccountDeactivatedError(f"account_deactivated({source}): {text[:200]}")
+
+
+def _request_json_with_deactivated(url: str, headers: Dict[str, str], proxy: Optional[str], source: str) -> Dict[str, Any]:
+    resp = cffi_requests.get(
+        url,
+        headers=headers,
+        proxies=_build_proxies(proxy),
+        timeout=20,
+        impersonate="chrome110",
+    )
+    _raise_if_deactivated(resp, source)
+    resp.raise_for_status()
+    return resp.json() if resp.content else {}
 
 
 def _is_connectivity_error(err: Any) -> bool:
@@ -1048,19 +1071,18 @@ def check_subscription_status_detail(account: Account, proxy: Optional[str] = No
 
     # 1) me 接口
     try:
-        resp = cffi_requests.get(
+        data = _request_json_with_deactivated(
             "https://chatgpt.com/backend-api/me",
             headers=headers,
-            proxies=_build_proxies(proxy),
-            timeout=20,
-            impersonate="chrome110",
+            proxy=proxy,
+            source="me",
         )
-        resp.raise_for_status()
         successful_sources.append("me")
-        data = resp.json() if resp.content else {}
         detected = _analyze_me_payload(data, "me")
         if detected:
             return detected
+    except AccountDeactivatedError as exc:
+        return _result("deactivated", "account_deactivated", "high", note=str(exc))
     except Exception as exc:
         errors.append(f"me: {exc}")
 
@@ -1069,16 +1091,13 @@ def check_subscription_status_detail(account: Account, proxy: Optional[str] = No
         try:
             headers_no_scope = dict(headers)
             headers_no_scope.pop("ChatGPT-Account-Id", None)
-            resp_no_scope = cffi_requests.get(
+            data_no_scope = _request_json_with_deactivated(
                 "https://chatgpt.com/backend-api/me",
                 headers=headers_no_scope,
-                proxies=_build_proxies(proxy),
-                timeout=20,
-                impersonate="chrome110",
+                proxy=proxy,
+                source="me_no_scope",
             )
-            resp_no_scope.raise_for_status()
             successful_sources.append("me_no_scope")
-            data_no_scope = resp_no_scope.json() if resp_no_scope.content else {}
             detected = _analyze_me_payload(data_no_scope, "me.no_scope")
             if detected:
                 logger.info(
@@ -1088,39 +1107,37 @@ def check_subscription_status_detail(account: Account, proxy: Optional[str] = No
                     detected.get("confidence"),
                 )
                 return detected
+        except AccountDeactivatedError as exc:
+            return _result("deactivated", "account_deactivated", "high", note=str(exc))
         except Exception as exc:
             errors.append(f"me_no_scope: {exc}")
 
     # 2) wham/usage（Cockpit-tools 同款核心）
     try:
-        usage_resp = cffi_requests.get(
+        usage_data = _request_json_with_deactivated(
             "https://chatgpt.com/backend-api/wham/usage",
             headers=headers,
-            proxies=_build_proxies(proxy),
-            timeout=20,
-            impersonate="chrome110",
+            proxy=proxy,
+            source="wham_usage",
         )
-        usage_resp.raise_for_status()
         successful_sources.append("wham_usage")
-        usage_data = usage_resp.json() if usage_resp.content else {}
         detected = _analyze_usage_payload(usage_data, "wham_usage")
         if detected:
             return detected
+    except AccountDeactivatedError as exc:
+        return _result("deactivated", "account_deactivated", "high", note=str(exc))
     except Exception as exc:
         errors.append(f"wham_usage: {exc}")
 
     # 3) wham/accounts/check（Cockpit-tools 用于账号资料同步的官方口径）
     try:
-        account_check_resp = cffi_requests.get(
+        account_check_data = _request_json_with_deactivated(
             ACCOUNT_CHECK_URL,
             headers=headers,
-            proxies=_build_proxies(proxy),
-            timeout=20,
-            impersonate="chrome110",
+            proxy=proxy,
+            source="wham_accounts_check",
         )
-        account_check_resp.raise_for_status()
         successful_sources.append("wham_accounts_check")
-        account_check_data = account_check_resp.json() if account_check_resp.content else {}
         for raw in _collect_plan_candidates(account_check_data):
             mapped = _map_plan_to_subscription(raw)
             if mapped in ("plus", "team"):
@@ -1128,6 +1145,8 @@ def check_subscription_status_detail(account: Account, proxy: Optional[str] = No
             if mapped == "free":
                 weak_free_source = weak_free_source or "wham_accounts_check.plan"
                 explicit_free_value = explicit_free_value or str(raw)
+    except AccountDeactivatedError as exc:
+        return _result("deactivated", "account_deactivated", "high", note=str(exc))
     except Exception as exc:
         errors.append(f"wham_accounts_check: {exc}")
 
@@ -1136,16 +1155,13 @@ def check_subscription_status_detail(account: Account, proxy: Optional[str] = No
         headers_no_scope = dict(headers)
         headers_no_scope.pop("ChatGPT-Account-Id", None)
         try:
-            usage_no_scope_resp = cffi_requests.get(
+            usage_no_scope_data = _request_json_with_deactivated(
                 "https://chatgpt.com/backend-api/wham/usage",
                 headers=headers_no_scope,
-                proxies=_build_proxies(proxy),
-                timeout=20,
-                impersonate="chrome110",
+                proxy=proxy,
+                source="wham_usage_no_scope",
             )
-            usage_no_scope_resp.raise_for_status()
             successful_sources.append("wham_usage_no_scope")
-            usage_no_scope_data = usage_no_scope_resp.json() if usage_no_scope_resp.content else {}
             detected = _analyze_usage_payload(usage_no_scope_data, "wham_usage.no_scope")
             if detected:
                 logger.info(
@@ -1155,20 +1171,19 @@ def check_subscription_status_detail(account: Account, proxy: Optional[str] = No
                     detected.get("confidence"),
                 )
                 return detected
+        except AccountDeactivatedError as exc:
+            return _result("deactivated", "account_deactivated", "high", note=str(exc))
         except Exception as exc:
             errors.append(f"wham_usage_no_scope: {exc}")
 
         try:
-            account_check_no_scope_resp = cffi_requests.get(
+            account_check_no_scope_data = _request_json_with_deactivated(
                 ACCOUNT_CHECK_URL,
                 headers=headers_no_scope,
-                proxies=_build_proxies(proxy),
-                timeout=20,
-                impersonate="chrome110",
+                proxy=proxy,
+                source="wham_accounts_check_no_scope",
             )
-            account_check_no_scope_resp.raise_for_status()
             successful_sources.append("wham_accounts_check_no_scope")
-            account_check_no_scope_data = account_check_no_scope_resp.json() if account_check_no_scope_resp.content else {}
             for raw in _collect_plan_candidates(account_check_no_scope_data):
                 mapped = _map_plan_to_subscription(raw)
                 if mapped in ("plus", "team"):
@@ -1176,6 +1191,8 @@ def check_subscription_status_detail(account: Account, proxy: Optional[str] = No
                 if mapped == "free":
                     weak_free_source = weak_free_source or "wham_accounts_check.no_scope.plan"
                     explicit_free_value = explicit_free_value or str(raw)
+        except AccountDeactivatedError as exc:
+            return _result("deactivated", "account_deactivated", "high", note=str(exc))
         except Exception as exc:
             errors.append(f"wham_accounts_check_no_scope: {exc}")
 

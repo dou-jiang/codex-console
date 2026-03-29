@@ -17,6 +17,14 @@ from ...database.models import Account
 
 logger = logging.getLogger(__name__)
 
+
+class AccountDeactivatedError(RuntimeError):
+    """账号被停用/冻结（401 with deactivated message）。"""
+
+    def __init__(self, message: str, status_code: int = 401):
+        super().__init__(message)
+        self.status_code = status_code
+
 _USAGE_ENDPOINTS: Tuple[Tuple[str, str, bool], ...] = (
     # required=True: 核心稳定端点，失败计入 errors
     ("me", "https://chatgpt.com/backend-api/me", True),
@@ -160,6 +168,10 @@ def _request_json(url: str, headers: Dict[str, str], proxy: Optional[str]) -> Di
         timeout=20,
         impersonate="chrome110",
     )
+    if resp.status_code == 401:
+        text = str(resp.text or "")
+        if "deactivated" in text.lower():
+            raise AccountDeactivatedError(f"account_deactivated: {text[:200]}")
     resp.raise_for_status()
     data = resp.json()
     if isinstance(data, dict):
@@ -173,6 +185,9 @@ def _extract_http_status(exc: Exception) -> Optional[int]:
         status = getattr(response, "status_code", None)
         if isinstance(status, int):
             return status
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
     match = re.search(r"HTTP Error\s+(\d{3})", str(exc))
     if match:
         try:
@@ -188,6 +203,8 @@ def _request_json_with_proxy_fallback(url: str, headers: Dict[str, str], proxy: 
     """
     try:
         return _request_json(url, headers, proxy)
+    except AccountDeactivatedError:
+        raise
     except Exception as proxy_exc:
         if not proxy:
             raise

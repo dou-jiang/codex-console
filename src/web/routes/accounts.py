@@ -19,7 +19,7 @@ from sqlalchemy import func
 
 from ...config.constants import AccountStatus
 from ...config.settings import get_settings
-from ...core.openai.overview import fetch_codex_overview
+from ...core.openai.overview import fetch_codex_overview, AccountDeactivatedError
 from ...core.openai.token_refresh import refresh_account_token as do_refresh
 from ...core.openai.token_refresh import validate_account_token as do_validate
 from ...core.upload.cpa_upload import generate_token_json, batch_upload_to_cpa, upload_to_cpa
@@ -603,6 +603,17 @@ def _get_account_overview_data(
         account.extra_data = merged_extra
         updated = True
         return overview, updated
+    except AccountDeactivatedError as exc:
+        logger.warning("账号被停用: email=%s err=%s", account.email, exc)
+        account.status = AccountStatus.BANNED.value
+        merged_extra = dict(extra_data)
+        merged_extra[OVERVIEW_EXTRA_DATA_KEY] = _fallback_overview(
+            account, error_message="account_deactivated", stale=True
+        )
+        merged_extra["account_deactivated_at"] = datetime.now(timezone.utc).isoformat()
+        account.extra_data = merged_extra
+        updated = True
+        return merged_extra[OVERVIEW_EXTRA_DATA_KEY], updated
     except Exception as exc:
         logger.warning(f"刷新账号[{account.email}]总览失败: {exc}")
         if cached:
@@ -2279,6 +2290,7 @@ def _build_inbox_config(db, service_type, email: str) -> dict:
         EST.FREEMAIL: "freemail",
         EST.IMAP_MAIL: "imap_mail",
         EST.OUTLOOK: "outlook",
+        EST.LUCKMAIL: "luckmail",
     }
     db_type = type_map.get(service_type)
     if not db_type:
