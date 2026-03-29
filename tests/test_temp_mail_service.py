@@ -1,4 +1,5 @@
 from src.services.temp_mail import TempMailService
+from src.services.freemail import FreemailService
 
 
 class FakeResponse:
@@ -289,3 +290,82 @@ def test_get_verification_code_admin_unfiltered_fallback():
     code = service.get_verification_code(email="target@example.com", timeout=1)
 
     assert code == "135790"
+
+
+def test_freemail_get_verification_code_skips_last_used_mail_id_between_calls():
+    service = FreemailService({
+        "base_url": "https://mail.example.com",
+        "admin_token": "admin-token",
+    })
+    fake_client = FakeHTTPClient([
+        FakeResponse(
+            payload=[
+                {
+                    "id": "mail-1",
+                    "sender": "noreply@openai.com",
+                    "subject": "Code #1",
+                    "preview": "111111 is your verification code",
+                }
+            ]
+        ),
+        FakeResponse(
+            payload=[
+                {
+                    "id": "mail-1",
+                    "sender": "noreply@openai.com",
+                    "subject": "Code #1",
+                    "preview": "111111 is your verification code",
+                },
+                {
+                    "id": "mail-2",
+                    "sender": "noreply@openai.com",
+                    "subject": "Code #2",
+                    "preview": "222222 is your verification code",
+                },
+            ]
+        ),
+    ])
+    service.http_client = fake_client
+
+    code_1 = service.get_verification_code(email="reuse@example.com", timeout=1)
+    code_2 = service.get_verification_code(email="reuse@example.com", timeout=1)
+
+    assert code_1 == "111111"
+    assert code_2 == "222222"
+
+
+def test_freemail_get_verification_code_filters_old_mails_by_otp_sent_at():
+    service = FreemailService({
+        "base_url": "https://mail.example.com",
+        "admin_token": "admin-token",
+    })
+    otp_sent_at = 1_700_000_000.0
+    fake_client = FakeHTTPClient([
+        FakeResponse(
+            payload=[
+                {
+                    "id": "mail-old",
+                    "sender": "noreply@openai.com",
+                    "subject": "Old Code",
+                    "preview": "333333 is your verification code",
+                    "createdAt": otp_sent_at - 30,
+                },
+                {
+                    "id": "mail-new",
+                    "sender": "noreply@openai.com",
+                    "subject": "New Code",
+                    "preview": "444444 is your verification code",
+                    "createdAt": otp_sent_at + 5,
+                },
+            ]
+        ),
+    ])
+    service.http_client = fake_client
+
+    code = service.get_verification_code(
+        email="filter@example.com",
+        timeout=1,
+        otp_sent_at=otp_sent_at,
+    )
+
+    assert code == "444444"

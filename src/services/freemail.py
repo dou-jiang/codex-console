@@ -8,6 +8,7 @@ import time
 import logging
 import random
 import string
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from .base import BaseEmailService, EmailServiceError, EmailServiceType
@@ -58,6 +59,38 @@ class FreemailService(BaseEmailService):
 
         # 缓存 domain 列表
         self._domains = []
+        # 记录每个邮箱上一次成功使用的邮件 ID，避免跨调用重复使用旧验证码
+        self._last_used_mail_ids: Dict[str, str] = {}
+
+    def _extract_mail_timestamp(self, mail: Dict[str, Any]) -> Optional[float]:
+        """尽力提取邮件时间戳（秒）用于 otp_sent_at 过滤。"""
+        for key in ("created_at", "createdAt", "date", "time"):
+            value = mail.get(key)
+            if value is None:
+                continue
+
+            if isinstance(value, (int, float)):
+                return float(value)
+
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    continue
+
+                try:
+                    return float(text)
+                except ValueError:
+                    pass
+
+                try:
+                    dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt.timestamp()
+                except ValueError:
+                    continue
+
+        return None
 
     def _get_headers(self) -> Dict[str, str]:
         """构造 admin 请求头"""
@@ -202,6 +235,7 @@ class FreemailService(BaseEmailService):
 
         start_time = time.time()
         seen_mail_ids: set = set()
+        last_used_mail_id = self._last_used_mail_ids.get(email)
 
         while time.time() - start_time < timeout:
             try:
@@ -212,8 +246,13 @@ class FreemailService(BaseEmailService):
 
                 for mail in mails:
                     mail_id = mail.get("id")
-                    if not mail_id or mail_id in seen_mail_ids:
+                    if not mail_id or mail_id in seen_mail_ids or mail_id == last_used_mail_id:
                         continue
+
+                    if otp_sent_at is not None:
+                        mail_ts = self._extract_mail_timestamp(mail)
+                        if mail_ts is not None and mail_ts < otp_sent_at:
+                            continue
 
                     seen_mail_ids.add(mail_id)
 
@@ -230,6 +269,7 @@ class FreemailService(BaseEmailService):
                     v_code = mail.get("verification_code")
                     if v_code:
                         logger.info(f"从 Freemail 邮箱 {email} 找到验证码: {v_code}")
+                        self._last_used_mail_ids[email] = mail_id
                         self.update_status(True)
                         return v_code
 
@@ -238,6 +278,7 @@ class FreemailService(BaseEmailService):
                     if match:
                         code = match.group(1)
                         logger.info(f"从 Freemail 邮箱 {email} 找到验证码: {code}")
+                        self._last_used_mail_ids[email] = mail_id
                         self.update_status(True)
                         return code
 
@@ -249,6 +290,7 @@ class FreemailService(BaseEmailService):
                         if match:
                             code = match.group(1)
                             logger.info(f"从 Freemail 邮箱 {email} 找到验证码: {code}")
+                            self._last_used_mail_ids[email] = mail_id
                             self.update_status(True)
                             return code
                     except Exception as e:
