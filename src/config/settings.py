@@ -48,7 +48,7 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     ),
     "app_version": SettingDefinition(
         db_key="app.version",
-        default_value="1.1.1",
+        default_value="1.1.0",
         category=SettingCategory.GENERAL,
         description="应用版本"
     ),
@@ -258,18 +258,12 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     # 邮箱服务配置
     "email_service_priority": SettingDefinition(
         db_key="email.service_priority",
-        default_value={"tempmail": 0, "yyds_mail": 1, "outlook": 2, "moe_mail": 3},
+        default_value={"tempmail": 0, "outlook": 1, "moe_mail": 2},
         category=SettingCategory.EMAIL,
         description="邮箱服务优先级"
     ),
 
     # Tempmail.lol 配置
-    "tempmail_enabled": SettingDefinition(
-        db_key="tempmail.enabled",
-        default_value=True,
-        category=SettingCategory.TEMPMAIL,
-        description="是否启用 Tempmail 渠道"
-    ),
     "tempmail_base_url": SettingDefinition(
         db_key="tempmail.base_url",
         default_value="https://api.tempmail.lol/v2",
@@ -287,43 +281,6 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         default_value=3,
         category=SettingCategory.TEMPMAIL,
         description="Tempmail 最大重试次数"
-    ),
-    "yyds_mail_enabled": SettingDefinition(
-        db_key="yyds_mail.enabled",
-        default_value=False,
-        category=SettingCategory.TEMPMAIL,
-        description="是否启用 YYDS Mail 渠道"
-    ),
-    "yyds_mail_base_url": SettingDefinition(
-        db_key="yyds_mail.base_url",
-        default_value="https://maliapi.215.im/v1",
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail API 地址"
-    ),
-    "yyds_mail_api_key": SettingDefinition(
-        db_key="yyds_mail.api_key",
-        default_value="",
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail API Key",
-        is_secret=True
-    ),
-    "yyds_mail_default_domain": SettingDefinition(
-        db_key="yyds_mail.default_domain",
-        default_value="",
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail 默认域名"
-    ),
-    "yyds_mail_timeout": SettingDefinition(
-        db_key="yyds_mail.timeout",
-        default_value=30,
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail 超时时间（秒）"
-    ),
-    "yyds_mail_max_retries": SettingDefinition(
-        db_key="yyds_mail.max_retries",
-        default_value=3,
-        category=SettingCategory.TEMPMAIL,
-        description="YYDS Mail 最大重试次数"
     ),
 
     # 自定义域名邮箱配置
@@ -478,12 +435,8 @@ SETTING_TYPES: Dict[str, Type] = {
     "registration_sleep_max": int,
     "registration_entry_flow": str,
     "email_service_priority": dict,
-    "tempmail_enabled": bool,
     "tempmail_timeout": int,
     "tempmail_max_retries": int,
-    "yyds_mail_enabled": bool,
-    "yyds_mail_timeout": int,
-    "yyds_mail_max_retries": int,
     "tm_enabled": bool,
     "cpa_enabled": bool,
     "sync_enabled": bool,
@@ -667,7 +620,7 @@ class Settings(BaseModel):
 
     # 应用信息
     app_name: str = "OpenAI/Codex CLI 自动注册系统"
-    app_version: str = "1.1.1"
+    app_version: str = "1.1.0"
     debug: bool = False
 
     # 数据库配置
@@ -748,19 +701,12 @@ class Settings(BaseModel):
     registration_entry_flow: str = "native"
 
     # 邮箱服务配置
-    email_service_priority: Dict[str, int] = {"tempmail": 0, "yyds_mail": 1, "outlook": 2, "moe_mail": 3}
+    email_service_priority: Dict[str, int] = {"tempmail": 0, "outlook": 1, "moe_mail": 2}
 
     # Tempmail.lol 配置
-    tempmail_enabled: bool = True
     tempmail_base_url: str = "https://api.tempmail.lol/v2"
     tempmail_timeout: int = 30
     tempmail_max_retries: int = 3
-    yyds_mail_enabled: bool = False
-    yyds_mail_base_url: str = "https://maliapi.215.im/v1"
-    yyds_mail_api_key: Optional[SecretStr] = None
-    yyds_mail_default_domain: str = ""
-    yyds_mail_timeout: int = 30
-    yyds_mail_max_retries: int = 3
 
     # 自定义域名邮箱配置
     custom_domain_base_url: str = ""
