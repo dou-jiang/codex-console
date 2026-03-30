@@ -122,6 +122,128 @@ def _to_int(v: Any) -> int:
         return 0
 
 
+def _looks_like_organization_id(value: Any) -> bool:
+    """判断是否为 OpenAI organization/workspace ID。"""
+    text = str(value or "").strip()
+    return text.startswith("org-")
+
+
+def _extract_organization_id_from_items(items: Any) -> str:
+    """从 organizations/workspaces 列表中提取 organization_id。"""
+    if not isinstance(items, list):
+        return ""
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        organization_id = str(item.get("id") or "").strip()
+        if _looks_like_organization_id(organization_id):
+            return organization_id
+    return ""
+
+
+def _extract_default_organization_id(*payloads: Any) -> str:
+    """
+    从多个 payload 中提取 organization_id。
+
+    某些 OAuth 响应会把默认组织混在 workspace/default_workspace 字段里，
+    这里统一做一层归一化，避免后续把 account_id 错当 workspace_id。
+    """
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for key in (
+            "organization_id",
+            "organizationId",
+            "default_organization_id",
+            "defaultOrganizationId",
+            "default_workspace_id",
+            "defaultWorkspaceId",
+            "workspace_id",
+            "workspaceId",
+            "id",
+        ):
+            organization_id = str(payload.get(key) or "").strip()
+            if _looks_like_organization_id(organization_id):
+                return organization_id
+
+        organization_id = _extract_organization_id_from_items(payload.get("organizations"))
+        if organization_id:
+            return organization_id
+
+        account_payload = payload.get("account")
+        if isinstance(account_payload, dict):
+            organization_id = _extract_default_organization_id(account_payload)
+            if organization_id:
+                return organization_id
+
+        auth_payload = payload.get("https://api.openai.com/auth")
+        if isinstance(auth_payload, dict):
+            organization_id = _extract_default_organization_id(auth_payload)
+            if organization_id:
+                return organization_id
+    return ""
+
+
+def _resolve_workspace_id(
+    *payloads: Any,
+    account_id: str = "",
+    organization_id: str = "",
+) -> str:
+    """
+    从多个 payload 中解析 workspace_id，并修复 workspace_id 被 account_id 污染的情况。
+    """
+    normalized_account_id = str(account_id or "").strip()
+    normalized_organization_id = str(organization_id or "").strip()
+
+    def _iter_workspace_candidates(payload: Any):
+        if not isinstance(payload, dict):
+            return
+        for key in (
+            "workspace_id",
+            "workspaceId",
+            "default_workspace_id",
+            "defaultWorkspaceId",
+            "id",
+        ):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                yield value
+
+        workspace_payload = payload.get("workspace")
+        if isinstance(workspace_payload, dict):
+            workspace_id = str(workspace_payload.get("id") or "").strip()
+            if workspace_id:
+                yield workspace_id
+
+        workspaces = payload.get("workspaces")
+        if isinstance(workspaces, list):
+            for item in workspaces:
+                if not isinstance(item, dict):
+                    continue
+                workspace_id = str(item.get("id") or "").strip()
+                if workspace_id:
+                    yield workspace_id
+
+        account_payload = payload.get("account")
+        if isinstance(account_payload, dict):
+            yield from _iter_workspace_candidates(account_payload)
+
+    for payload in payloads:
+        for candidate in _iter_workspace_candidates(payload):
+            if (
+                normalized_organization_id
+                and normalized_account_id
+                and candidate == normalized_account_id
+                and normalized_organization_id != normalized_account_id
+            ):
+                continue
+            return candidate
+
+    if normalized_organization_id and normalized_organization_id != normalized_account_id:
+        return normalized_organization_id
+    return ""
+
+
 def _post_form(
     url: str,
     data: Dict[str, str],
@@ -290,6 +412,14 @@ def submit_callback_url(
     email = str(claims.get("email") or "").strip()
     auth_claims = claims.get("https://api.openai.com/auth") or {}
     account_id = str(auth_claims.get("chatgpt_account_id") or "").strip()
+    organization_id = _extract_default_organization_id(token_resp, claims, auth_claims)
+    workspace_id = _resolve_workspace_id(
+        token_resp,
+        claims,
+        auth_claims,
+        account_id=account_id,
+        organization_id=organization_id,
+    )
 
     now = int(time.time())
     expired_rfc3339 = time.strftime(
@@ -302,6 +432,8 @@ def submit_callback_url(
         "access_token": access_token,
         "refresh_token": refresh_token,
         "account_id": account_id,
+        "organization_id": organization_id,
+        "workspace_id": workspace_id,
         "last_refresh": now_rfc3339,
         "email": email,
         "type": "codex",
@@ -357,14 +489,23 @@ class OAuthManager:
         return json.loads(result_json)
 
     def extract_account_info(self, id_token: str) -> Dict[str, Any]:
-        """从 ID Token 中提取账户信息"""
+        """从 ID Token 中提取账户和组织信息"""
         claims = _jwt_claims_no_verify(id_token)
         email = str(claims.get("email") or "").strip()
         auth_claims = claims.get("https://api.openai.com/auth") or {}
         account_id = str(auth_claims.get("chatgpt_account_id") or "").strip()
+        organization_id = _extract_default_organization_id(claims, auth_claims)
+        workspace_id = _resolve_workspace_id(
+            claims,
+            auth_claims,
+            account_id=account_id,
+            organization_id=organization_id,
+        )
 
         return {
             "email": email,
             "account_id": account_id,
+            "organization_id": organization_id,
+            "workspace_id": workspace_id,
             "claims": claims
         }
