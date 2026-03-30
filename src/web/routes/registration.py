@@ -28,6 +28,7 @@ from ..task_manager import task_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+MAX_BATCH_REGISTRATION_COUNT = 1000
 
 # 任务存储（简单的内存存储，生产环境应使用 Redis）
 running_tasks: dict = {}
@@ -929,15 +930,18 @@ async def start_batch_registration(
     """
     启动批量注册任务
 
-    - count: 注册数量 (1-100)
+    - count: 注册数量 (1-1000)
     - email_service_type: 邮箱服务类型
     - proxy: 代理地址
     - interval_min: 最小间隔秒数
     - interval_max: 最大间隔秒数
     """
     # 验证参数
-    if request.count < 1 or request.count > 100:
-        raise HTTPException(status_code=400, detail="注册数量必须在 1-100 之间")
+    if request.count < 1 or request.count > MAX_BATCH_REGISTRATION_COUNT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"注册数量必须在 1-{MAX_BATCH_REGISTRATION_COUNT} 之间",
+        )
 
     try:
         EmailServiceType(request.email_service_type)
