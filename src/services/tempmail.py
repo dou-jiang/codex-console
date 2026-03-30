@@ -7,7 +7,6 @@ import time
 import logging
 from typing import Optional, Dict, Any, List
 import json
-import os
 
 from curl_cffi import requests as cffi_requests
 
@@ -49,12 +48,6 @@ class TempmailService(BaseEmailService):
 
         self.config = {**default_config, **(config or {})}
 
-        # ←←← 最终优化：API Key 完全可选（付费/免费自动切换）↓↓↓
-        self.api_key = self.config.get("api_key") or os.getenv("TEMPMail_API_KEY")
-        if self.api_key:
-            logger.info(f"✅ Tempmail.lol Plus/Ultra 已加载 API Key: {self.api_key[:30]}...")
-        # 没 Key 时不打印任何警告，直接走免费模式（符合你的需求）
-
         # 创建 HTTP 客户端
         http_config = RequestConfig(
             timeout=self.config["timeout"],
@@ -90,7 +83,6 @@ class TempmailService(BaseEmailService):
                 headers={
                     "Accept": "application/json",
                     "Content-Type": "application/json",
-                    **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
                 },
                 json={}
             )
@@ -171,10 +163,7 @@ class TempmailService(BaseEmailService):
                 response = self.http_client.get(
                     f"{self.config['base_url']}/inbox",
                     params={"token": token},
-                    headers={
-                        "Accept": "application/json",
-                        **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
-                    }
+                    headers={"Accept": "application/json"}
                 )
 
                 if response.status_code != 200:

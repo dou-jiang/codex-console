@@ -8,6 +8,8 @@ import base64
 import json
 import logging
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -42,6 +44,11 @@ _RESET_AT_KEYS = (
 _RESET_IN_KEYS = ("reset_in", "time_to_reset", "ttl_seconds", "remaining_seconds", "seconds_to_reset")
 _HOURLY_WINDOW_MAX_SECONDS = 12 * 60 * 60
 _WEEKLY_WINDOW_MIN_SECONDS = 5 * 24 * 60 * 60
+_OVERVIEW_HTTP_TIMEOUT_SECONDS = 14
+_OVERVIEW_HTTP_MAX_WORKERS = 3
+_OVERVIEW_HTTP_REQUIRED_RETRY = 2
+_OVERVIEW_HTTP_OPTIONAL_RETRY = 1
+_OVERVIEW_HTTP_RETRY_BASE_DELAY_SECONDS = 0.8
 
 
 def _build_proxies(proxy: Optional[str]) -> Optional[dict]:
@@ -152,12 +159,17 @@ def _build_headers(account: Account) -> Dict[str, str]:
     return headers
 
 
-def _request_json(url: str, headers: Dict[str, str], proxy: Optional[str]) -> Dict[str, Any]:
+def _request_json(
+    url: str,
+    headers: Dict[str, str],
+    proxy: Optional[str],
+    timeout_seconds: int = _OVERVIEW_HTTP_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
     resp = cffi_requests.get(
         url,
         headers=headers,
         proxies=_build_proxies(proxy),
-        timeout=20,
+        timeout=max(5, int(timeout_seconds or _OVERVIEW_HTTP_TIMEOUT_SECONDS)),
         impersonate="chrome110",
     )
     resp.raise_for_status()
@@ -182,12 +194,17 @@ def _extract_http_status(exc: Exception) -> Optional[int]:
     return None
 
 
-def _request_json_with_proxy_fallback(url: str, headers: Dict[str, str], proxy: Optional[str]) -> Dict[str, Any]:
+def _request_json_with_proxy_fallback(
+    url: str,
+    headers: Dict[str, str],
+    proxy: Optional[str],
+    timeout_seconds: int = _OVERVIEW_HTTP_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
     """
     配额抓取优先按当前代理请求；若代理异常则回退直连重试一次。
     """
     try:
-        return _request_json(url, headers, proxy)
+        return _request_json(url, headers, proxy, timeout_seconds=timeout_seconds)
     except Exception as proxy_exc:
         if not proxy:
             raise
@@ -197,7 +214,46 @@ def _request_json_with_proxy_fallback(url: str, headers: Dict[str, str], proxy: 
             logger.debug("概览请求代理回退直连: url=%s status=%s err=%s", url, status, proxy_exc)
         else:
             logger.warning("概览请求代理失败，回退直连重试: url=%s err=%s", url, proxy_exc)
-        return _request_json(url, headers, None)
+        return _request_json(url, headers, None, timeout_seconds=timeout_seconds)
+
+
+def _is_retryable_overview_request_error(exc: Exception) -> bool:
+    status = _extract_http_status(exc)
+    if status is None:
+        return True
+    if status in (408, 429):
+        return True
+    return 500 <= int(status) <= 599
+
+
+def _request_json_with_retry(
+    *,
+    url: str,
+    headers: Dict[str, str],
+    proxy: Optional[str],
+    timeout_seconds: int,
+    attempts: int,
+) -> Dict[str, Any]:
+    max_attempts = max(1, int(attempts or 1))
+    last_error: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _request_json_with_proxy_fallback(
+                url=url,
+                headers=headers,
+                proxy=proxy,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            last_error = exc
+            can_retry = attempt < max_attempts and _is_retryable_overview_request_error(exc)
+            if can_retry:
+                time.sleep(_OVERVIEW_HTTP_RETRY_BASE_DELAY_SECONDS * attempt)
+                continue
+            raise
+    if last_error:
+        raise last_error
+    raise RuntimeError("overview request failed")
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -736,16 +792,32 @@ def fetch_codex_overview(account: Account, proxy: Optional[str] = None) -> Dict[
     payloads: Dict[str, Dict[str, Any]] = {}
     errors: List[str] = []
 
-    for source_name, url, required in _USAGE_ENDPOINTS:
-        try:
-            payloads[source_name] = _request_json_with_proxy_fallback(url, headers, proxy)
-        except Exception as exc:
-            status = _extract_http_status(exc)
-            # 可选端点在 401/403/404 场景静默降级，避免影响总览刷新日志可读性。
-            if not required and status in (401, 403, 404):
-                logger.debug("概览可选端点降级跳过: source=%s status=%s", source_name, status)
-                continue
-            errors.append(f"{source_name}: {exc}")
+    worker_count = min(_OVERVIEW_HTTP_MAX_WORKERS, max(1, len(_USAGE_ENDPOINTS)))
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="overview_fetch") as pool:
+        future_map = {}
+        for source_name, url, required in _USAGE_ENDPOINTS:
+            retry_attempts = _OVERVIEW_HTTP_REQUIRED_RETRY if required else _OVERVIEW_HTTP_OPTIONAL_RETRY
+            future = pool.submit(
+                _request_json_with_retry,
+                url=url,
+                headers=headers,
+                proxy=proxy,
+                timeout_seconds=_OVERVIEW_HTTP_TIMEOUT_SECONDS,
+                attempts=retry_attempts,
+            )
+            future_map[future] = (source_name, bool(required))
+
+        for future in as_completed(future_map):
+            source_name, required = future_map[future]
+            try:
+                payloads[source_name] = future.result()
+            except Exception as exc:
+                status = _extract_http_status(exc)
+                # 可选端点在 401/403/404 场景静默降级，避免影响总览刷新日志可读性。
+                if not required and status in (401, 403, 404):
+                    logger.debug("概览可选端点降级跳过: source=%s status=%s", source_name, status)
+                    continue
+                errors.append(f"{source_name}: {exc}")
 
     if not payloads:
         raise RuntimeError("所有概览接口请求失败")

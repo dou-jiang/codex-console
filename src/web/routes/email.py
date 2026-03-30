@@ -13,7 +13,6 @@ from ...database import crud
 from ...database.session import get_db
 from ...database.models import EmailService as EmailServiceModel
 from ...database.models import Account as AccountModel
-from ...config.settings import get_settings
 from ...services import EmailServiceFactory, EmailServiceType
 
 logger = logging.getLogger(__name__)
@@ -40,13 +39,13 @@ class EmailServiceUpdate(BaseModel):
 
 
 class EmailServiceResponse(BaseModel):
-    """??????"""
+    """邮箱服务响应"""
     id: int
     service_type: str
     name: str
     enabled: bool
     priority: int
-    config: Optional[Dict[str, Any]] = None  # ??????????
+    config: Optional[Dict[str, Any]] = None  # 过滤敏感信息后的配置
     registration_status: Optional[str] = None
     registered_account_id: Optional[int] = None
     last_used: Optional[str] = None
@@ -119,8 +118,19 @@ def filter_sensitive_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return filtered
 
 
+def _normalize_outlook_email_config(service_type: str, config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """统一 Outlook 配置中的邮箱大小写，避免和账号库比较不一致。"""
+    normalized = dict(config or {})
+    if str(service_type or "").strip().lower() != "outlook":
+        return normalized
+
+    if "email" in normalized:
+        normalized["email"] = str(normalized.get("email") or "").strip().lower()
+    return normalized
+
+
 def service_to_response(service: EmailServiceModel) -> EmailServiceResponse:
-    """?????????"""
+    """转换服务模型为响应"""
     registration_status = None
     registered_account_id = None
     if service.service_type == "outlook":
@@ -160,6 +170,8 @@ def service_to_response(service: EmailServiceModel) -> EmailServiceResponse:
 async def get_email_services_stats():
     """获取邮箱服务统计信息"""
     with get_db() as db:
+        from sqlalchemy import func
+
         # 按类型统计
         type_stats = db.query(
             EmailServiceModel.service_type,
@@ -171,25 +183,15 @@ async def get_email_services_stats():
             EmailServiceModel.enabled == True
         ).scalar()
 
-        settings = get_settings()
-        tempmail_enabled = bool(settings.tempmail_enabled)
-        yyds_enabled = bool(
-            settings.yyds_mail_enabled
-            and settings.yyds_mail_api_key
-            and settings.yyds_mail_api_key.get_secret_value()
-        )
-
         stats = {
             'outlook_count': 0,
             'custom_count': 0,
-            'yyds_mail_count': 0,
             'temp_mail_count': 0,
             'duck_mail_count': 0,
             'freemail_count': 0,
             'imap_mail_count': 0,
             'cloudmail_count': 0,
-            'tempmail_available': tempmail_enabled or yyds_enabled,
-            'yyds_mail_available': yyds_enabled,
+            'tempmail_available': True,  # 临时邮箱始终可用
             'enabled_count': enabled_count
         }
 
@@ -198,8 +200,6 @@ async def get_email_services_stats():
                 stats['outlook_count'] = count
             elif service_type == 'moe_mail':
                 stats['custom_count'] = count
-            elif service_type == 'yyds_mail':
-                stats['yyds_mail_count'] = count
             elif service_type == 'temp_mail':
                 stats['temp_mail_count'] = count
             elif service_type == 'duck_mail':
@@ -222,20 +222,9 @@ async def get_service_types():
             {
                 "value": "tempmail",
                 "label": "Tempmail.lol",
-                "description": "官方内置临时邮箱渠道，通过全局配置使用",
+                "description": "临时邮箱服务，无需配置",
                 "config_fields": [
                     {"name": "base_url", "label": "API 地址", "default": "https://api.tempmail.lol/v2", "required": False},
-                    {"name": "timeout", "label": "超时时间", "default": 30, "required": False},
-                ]
-            },
-            {
-                "value": "yyds_mail",
-                "label": "YYDS Mail",
-                "description": "官方内置临时邮箱渠道，使用 X-API-Key 创建邮箱并轮询消息",
-                "config_fields": [
-                    {"name": "base_url", "label": "API 地址", "default": "https://maliapi.215.im/v1", "required": False},
-                    {"name": "api_key", "label": "API Key", "required": True, "secret": True},
-                    {"name": "default_domain", "label": "默认域名", "required": False, "placeholder": "public.example.com"},
                     {"name": "timeout", "label": "超时时间", "default": 30, "required": False},
                 ]
             },
@@ -264,6 +253,18 @@ async def get_service_types():
                 "value": "temp_mail",
                 "label": "Temp-Mail（自部署）",
                 "description": "自部署 Cloudflare Worker 临时邮箱，admin 模式管理",
+                "config_fields": [
+                    {"name": "base_url", "label": "Worker 地址", "required": True, "placeholder": "https://mail.example.com"},
+                    {"name": "admin_password", "label": "Admin 密码", "required": True, "secret": True},
+                    {"name": "custom_auth", "label": "Custom Auth（可选）", "required": False, "secret": True},
+                    {"name": "domain", "label": "邮箱域名", "required": True, "placeholder": "example.com"},
+                    {"name": "enable_prefix", "label": "启用前缀", "required": False, "default": True},
+                ]
+            },
+            {
+                "value": "cloudmail",
+                "label": "CloudMail（自部署）",
+                "description": "CloudMail 自部署邮箱服务（配置与 Temp-Mail 兼容）",
                 "config_fields": [
                     {"name": "base_url", "label": "Worker 地址", "required": True, "placeholder": "https://mail.example.com"},
                     {"name": "admin_password", "label": "Admin 密码", "required": True, "secret": True},
@@ -372,16 +373,31 @@ async def create_email_service(request: EmailServiceCreate):
     except ValueError:
         raise HTTPException(status_code=400, detail=f"无效的服务类型: {request.service_type}")
 
+    normalized_service_type = str(request.service_type or "").strip().lower()
+    normalized_config = _normalize_outlook_email_config(normalized_service_type, request.config)
+    normalized_name = str(request.name or "").strip()
+    if normalized_service_type == "outlook":
+        normalized_email = str(normalized_config.get("email") or normalized_name).strip().lower()
+        if normalized_email:
+            normalized_name = normalized_email
+            normalized_config["email"] = normalized_email
+
     with get_db() as db:
         # 检查名称是否重复
-        existing = db.query(EmailServiceModel).filter(EmailServiceModel.name == request.name).first()
+        if normalized_service_type == "outlook":
+            existing = db.query(EmailServiceModel).filter(
+                EmailServiceModel.service_type == "outlook",
+                func.lower(EmailServiceModel.name) == normalized_name
+            ).first()
+        else:
+            existing = db.query(EmailServiceModel).filter(EmailServiceModel.name == normalized_name).first()
         if existing:
             raise HTTPException(status_code=400, detail="服务名称已存在")
 
         service = EmailServiceModel(
-            service_type=request.service_type,
-            name=request.name,
-            config=request.config,
+            service_type=normalized_service_type,
+            name=normalized_name,
+            config=normalized_config,
             enabled=request.enabled,
             priority=request.priority
         )
@@ -409,6 +425,14 @@ async def update_email_service(service_id: int, request: EmailServiceUpdate):
             merged_config = {**current_config, **request.config}
             # 移除空值
             merged_config = {k: v for k, v in merged_config.items() if v}
+            merged_config = _normalize_outlook_email_config(service.service_type, merged_config)
+            if (
+                str(service.service_type or "").strip().lower() == "outlook"
+                and request.name is None
+            ):
+                normalized_email = str(merged_config.get("email") or "").strip().lower()
+                if normalized_email:
+                    update_data["name"] = normalized_email
             update_data["config"] = merged_config
         if request.enabled is not None:
             update_data["enabled"] = request.enabled
@@ -548,7 +572,7 @@ async def batch_import_outlook(request: OutlookBatchImportRequest):
                 errors.append(f"行 {i+1}: 格式错误，至少需要邮箱和密码")
                 continue
 
-            email = parts[0].strip()
+            email = parts[0].strip().lower()
             password = parts[1].strip()
 
             # 验证邮箱格式
@@ -560,7 +584,7 @@ async def batch_import_outlook(request: OutlookBatchImportRequest):
             # 检查是否已存在
             existing = db.query(EmailServiceModel).filter(
                 EmailServiceModel.service_type == "outlook",
-                EmailServiceModel.name == email
+                func.lower(EmailServiceModel.name) == email
             ).first()
 
             if existing:
@@ -639,52 +663,29 @@ async def batch_delete_outlook(service_ids: List[int]):
 
 class TempmailTestRequest(BaseModel):
     """临时邮箱测试请求"""
-    provider: str = "tempmail"
     api_url: Optional[str] = None
-    api_key: Optional[str] = None
 
 
 @router.post("/test-tempmail")
 async def test_tempmail_service(request: TempmailTestRequest):
     """测试临时邮箱服务是否可用"""
     try:
+        from ...services import EmailServiceFactory, EmailServiceType
+        from ...config.settings import get_settings
+
         settings = get_settings()
-        provider = str(request.provider or "tempmail").strip().lower()
+        base_url = request.api_url or settings.tempmail_base_url
 
-        if provider == "yyds_mail":
-            base_url = request.api_url or settings.yyds_mail_base_url
-            api_key = request.api_key
-            if api_key is None and settings.yyds_mail_api_key:
-                api_key = settings.yyds_mail_api_key.get_secret_value()
-
-            config = {
-                "base_url": base_url,
-                "api_key": api_key or "",
-                "default_domain": settings.yyds_mail_default_domain,
-                "timeout": settings.yyds_mail_timeout,
-                "max_retries": settings.yyds_mail_max_retries,
-            }
-            service = EmailServiceFactory.create(EmailServiceType.YYDS_MAIL, config)
-            success_message = "YYDS Mail 连接正常"
-            fail_message = "YYDS Mail 连接失败"
-        else:
-            base_url = request.api_url or settings.tempmail_base_url
-            config = {
-                "base_url": base_url,
-                "timeout": settings.tempmail_timeout,
-                "max_retries": settings.tempmail_max_retries,
-            }
-            service = EmailServiceFactory.create(EmailServiceType.TEMPMAIL, config)
-            success_message = "临时邮箱连接正常"
-            fail_message = "临时邮箱连接失败"
+        config = {"base_url": base_url}
+        tempmail = EmailServiceFactory.create(EmailServiceType.TEMPMAIL, config)
 
         # 检查服务健康状态
-        health = service.check_health()
+        health = tempmail.check_health()
 
         if health:
-            return {"success": True, "message": success_message}
+            return {"success": True, "message": "临时邮箱连接正常"}
         else:
-            return {"success": False, "message": fail_message}
+            return {"success": False, "message": "临时邮箱连接失败"}
 
     except Exception as e:
         logger.error(f"测试临时邮箱失败: {e}")

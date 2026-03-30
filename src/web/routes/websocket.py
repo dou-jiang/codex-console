@@ -7,6 +7,7 @@ import asyncio
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from ..auth import is_websocket_authenticated, websocket_auth_failure
 from ..task_manager import task_manager
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,10 @@ async def task_websocket(websocket: WebSocket, task_uuid: str):
     - 客户端发送: {"type": "ping"} - 心跳
     - 客户端发送: {"type": "cancel"} - 取消任务
     """
+    if not is_websocket_authenticated(websocket):
+        code, reason = websocket_auth_failure()
+        await websocket.close(code=code, reason=reason)
+        return
     await websocket.accept()
 
     # 注册连接（会记录当前日志数量，避免重复发送历史日志）
@@ -105,6 +110,10 @@ async def batch_websocket(websocket: WebSocket, batch_id: str):
     - 客户端发送: {"type": "ping"} - 心跳
     - 客户端发送: {"type": "cancel"} - 取消批量任务
     """
+    if not is_websocket_authenticated(websocket):
+        code, reason = websocket_auth_failure()
+        await websocket.close(code=code, reason=reason)
+        return
     await websocket.accept()
 
     # 注册连接（会记录当前日志数量，避免重复发送历史日志）

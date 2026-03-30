@@ -1,6 +1,6 @@
 /**
  * 支付页面 JavaScript
- * 支付页面：半自动 + 第三方自动绑卡 + 全自动绑卡任务管理 + 用户完成后自动验订阅
+ * 支付页面：半自动 + 全自动绑卡任务管理 + 用户完成后自动验订阅
  */
 
 const COUNTRY_CURRENCY_MAP = {
@@ -26,7 +26,20 @@ const BILLING_STORAGE_KEY = "payment.billing_profile_non_sensitive";
 const BILLING_TEMPLATE_STORAGE_KEY = "payment.billing_templates_v1";
 const THIRD_PARTY_BIND_URL_STORAGE_KEY = "payment.third_party_bind_api_url";
 const BIND_MODE_STORAGE_KEY = "payment.bind_mode";
+const VENDOR_REDEEM_STORAGE_KEY = "payment.vendor_redeem_code";
+const VENDOR_CHECKOUT_STORAGE_KEY = "payment.vendor_checkout_url";
+const EFUN_BASE_URL_STORAGE_KEY = "payment.efun_base_url";
+const EFUN_API_KEY_STORAGE_KEY = "payment.efun_api_key";
+const EFUN_CODE_STORAGE_KEY = "payment.efun_code";
+const EFUN_MINUTES_STORAGE_KEY = "payment.efun_minutes";
+const CARD_POOL_REDEEM_STORAGE_KEY = "card_pool.redeem_codes.v1";
+const CARD_POOL_EFUN_SUPPLIER_KEY = "efun";
+const CARD_POOL_EFUN_SUPPLIER_LABEL = "EFun";
+const ALLOWED_BIND_MODES = new Set(["semi_auto", "local_auto", "vendor_efun"]);
 const THIRD_PARTY_BIND_DEFAULT_URL = "https://twilight-river-f148.482091502.workers.dev/";
+const EFUN_BASE_URL_DEFAULT = "https://card.aimizy.com/api/v1/bindcard";
+const VENDOR_REDEEM_CODE_REGEX = /^[A-Z0-9]{4}(?:-[A-Z0-9]{4}){3}$/;
+const EFUN_CODE_REGEX = /^UK(?:-[A-Z0-9]{5}){5}$/i;
 const BILLING_TEMPLATE_MAX = 200;
 const BILLING_COUNTRY_CURRENCY_MAP = {
     US: "USD",
@@ -85,6 +98,15 @@ let selectedPlan = "plus";
 let generatedLink = "";
 let isGeneratingCheckoutLink = false;
 let paymentAccounts = [];
+let isLoadingBindTaskList = false;
+const vendorProgressState = {
+    taskId: 0,
+    timer: null,
+    cursor: 0,
+    elapsedSeconds: 0,
+    forceStopAfterSeconds: 120,
+    lastConfig: null,
+};
 
 const bindTaskState = {
     page: 1,
@@ -93,6 +115,8 @@ const bindTaskState = {
     search: "",
 };
 let bindTaskAutoRefreshTimer = null;
+const bindTaskActionRunning = new Set();
+let bindTaskLoadPromise = null;
 
 let billingBatchProfiles = [];
 
@@ -110,6 +134,35 @@ function formatErrorMessage(error) {
     } catch {
         return String(detail || error);
     }
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function watchPaymentOpTask(taskId, onUpdate, maxWaitMs = 20 * 60 * 1000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < maxWaitMs) {
+        const task = await api.get(`/payment/ops/tasks/${taskId}`, {
+            timeoutMs: 30000,
+            retry: 0,
+            requestKey: `payment:op-task:${taskId}`,
+            cancelPrevious: true,
+        });
+
+        if (typeof onUpdate === "function") {
+            onUpdate(task);
+        }
+
+        const status = String(task?.status || "").toLowerCase();
+        if (["completed", "failed", "cancelled"].includes(status)) {
+            return task;
+        }
+
+        await sleep(1200);
+    }
+
+    throw new Error("支付任务等待超时，请稍后重试");
 }
 
 function escapeHtml(value) {
@@ -1119,6 +1172,7 @@ function getTaskStatusText(status) {
 function startBindTaskAutoRefresh() {
     stopBindTaskAutoRefresh();
     bindTaskAutoRefreshTimer = setInterval(() => {
+        if (document.hidden) return;
         const bindTaskTab = document.getElementById("tab-content-bind-task");
         if (!bindTaskTab?.classList.contains("active")) return;
         loadBindCardTasks(true);
@@ -1156,7 +1210,15 @@ function resetGenerateLinkButtonState() {
 }
 
 function getBindMode() {
-    return (document.getElementById("bind-mode-select")?.value || "semi_auto").trim() || "semi_auto";
+    const modeSelect = document.getElementById("bind-mode-select");
+    const mode = String(modeSelect?.value || "semi_auto").trim().toLowerCase() || "semi_auto";
+    if (ALLOWED_BIND_MODES.has(mode)) {
+        return mode;
+    }
+    if (modeSelect) {
+        modeSelect.value = "semi_auto";
+    }
+    return "semi_auto";
 }
 
 function updateSemiAutoActionsVisibility(mode) {
@@ -1232,21 +1294,722 @@ async function fetchSelectedAccountInbox() {
     }
 }
 
+function stopVendorProgressPolling() {
+    if (!vendorProgressState.timer) return;
+    clearTimeout(vendorProgressState.timer);
+    vendorProgressState.timer = null;
+}
+
+function setVendorStopButtonState(disabled = false, show = true) {
+    const btn = document.getElementById("vendor-stop-btn");
+    if (!btn) return;
+    btn.style.display = show ? "" : "none";
+    btn.disabled = Boolean(disabled);
+}
+
+function setVendorRetryButtonState(disabled = false, show = true) {
+    const btn = document.getElementById("vendor-retry-btn");
+    if (!btn) return;
+    btn.style.display = show ? "" : "none";
+    btn.disabled = Boolean(disabled);
+}
+
+function showVendorProgressPanel(show = true) {
+    const panel = document.getElementById("vendor-progress-panel");
+    if (!panel) return;
+    panel.classList.toggle("show", Boolean(show));
+}
+
+function resetVendorProgressPanel() {
+    vendorProgressState.cursor = 0;
+    vendorProgressState.elapsedSeconds = 0;
+    vendorProgressState.forceStopAfterSeconds = 120;
+    const bar = document.getElementById("vendor-progress-bar");
+    const percent = document.getElementById("vendor-progress-percent");
+    const log = document.getElementById("vendor-progress-log");
+    const title = document.getElementById("vendor-progress-title");
+    const runtime = document.getElementById("vendor-progress-runtime");
+    if (bar) bar.style.width = "0%";
+    if (percent) percent.textContent = "0%";
+    if (title) title.textContent = "卡商订阅进度";
+    if (log) log.textContent = "等待执行...";
+    if (runtime) runtime.textContent = "已运行 0 秒 / 可随时停止";
+    setVendorRetryButtonState(false, false);
+}
+
+function appendVendorLogs(logs) {
+    if (!Array.isArray(logs) || !logs.length) return;
+    const logBox = document.getElementById("vendor-progress-log");
+    if (!logBox) return;
+    const lines = logs.map((item) => `[${item?.time || "--:--:--"}] ${item?.message || ""}`);
+    const existing = String(logBox.textContent || "").trim();
+    logBox.textContent = existing ? `${existing}\n${lines.join("\n")}` : lines.join("\n");
+    logBox.scrollTop = logBox.scrollHeight;
+}
+
+function updateVendorRuntimeHint(progressPayload = {}, status = "running") {
+    const runtime = document.getElementById("vendor-progress-runtime");
+    if (!runtime) return;
+    const elapsed = Math.max(
+        0,
+        Number(progressPayload?.elapsed_seconds ?? vendorProgressState.elapsedSeconds ?? 0),
+    );
+    const forceStopAfter = Math.max(
+        1,
+        Number(progressPayload?.force_stop_after_seconds ?? vendorProgressState.forceStopAfterSeconds ?? 120),
+    );
+    const canForceStop = Boolean(progressPayload?.can_force_stop) || elapsed >= forceStopAfter;
+    vendorProgressState.elapsedSeconds = elapsed;
+    vendorProgressState.forceStopAfterSeconds = forceStopAfter;
+
+    const currentStatus = String(status || progressPayload?.status || "running").toLowerCase();
+    if (currentStatus === "completed") {
+        runtime.textContent = `任务已完成（总耗时 ${elapsed} 秒）`;
+        return;
+    }
+    if (currentStatus === "failed") {
+        runtime.textContent = `任务已失败（运行 ${elapsed} 秒）`;
+        return;
+    }
+    if (currentStatus === "cancelled") {
+        runtime.textContent = `任务已停止（运行 ${elapsed} 秒）`;
+        return;
+    }
+    if (currentStatus === "pending") {
+        runtime.textContent = `已运行 ${elapsed} 秒 / 接口执行已完成，等待订阅同步`;
+        return;
+    }
+
+    if (canForceStop) {
+        runtime.textContent = `已运行 ${elapsed} 秒 / 已可停止`;
+        return;
+    }
+
+    const left = Math.max(0, forceStopAfter - elapsed);
+    runtime.textContent = `已运行 ${elapsed} 秒 / 可随时停止（建议 ${forceStopAfter} 秒后强制，剩余 ${left} 秒）`;
+}
+
+function formatBeijingDateTime(dateStr) {
+    if (!dateStr) return "-";
+    const raw = String(dateStr).trim();
+    if (!raw) return "-";
+    // 后端多数时间字段是 UTC naive（无时区），这里按 UTC 解析后固定转北京时间显示
+    const normalized = /[zZ]$|[+\-]\d{2}:\d{2}$/.test(raw) ? raw : `${raw}Z`;
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) {
+        return format.date(dateStr);
+    }
+    return date.toLocaleString("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+    });
+}
+
+function updateVendorProgressUi(progressPayload, taskId) {
+    const progress = Math.max(0, Math.min(100, Number(progressPayload?.progress || 0)));
+    const status = String(progressPayload?.status || "running").toLowerCase();
+    const bar = document.getElementById("vendor-progress-bar");
+    const percent = document.getElementById("vendor-progress-percent");
+    const title = document.getElementById("vendor-progress-title");
+    if (bar) bar.style.width = `${progress}%`;
+    if (percent) percent.textContent = `${progress}%`;
+    if (title) {
+        if (status === "completed") {
+            title.textContent = `任务 #${taskId} 订阅完成`;
+        } else if (status === "failed") {
+            title.textContent = `任务 #${taskId} 订阅失败`;
+        } else if (status === "cancelled") {
+            title.textContent = `任务 #${taskId} 已停止`;
+        } else if (status === "pending") {
+            title.textContent = `任务 #${taskId} 已提交，等待同步`;
+        } else {
+            title.textContent = `任务 #${taskId} 执行中`;
+        }
+    }
+    updateVendorRuntimeHint(progressPayload, status);
+    if (status === "running") {
+        setVendorStopButtonState(false, true);
+        setVendorRetryButtonState(false, false);
+        return;
+    }
+    if (status === "failed") {
+        setVendorStopButtonState(true, true);
+        setVendorRetryButtonState(false, true);
+        return;
+    }
+    if (status === "pending") {
+        setVendorStopButtonState(false, true);
+        setVendorRetryButtonState(false, true);
+        return;
+    }
+    setVendorStopButtonState(true, true);
+    setVendorRetryButtonState(false, false);
+}
+
+async function pollVendorProgress(taskId) {
+    if (!taskId) return;
+    try {
+        const payload = await api.get(`/payment/bind-card/tasks/${taskId}/vendor-progress?cursor=${vendorProgressState.cursor}`);
+        const progressPayload = payload?.progress || {};
+        const logs = progressPayload?.logs || [];
+        appendVendorLogs(logs);
+        vendorProgressState.cursor = Number(progressPayload?.next_cursor || vendorProgressState.cursor || 0);
+        updateVendorProgressUi(progressPayload, taskId);
+        const state = String(progressPayload?.status || "").toLowerCase();
+        if (state === "completed") {
+            toast.success(`任务 #${taskId} 订阅完成`);
+            stopVendorProgressPolling();
+            setVendorStopButtonState(true, true);
+            setVendorRetryButtonState(false, false);
+            await loadBindCardTasks(true);
+            return;
+        }
+        if (state === "failed") {
+            toast.error(`任务 #${taskId} 订阅失败`);
+            stopVendorProgressPolling();
+            setVendorStopButtonState(true, true);
+            setVendorRetryButtonState(false, true);
+            await loadBindCardTasks(true);
+            return;
+        }
+        if (state === "cancelled") {
+            toast.warning(`任务 #${taskId} 已停止`, 4000);
+            stopVendorProgressPolling();
+            setVendorStopButtonState(true, true);
+            setVendorRetryButtonState(false, true);
+            await loadBindCardTasks(true);
+            return;
+        }
+        if (state === "pending") {
+            toast.warning(`任务 #${taskId} 接口执行已完成，等待订阅同步`, 6000);
+            stopVendorProgressPolling();
+            // pending 阶段仍允许手动停止（仅停止订阅任务，不影响其他任务）
+            setVendorStopButtonState(false, true);
+            setVendorRetryButtonState(false, true);
+            await loadBindCardTasks(true);
+            return;
+        }
+        vendorProgressState.timer = setTimeout(() => {
+            pollVendorProgress(taskId);
+        }, 2000);
+    } catch (error) {
+        const status = Number(error?.response?.status || 0);
+        const detail = String(error?.data?.detail || "").trim();
+        if (status === 404 && detail.includes("绑卡任务不存在")) {
+            appendVendorLogs([{ time: "--:--:--", message: "进度服务未命中任务，已停止轮询（可刷新任务列表后重试）" }]);
+            stopVendorProgressPolling();
+            setVendorStopButtonState(false, true);
+            setVendorRetryButtonState(false, true);
+            return;
+        }
+        appendVendorLogs([{ time: "--:--:--", message: `进度轮询失败: ${formatErrorMessage(error)}` }]);
+        vendorProgressState.timer = setTimeout(() => {
+            pollVendorProgress(taskId);
+        }, 3000);
+    }
+}
+
+async function startVendorAutoBind(task, vendorConfig) {
+    const taskId = Number(task?.id || 0);
+    if (!taskId) {
+        throw new Error("任务 ID 无效");
+    }
+    const redeemCode = String(vendorConfig?.redeem_code || "").trim();
+    if (!redeemCode) {
+        throw new Error("兑换码不能为空");
+    }
+    showVendorProgressPanel(true);
+    resetVendorProgressPanel();
+    vendorProgressState.taskId = taskId;
+    vendorProgressState.lastConfig = {
+        redeem_code: redeemCode,
+        checkout_url: String(vendorConfig?.checkout_url || "").trim(),
+        api_url: String(vendorConfig?.api_url || "").trim(),
+        api_key: String(vendorConfig?.api_key || "").trim(),
+    };
+    stopVendorProgressPolling();
+    setVendorStopButtonState(true, true);
+    setVendorRetryButtonState(true, false);
+    appendVendorLogs([{ time: "--:--:--", message: `任务 #${taskId} 已创建，开始执行卡商接口订阅...` }]);
+    const data = await api.post(`/payment/bind-card/tasks/${taskId}/auto-bind-vendor`, {
+        redeem_code: redeemCode,
+        checkout_url: String(vendorConfig?.checkout_url || "").trim() || undefined,
+        api_url: String(vendorConfig?.api_url || "").trim() || undefined,
+        api_key: String(vendorConfig?.api_key || "").trim() || undefined,
+        timeout_seconds: 240,
+    });
+    updateVendorProgressUi(data?.progress || { progress: 5, status: "running" }, taskId);
+    appendVendorLogs(data?.progress?.logs || []);
+    vendorProgressState.cursor = Number(data?.progress?.next_cursor || 0);
+    vendorProgressState.timer = setTimeout(() => {
+        pollVendorProgress(taskId);
+    }, 1200);
+}
+
+async function retryVendorAutoTask() {
+    const taskId = Number(vendorProgressState.taskId || 0);
+    if (!taskId) {
+        toast.warning("当前没有可重测任务");
+        return;
+    }
+    const fallbackConfig = collectEfunConfig();
+    const config = {
+        ...(vendorProgressState.lastConfig || {}),
+        redeem_code: String((vendorProgressState.lastConfig || {}).redeem_code || fallbackConfig.code || "").trim(),
+        api_url: String((vendorProgressState.lastConfig || {}).api_url || fallbackConfig.api_url || "").trim(),
+        api_key: String((vendorProgressState.lastConfig || {}).api_key || fallbackConfig.api_key || "").trim(),
+        checkout_url: String((vendorProgressState.lastConfig || {}).checkout_url || "").trim(),
+    };
+    if (!config.redeem_code) {
+        toast.warning("请先填写兑换码");
+        return;
+    }
+    try {
+        await startVendorAutoBind({ id: taskId }, config);
+        toast.success(`任务 #${taskId} 已重新开始测试`);
+    } catch (error) {
+        toast.error(`重新测试失败: ${formatErrorMessage(error)}`);
+    }
+}
+
+async function stopVendorAutoTask() {
+    let taskId = Number(vendorProgressState.taskId || 0);
+    setVendorStopButtonState(true, true);
+    try {
+        if (!taskId) {
+            const activeStop = await api.post("/payment/bind-card/vendor-stop-active", {});
+            const resolvedId = Number(activeStop?.task?.id || 0);
+            if (!resolvedId) {
+                throw new Error("当前没有可停止的卡商任务");
+            }
+            taskId = resolvedId;
+            vendorProgressState.taskId = resolvedId;
+            appendVendorLogs(activeStop?.progress?.logs || []);
+            updateVendorProgressUi(activeStop?.progress || { status: "cancelled", progress: 100 }, taskId);
+            vendorProgressState.cursor = Number(activeStop?.progress?.next_cursor || vendorProgressState.cursor || 0);
+            stopVendorProgressPolling();
+            toast.success(`任务 #${taskId} 已发送停止指令`);
+            await loadBindCardTasks(true);
+            return;
+        }
+        const stopPaths = [
+            `/payment/bind-card/tasks/${taskId}/vendor-stop`,
+            `/payment/bind-card/tasks/${taskId}/stop-vendor`,
+            `/payment/bind-card/tasks/${taskId}/stop`,
+            `/payment/bind-card/tasks/${taskId}/cancel`,
+        ];
+        let data = null;
+        let lastNotFoundError = null;
+        for (const path of stopPaths) {
+            try {
+                data = await api.post(path, {});
+                break;
+            } catch (error) {
+                const status = Number(error?.response?.status || 0);
+                const detail = String(error?.data?.detail || error?.message || "").trim();
+                const isRouteNotFound = status === 404 && (!detail || detail.toLowerCase() === "not found");
+                if (isRouteNotFound) {
+                    lastNotFoundError = error;
+                    continue;
+                }
+                throw error;
+            }
+        }
+        if (!data) {
+            // 兜底：按“当前活跃任务”停止，避免 taskId 漂移导致无法停止。
+            const activeStop = await api.post("/payment/bind-card/vendor-stop-active", {});
+            const resolvedId = Number(activeStop?.task?.id || taskId || 0);
+            if (!resolvedId) {
+                throw lastNotFoundError || new Error("停止接口不可用");
+            }
+            taskId = resolvedId;
+            vendorProgressState.taskId = resolvedId;
+            data = activeStop;
+        }
+        appendVendorLogs(data?.progress?.logs || []);
+        updateVendorProgressUi(data?.progress || { status: "cancelled", progress: 100 }, taskId);
+        vendorProgressState.cursor = Number(data?.progress?.next_cursor || vendorProgressState.cursor || 0);
+        stopVendorProgressPolling();
+        toast.success(`任务 #${taskId} 已发送停止指令`);
+        await loadBindCardTasks(true);
+    } catch (error) {
+        setVendorStopButtonState(false, true);
+        toast.error(`停止失败: ${formatErrorMessage(error)}`);
+    }
+}
+
+function collectVendorConfig() {
+    const checkoutUrl = getInputValue("vendor-checkout-input");
+    const redeemCode = normalizeVendorRedeemCode(getInputValue("vendor-redeem-input"));
+    setInputValue("vendor-redeem-input", redeemCode);
+    return {
+        checkout_url: checkoutUrl,
+        redeem_code: redeemCode,
+    };
+}
+
+function normalizeVendorRedeemCode(raw) {
+    const compact = String(raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
+    if (!compact) return "";
+    const groups = compact.match(/.{1,4}/g) || [];
+    return groups.join("-");
+}
+
+function normalizeEfunCode(raw) {
+    const compact = String(raw || "")
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "");
+    if (!compact.startsWith("UK")) {
+        return String(raw || "").trim().toUpperCase().replace(/\s+/g, "");
+    }
+    const body = compact.slice(2);
+    if (body.length !== 25) {
+        return String(raw || "").trim().toUpperCase().replace(/\s+/g, "");
+    }
+    return `UK-${body.slice(0, 5)}-${body.slice(5, 10)}-${body.slice(10, 15)}-${body.slice(15, 20)}-${body.slice(20, 25)}`;
+}
+
+function safeJsonParse(raw, fallback) {
+    try {
+        const parsed = JSON.parse(raw);
+        return parsed ?? fallback;
+    } catch (_) {
+        return fallback;
+    }
+}
+
+function normalizeCardPoolSupplier(value) {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, "");
+}
+
+function isEfunSupplier(value) {
+    const normalized = normalizeCardPoolSupplier(value);
+    return normalized === CARD_POOL_EFUN_SUPPLIER_KEY || normalized === "efuncard";
+}
+
+function getCardPoolResolvedStatus(item) {
+    if (!item) return "used";
+    const rawStatus = String(item.status || "").trim().toLowerCase();
+    if (rawStatus === "used") return "used";
+    const expiresRaw = String(item.expires_at || "").trim();
+    if (expiresRaw) {
+        const expiresAt = Date.parse(expiresRaw);
+        if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+            return "expired";
+        }
+    }
+    if (rawStatus === "expired") return "expired";
+    return "unused";
+}
+
+function loadCardPoolRedeemCodes() {
+    const parsed = safeJsonParse(localStorage.getItem(CARD_POOL_REDEEM_STORAGE_KEY) || "[]", []);
+    if (!Array.isArray(parsed)) {
+        return [];
+    }
+    return parsed
+        .map((item) => ({
+            code: normalizeEfunCode(item?.code || ""),
+            supplier: normalizeCardPoolSupplier(item?.supplier || ""),
+            status: getCardPoolResolvedStatus(item),
+            raw: item || {},
+        }))
+        .filter((item) => item.code);
+}
+
+function getAvailableEfunPoolCodes() {
+    return loadCardPoolRedeemCodes().filter(
+        (item) => isEfunSupplier(item.supplier) && item.status === "unused"
+    );
+}
+
+function renderEfunPoolHint() {
+    const hintEl = document.getElementById("efun-pool-hint");
+    if (!hintEl) return;
+    const manualCode = normalizeEfunCode(getInputValue("efun-code-input"));
+    const available = getAvailableEfunPoolCodes();
+    if (manualCode) {
+        hintEl.textContent = `已手动输入兑换码；卡池可用（供应商=${CARD_POOL_EFUN_SUPPLIER_LABEL}）：${available.length}`;
+        return;
+    }
+    if (available.length > 0) {
+        hintEl.textContent = `卡池可用（供应商=${CARD_POOL_EFUN_SUPPLIER_LABEL}）：${available.length}，留空将自动使用第一张`;
+        return;
+    }
+    hintEl.textContent = `卡池可用（供应商=${CARD_POOL_EFUN_SUPPLIER_LABEL}）：0，请手动输入兑换码`;
+}
+
+function resolveEfunCodeFromInputOrPool() {
+    const manualCode = normalizeEfunCode(getInputValue("efun-code-input"));
+    if (manualCode) {
+        return { code: manualCode, source: "manual" };
+    }
+    const available = getAvailableEfunPoolCodes();
+    if (!available.length) {
+        return { code: "", source: "none" };
+    }
+    const picked = available[0];
+    const code = normalizeEfunCode(picked.code);
+    if (code) {
+        setInputValue("efun-code-input", code);
+        storage.set(EFUN_CODE_STORAGE_KEY, code);
+    }
+    return { code, source: "pool" };
+}
+
+function markCardPoolCodeUsed(code, email = "") {
+    const normalizedCode = normalizeEfunCode(code);
+    if (!normalizedCode) return false;
+    const parsed = safeJsonParse(localStorage.getItem(CARD_POOL_REDEEM_STORAGE_KEY) || "[]", []);
+    if (!Array.isArray(parsed)) return false;
+    let changed = false;
+    const nowIso = new Date().toISOString();
+    const next = parsed.map((item) => {
+        const itemCode = normalizeEfunCode(item?.code || "");
+        if (!itemCode || itemCode !== normalizedCode) {
+            return item;
+        }
+        changed = true;
+        return {
+            ...item,
+            status: "used",
+            used_by_email: String(email || item?.used_by_email || "").trim(),
+            used_at: nowIso,
+        };
+    });
+    if (changed) {
+        localStorage.setItem(CARD_POOL_REDEEM_STORAGE_KEY, JSON.stringify(next));
+    }
+    return changed;
+}
+
+function setEfunResult(content, isError = false) {
+    const box = document.getElementById("efun-result-box");
+    if (!box) return;
+    const text = typeof content === "string" ? content : JSON.stringify(content || {}, null, 2);
+    box.textContent = text;
+    box.classList.add("show");
+    box.style.color = isError ? "#fecaca" : "#c7d2fe";
+}
+
+function collectEfunConfig() {
+    const apiUrl = String(getInputValue("efun-base-url-input") || "").trim();
+    const apiKey = String(getInputValue("efun-api-key-input") || "").trim();
+    const code = normalizeEfunCode(getInputValue("efun-code-input"));
+    setInputValue("efun-code-input", code);
+    return {
+        api_url: apiUrl || undefined,
+        // 兼容旧逻辑：仍保留 base_url 别名，映射到同一地址。
+        base_url: apiUrl || undefined,
+        api_key: apiKey || undefined,
+        code,
+    };
+}
+
+async function callEfunApi(path, payload) {
+    return api.post(`/payment/efun/${path}`, payload);
+}
+
+async function redeemEfunAndFill(showToast = true, overrideConfig = null) {
+    const config = {
+        ...collectEfunConfig(),
+        ...(overrideConfig || {}),
+    };
+    config.code = normalizeEfunCode(config.code || "");
+    setInputValue("efun-code-input", config.code);
+    if (!config.code) {
+        throw new Error("请先填写 CDK 激活码");
+    }
+    if (!EFUN_CODE_REGEX.test(config.code)) {
+        throw new Error("CDK 格式无效");
+    }
+    const payload = {
+        code: config.code,
+        base_url: config.base_url,
+        api_key: config.api_key,
+    };
+    const data = await callEfunApi("redeem", payload);
+    const card = data?.card || {};
+    const number = String(card.card_number || "").replace(/\s+/g, "");
+    const month = String(card.exp_month || "").trim();
+    const year = String(card.exp_year || "").trim();
+    const cvc = String(card.cvc || "").trim();
+
+    if (number) setInputValue("card-number-input", number);
+    if (month || year) setInputValue("card-expiry-input", formatExpiryInput(month, year));
+    if (cvc) setInputValue("card-cvc-input", cvc);
+    if (!getInputValue("billing-country-input")) setInputValue("billing-country-input", "US");
+    if (!getInputValue("billing-currency-input")) setInputValue("billing-currency-input", "USD");
+
+    storage.set(EFUN_CODE_STORAGE_KEY, config.code);
+    storage.set(EFUN_BASE_URL_STORAGE_KEY, String(config.base_url || EFUN_BASE_URL_DEFAULT));
+    setEfunResult(data?.raw || data);
+
+    if (showToast) {
+        toast.success(`EFun 开卡成功，已回填卡号 ${String(card.masked || "").trim() || ""}`);
+    }
+    return data;
+}
+
+async function queryEfunCard() {
+    const config = collectEfunConfig();
+    if (!config.code) {
+        toast.warning("请先填写 CDK 激活码");
+        return;
+    }
+    try {
+        const data = await callEfunApi("query", {
+            code: config.code,
+            base_url: config.base_url,
+            api_key: config.api_key,
+        });
+        setEfunResult(data?.data || data);
+        toast.success("查卡完成");
+    } catch (error) {
+        setEfunResult(`查卡失败: ${formatErrorMessage(error)}`, true);
+        toast.error(`查卡失败: ${formatErrorMessage(error)}`);
+    }
+}
+
+async function queryEfunBilling() {
+    const config = collectEfunConfig();
+    if (!config.code) {
+        toast.warning("请先填写 CDK 激活码");
+        return;
+    }
+    try {
+        const data = await callEfunApi("billing", {
+            code: config.code,
+            base_url: config.base_url,
+            api_key: config.api_key,
+        });
+        setEfunResult(data?.data || data);
+        toast.success("账单查询完成");
+    } catch (error) {
+        setEfunResult(`账单查询失败: ${formatErrorMessage(error)}`, true);
+        toast.error(`账单查询失败: ${formatErrorMessage(error)}`);
+    }
+}
+
+async function queryEfun3ds() {
+    const config = collectEfunConfig();
+    if (!config.code) {
+        toast.warning("请先填写 CDK 激活码");
+        return;
+    }
+    try {
+        const data = await callEfunApi("3ds/verify", {
+            code: config.code,
+            base_url: config.base_url,
+            api_key: config.api_key,
+            minutes: config.minutes || 30,
+        });
+        setEfunResult(data?.data || data);
+        toast.success("3DS 查询完成");
+    } catch (error) {
+        setEfunResult(`3DS 查询失败: ${formatErrorMessage(error)}`, true);
+        toast.error(`3DS 查询失败: ${formatErrorMessage(error)}`);
+    }
+}
+
+async function cancelEfunCard() {
+    const config = collectEfunConfig();
+    if (!config.code) {
+        toast.warning("请先填写 CDK 激活码");
+        return;
+    }
+    const ok = await confirm(`确认销卡 ${config.code} 吗？`, "EFun 销卡");
+    if (!ok) return;
+    try {
+        const data = await callEfunApi("cancel", {
+            code: config.code,
+            base_url: config.base_url,
+            api_key: config.api_key,
+        });
+        setEfunResult(data?.data || data);
+        toast.success("销卡完成");
+    } catch (error) {
+        setEfunResult(`销卡失败: ${formatErrorMessage(error)}`, true);
+        toast.error(`销卡失败: ${formatErrorMessage(error)}`);
+    }
+}
+
+function updateBindModeSpecificUi(mode) {
+    const bindMode = mode || getBindMode();
+    const isVendor = bindMode === "vendor_auto";
+    const isVendorEfun = bindMode === "vendor_efun";
+    const isVendorFlow = isVendor || isVendorEfun;
+    const thirdPartyPanel = document.getElementById("third-party-config");
+    const vendorPanel = document.getElementById("vendor-auto-config");
+    const vendorEfunPanel = document.getElementById("vendor-efun-config");
+    const commonFields = document.getElementById("bind-common-fields");
+    const pasteSection = document.getElementById("bind-paste-section");
+    const cardAddressSection = document.getElementById("bind-card-address-section");
+    const generateBtn = document.getElementById("generate-link-btn");
+    const autoOpenWrap = document.getElementById("bind-auto-open-wrap");
+    const linkBox = document.getElementById("link-box");
+    const stopBtn = document.getElementById("vendor-stop-btn");
+
+    if (thirdPartyPanel) thirdPartyPanel.style.display = bindMode === "third_party" ? "" : "none";
+    if (vendorPanel) vendorPanel.style.display = isVendor ? "" : "none";
+    if (vendorEfunPanel) vendorEfunPanel.style.display = isVendorEfun ? "" : "none";
+    if (commonFields) commonFields.style.display = isVendor ? "none" : "";
+    if (pasteSection) pasteSection.style.display = isVendorEfun ? "none" : "";
+    if (cardAddressSection) cardAddressSection.style.display = isVendorEfun ? "none" : "";
+    if (generateBtn) generateBtn.style.display = isVendorFlow ? "none" : "";
+    if (autoOpenWrap) autoOpenWrap.style.display = isVendorFlow ? "none" : "flex";
+    if (stopBtn) stopBtn.style.display = isVendorFlow ? "" : "none";
+    setVendorRetryButtonState(false, false);
+    if (linkBox) {
+        if (isVendorFlow) {
+            linkBox.classList.remove("show");
+            linkBox.style.display = "none";
+            generatedLink = "";
+            const linkText = document.getElementById("link-text");
+            const openStatus = document.getElementById("open-status");
+            if (linkText) linkText.value = "";
+            if (openStatus) openStatus.textContent = "";
+        } else {
+            linkBox.style.display = "";
+        }
+    }
+    if (!isVendorFlow) {
+        showVendorProgressPanel(false);
+        stopVendorProgressPolling();
+        vendorProgressState.taskId = 0;
+        vendorProgressState.lastConfig = null;
+    }
+    if (isVendorEfun) {
+        renderEfunPoolHint();
+    }
+}
+
 function onBindModeChange() {
     const mode = getBindMode();
-    const thirdPartyPanel = document.getElementById("third-party-config");
-    if (thirdPartyPanel) {
-        thirdPartyPanel.style.display = mode === "third_party" ? "" : "none";
-    }
+    updateBindModeSpecificUi(mode);
 
     const actionBtn = document.getElementById("create-bind-task-btn");
     if (actionBtn) {
-        if (mode === "third_party") {
-            actionBtn.textContent = "创建并执行第三方自动绑卡";
-        } else if (mode === "local_auto") {
-            actionBtn.textContent = "创建并执行全自动绑卡";
+        actionBtn.classList.remove("btn-primary", "btn-secondary", "btn-success", "btn-purple", "btn-danger");
+        actionBtn.classList.remove("efun-subscribe-wide");
+        if (mode === "local_auto") {
+            actionBtn.textContent = "创建并执行全自动订阅";
+            actionBtn.classList.add("btn-secondary");
+        } else if (mode === "vendor_efun") {
+            actionBtn.textContent = "订阅";
+            actionBtn.classList.add("btn-success");
+            actionBtn.classList.add("efun-subscribe-wide");
         } else {
             actionBtn.textContent = "生成并加入绑卡任务（半自动）";
+            actionBtn.classList.add("btn-secondary");
         }
     }
     updateSemiAutoActionsVisibility(mode);
@@ -1264,7 +2027,7 @@ function restoreBindModeConfig() {
     const modeSelect = document.getElementById("bind-mode-select");
     const savedMode = String(storage.get(BIND_MODE_STORAGE_KEY, "semi_auto") || "semi_auto");
     if (modeSelect) {
-        modeSelect.value = ["semi_auto", "third_party", "local_auto"].includes(savedMode) ? savedMode : "semi_auto";
+        modeSelect.value = ALLOWED_BIND_MODES.has(savedMode) ? savedMode : "semi_auto";
     }
 
     const savedApiUrl = String(storage.get(THIRD_PARTY_BIND_URL_STORAGE_KEY, "") || "").trim();
@@ -1273,6 +2036,18 @@ function restoreBindModeConfig() {
     if (!savedApiUrl) {
         storage.set(THIRD_PARTY_BIND_URL_STORAGE_KEY, initialApiUrl);
     }
+
+    const savedVendorCheckout = String(storage.get(VENDOR_CHECKOUT_STORAGE_KEY, "") || "").trim();
+    const savedRedeemCode = normalizeVendorRedeemCode(String(storage.get(VENDOR_REDEEM_STORAGE_KEY, "") || "").trim());
+    setInputValue("vendor-checkout-input", savedVendorCheckout);
+    setInputValue("vendor-redeem-input", savedRedeemCode);
+    setInputValue(
+        "efun-base-url-input",
+        String(storage.get(EFUN_BASE_URL_STORAGE_KEY, EFUN_BASE_URL_DEFAULT) || EFUN_BASE_URL_DEFAULT).trim() || EFUN_BASE_URL_DEFAULT
+    );
+    setInputValue("efun-api-key-input", String(storage.get(EFUN_API_KEY_STORAGE_KEY, "") || "").trim());
+    setInputValue("efun-code-input", normalizeEfunCode(String(storage.get(EFUN_CODE_STORAGE_KEY, "") || "").trim()));
+
     onBindModeChange();
 }
 
@@ -1370,7 +2145,48 @@ document.addEventListener("DOMContentLoaded", () => {
             storage.set(THIRD_PARTY_BIND_URL_STORAGE_KEY, apiUrl);
         }, 200)
     );
+    document.getElementById("vendor-checkout-input")?.addEventListener(
+        "input",
+        debounce(() => {
+            storage.set(VENDOR_CHECKOUT_STORAGE_KEY, getInputValue("vendor-checkout-input"));
+        }, 200)
+    );
+    document.getElementById("vendor-redeem-input")?.addEventListener(
+        "input",
+        debounce(() => {
+            const normalized = normalizeVendorRedeemCode(getInputValue("vendor-redeem-input"));
+            setInputValue("vendor-redeem-input", normalized);
+            storage.set(VENDOR_REDEEM_STORAGE_KEY, normalized);
+        }, 200)
+    );
+    document.getElementById("efun-base-url-input")?.addEventListener(
+        "input",
+        debounce(() => {
+            const value = String(getInputValue("efun-base-url-input") || "").trim();
+            storage.set(EFUN_BASE_URL_STORAGE_KEY, value || EFUN_BASE_URL_DEFAULT);
+        }, 200)
+    );
+    document.getElementById("efun-api-key-input")?.addEventListener(
+        "input",
+        debounce(() => {
+            storage.set(EFUN_API_KEY_STORAGE_KEY, String(getInputValue("efun-api-key-input") || "").trim());
+        }, 200)
+    );
+    document.getElementById("efun-code-input")?.addEventListener(
+        "input",
+        debounce(() => {
+            const normalized = normalizeEfunCode(getInputValue("efun-code-input"));
+            setInputValue("efun-code-input", normalized);
+            storage.set(EFUN_CODE_STORAGE_KEY, normalized);
+            renderEfunPoolHint();
+        }, 200)
+    );
     document.getElementById("bind-mode-select")?.addEventListener("change", onBindModeChange);
+    window.addEventListener("storage", (event) => {
+        if (!event || event.key === CARD_POOL_REDEEM_STORAGE_KEY) {
+            renderEfunPoolHint();
+        }
+    });
 
     loadAccounts();
     onCountryChange();
@@ -1378,21 +2194,111 @@ document.addEventListener("DOMContentLoaded", () => {
     startBindTaskAutoRefresh();
     switchPaymentTab("link");
 
-    window.addEventListener("beforeunload", stopBindTaskAutoRefresh);
+    window.addEventListener("beforeunload", () => {
+        stopBindTaskAutoRefresh();
+        stopVendorProgressPolling();
+    });
 });
 
 // 加载账号列表
+async function fetchBindFailStats(accountIds = []) {
+    const ids = (Array.isArray(accountIds) ? accountIds : [])
+        .map((item) => Number(item))
+        .filter((item) => Number.isFinite(item) && item > 0);
+    if (!ids.length) {
+        return new Map();
+    }
+    try {
+        const data = await api.post("/payment/bind-card/tasks/fail-stats", {
+            account_ids: ids,
+        }, {
+            timeoutMs: 12000,
+            retry: 0,
+            silentNetworkError: true,
+            silentTimeoutError: true,
+            requestKey: "payment:bind-fail-stats",
+            cancelPrevious: true,
+            priority: "high",
+        });
+        const rows = Array.isArray(data?.stats) ? data.stats : [];
+        const map = new Map();
+        rows.forEach((row) => {
+            const accountId = Number(row?.account_id || 0);
+            const failCount = Number(row?.fail_count || 0);
+            if (!Number.isFinite(accountId) || accountId <= 0) return;
+            map.set(accountId, Number.isFinite(failCount) && failCount > 0 ? failCount : 0);
+        });
+        return map;
+    } catch (_e) {
+        return new Map();
+    }
+}
+
 async function loadAccounts() {
     try {
         // 后端 page_size 最大为 100，超限会返回 422。
-        // 这里读取账号管理列表，不按状态硬过滤，避免“有账号但选不到”。
+        // 支付页账号下拉：仅显示「母号」且未订阅 plus/team 的账号。
         const data = await api.get("/accounts?page=1&page_size=100");
         const sel = document.getElementById("account-select");
         if (!sel) return;
 
         sel.innerHTML = '<option value="">-- 请选择账号 --</option>';
-        paymentAccounts = Array.isArray(data.accounts) ? data.accounts : [];
-        (data.accounts || []).forEach((acc) => {
+        const allAccounts = Array.isArray(data.accounts) ? data.accounts : [];
+        const bindFailCountMap = await fetchBindFailStats(allAccounts.map((acc) => Number(acc?.id || 0)));
+        const toRoleRank = (acc) => {
+            const role = String(acc?.role_tag || "").trim().toLowerCase();
+            if (role === "parent") return 0;
+            if (role === "child") return 1;
+            return 2;
+        };
+        const toPriority = (acc) => {
+            const num = Number(acc?.priority || 50);
+            return Number.isFinite(num) ? num : 50;
+        };
+        const toLastUsedRank = (acc) => {
+            const ms = Date.parse(String(acc?.last_used_at || ""));
+            if (Number.isNaN(ms)) return -1;
+            return ms;
+        };
+        const toFailRank = (acc) => {
+            const accountId = Number(acc?.id || 0);
+            if (Number.isFinite(accountId) && accountId > 0) {
+                const count = bindFailCountMap.get(accountId);
+                if (Number.isFinite(count)) {
+                    return count;
+                }
+            }
+            return String(acc?.status || "").trim().toLowerCase() === "failed" ? 1 : 0;
+        };
+
+        paymentAccounts = allAccounts
+            .filter((acc) => {
+                const sub = String(acc?.subscription_type || "").trim().toLowerCase();
+                if (sub === "plus" || sub === "team") {
+                    return false;
+                }
+                const roleTag = String(acc?.role_tag || "").trim().toLowerCase();
+                const accountLabel = String(acc?.account_label || "").trim().toLowerCase();
+                const isParent = roleTag === "parent" || accountLabel === "mother" || accountLabel === "母号";
+                return isParent;
+            })
+            .sort((a, b) => {
+                const roleDiff = toRoleRank(a) - toRoleRank(b);
+                if (roleDiff !== 0) return roleDiff;
+
+                const priorityDiff = toPriority(a) - toPriority(b);
+                if (priorityDiff !== 0) return priorityDiff;
+
+                const lastUsedDiff = toLastUsedRank(a) - toLastUsedRank(b);
+                if (lastUsedDiff !== 0) return lastUsedDiff;
+
+                const failDiff = toFailRank(a) - toFailRank(b);
+                if (failDiff !== 0) return failDiff;
+
+                return Number(a?.id || 0) - Number(b?.id || 0);
+            });
+
+        paymentAccounts.forEach((acc) => {
             const opt = document.createElement("option");
             opt.value = acc.id;
             const subText = acc.subscription_type ? ` (${String(acc.subscription_type).toUpperCase()})` : "";
@@ -1561,24 +2467,53 @@ async function createBindCardTask() {
     }
 
     const bindMode = getBindMode();
-    const bindData = collectBillingFormData();
-    const missing = [];
-    if (!bindData.card_number) missing.push("卡号");
-    if (!bindData.exp_month || !bindData.exp_year) missing.push("有效期");
-    if (!bindData.cvc) missing.push("CVC");
-    if (!bindData.billing_name) missing.push("姓名");
-    if (!bindData.address_line1) missing.push("地址");
-    if (!bindData.postal_code) missing.push("邮编");
-    if (missing.length && bindMode === "semi_auto") {
-        toast.warning(`绑卡资料未完整：${missing.join("、")}（本次仅创建半自动任务，不会阻断）`, 5000);
-    }
-    if (missing.length && (bindMode === "third_party" || bindMode === "local_auto")) {
-        const modeText = bindMode === "third_party" ? "第三方自动绑卡" : "全自动绑卡";
-        toast.warning(`${modeText}需要完整资料：${missing.join("、")}`, 5000);
-        return;
+    const isVendorEfun = bindMode === "vendor_efun";
+    const efunConfig = isVendorEfun ? collectEfunConfig() : {};
+    const vendorConfigForRun = isVendorEfun
+        ? {
+            redeem_code: "",
+            checkout_url: String(payload?.custom_checkout_url || "").trim(),
+            api_url: String(efunConfig.api_url || "").trim(),
+            api_key: String(efunConfig.api_key || "").trim(),
+        }
+        : null;
+    if (isVendorEfun) {
+        const resolved = resolveEfunCodeFromInputOrPool();
+        const resolvedCode = String(resolved?.code || "").trim();
+        if (!resolvedCode) {
+            renderEfunPoolHint();
+            toast.warning("卡商EFun模式需要兑换码：可先在卡池添加供应商=EFun的可用码，或手动填写");
+            return;
+        }
+        efunConfig.code = resolvedCode;
+        vendorConfigForRun.redeem_code = resolvedCode;
+        setInputValue("efun-code-input", resolvedCode);
+        storage.set(EFUN_CODE_STORAGE_KEY, resolvedCode);
+        if (!EFUN_CODE_REGEX.test(String(efunConfig.code || ""))) {
+            toast.warning("CDK 格式无效");
+            return;
+        }
+        renderEfunPoolHint();
+        setEfunResult("已准备就绪：将执行接口流程（强制生成 Checkout -> EFun 开卡 -> bindcard 提交 -> 同步订阅）");
+    } else {
+        let bindData = collectBillingFormData();
+        const missing = [];
+        if (!bindData.card_number) missing.push("卡号");
+        if (!bindData.exp_month || !bindData.exp_year) missing.push("有效期");
+        if (!bindData.cvc) missing.push("CVC");
+        if (!bindData.billing_name) missing.push("姓名");
+        if (!bindData.address_line1) missing.push("地址");
+        if (!bindData.postal_code) missing.push("邮编");
+        if (missing.length && bindMode === "semi_auto") {
+            toast.warning(`绑卡资料未完整：${missing.join("、")}（本次仅创建半自动任务，不会阻断）`, 5000);
+        }
+        if (missing.length && bindMode === "local_auto") {
+            toast.warning(`全自动绑卡需要完整资料：${missing.join("、")}`, 5000);
+            return;
+        }
     }
 
-    payload.auto_open = Boolean(document.getElementById("bind-auto-open")?.checked);
+    payload.auto_open = isVendorEfun ? false : Boolean(document.getElementById("bind-auto-open")?.checked);
     payload.bind_mode = bindMode;
 
     setButtonLoading("create-bind-task-btn", "创建中...", true);
@@ -1588,7 +2523,7 @@ async function createBindCardTask() {
             throw new Error(data?.detail || "创建绑卡任务失败");
         }
 
-        if (data.link) {
+        if (data.link && !isVendorEfun) {
             showGeneratedLink({
                 link: data.link,
                 source: data.source,
@@ -1596,37 +2531,24 @@ async function createBindCardTask() {
             });
         }
 
-        if (bindMode === "third_party") {
-            toast.info(`任务 #${data.task.id} 已创建，正在调用第三方自动绑卡...`, 3000);
-            try {
-                const autoResult = await submitThirdPartyAutoBind(data.task, bindData);
-                if (autoResult?.verified) {
-                    toast.success(`任务 #${data.task.id} 自动绑卡完成: ${String(autoResult.subscription_type || "").toUpperCase()}`);
-                } else if (autoResult?.paid_confirmed) {
-                    toast.success(`任务 #${data.task.id} 已确认支付，等待订阅同步（可点“同步订阅”）`, 7000);
-                } else if (autoResult?.pending || autoResult?.need_user_action) {
-                    const tp = autoResult?.third_party || {};
-                    const assess = tp?.assessment || {};
-                    const snapshot = assess?.snapshot || {};
-                    const paymentStatus = String(snapshot?.payment_status || "").toUpperCase() || "UNKNOWN";
-                    toast.warning(
-                        `任务 #${data.task.id} 第三方已受理（payment_status=${paymentStatus}），可能需要 challenge；请在支付页完成后点“我已完成支付”或“同步订阅”。`,
-                        9000
-                    );
-                } else {
-                    const sub = String(autoResult?.subscription_type || "free").toUpperCase();
-                    toast.warning(`任务 #${data.task.id} 第三方提交成功，但当前订阅为 ${sub}，请稍后再同步`, 7000);
-                }
-            } catch (autoErr) {
-                toast.error(`任务 #${data.task.id} 第三方自动绑卡失败: ${formatErrorMessage(autoErr)}`);
-            }
-        } else if (bindMode === "local_auto") {
+        if (bindMode === "local_auto") {
+            const bindData = collectBillingFormData();
             toast.info(`任务 #${data.task.id} 已创建，已在后台执行全自动绑卡，可继续修改参数并创建新任务`, 5000);
             runLocalAutoBindInBackground(data.task, { ...bindData });
+        } else if (bindMode === "vendor_efun") {
+            toast.info(`任务 #${data.task.id} 已创建，开始执行接口订阅流程`, 4000);
+            showVendorProgressPanel(true);
+            await startVendorAutoBind(data.task, vendorConfigForRun || {});
+            await loadBindCardTasks(true);
         } else {
             toast.success(`绑卡任务已创建 #${data.task.id}${data.auto_opened ? "，浏览器已打开" : ""}`);
+            switchPaymentTab("bind-task");
+            await loadBindCardTasks();
+            return;
         }
-        switchPaymentTab("bind-task");
+        if (bindMode !== "vendor_efun") {
+            switchPaymentTab("bind-task");
+        }
         await loadBindCardTasks();
     } catch (e) {
         toast.error(`创建绑卡任务失败: ${formatErrorMessage(e)}`);
@@ -1686,64 +2608,91 @@ async function openIncognito() {
 async function loadBindCardTasks(silent = false) {
     const tbody = document.getElementById("bind-card-task-table");
     if (!tbody) return;
-
-    if (!silent) {
-        setButtonLoading("refresh-bind-task-btn", "刷新中...", true);
-    }
-    try {
-        const params = new URLSearchParams({
-            page: String(bindTaskState.page),
-            page_size: String(bindTaskState.pageSize),
-        });
-        if (bindTaskState.status) params.set("status", bindTaskState.status);
-        if (bindTaskState.search) params.set("search", bindTaskState.search);
-
-        const data = await api.get(`/payment/bind-card/tasks?${params.toString()}`);
-        const tasks = data?.tasks || [];
-
-        if (!tasks.length) {
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="8"><div class="empty-state">暂无绑卡任务</div></td>
-                </tr>
-            `;
-            return;
-        }
-
-        tbody.innerHTML = tasks.map((task) => `
-            <tr>
-                <td>${task.id}</td>
-                <td>${escapeHtml(task.account_email || "-")}</td>
-                <td>${String(task.plan_type || "-").toUpperCase()}</td>
-                <td><span class="bind-task-badge ${escapeHtml(task.status || "")}">${escapeHtml(getTaskStatusText(task.status))}</span></td>
-                <td>
-                    <a class="bind-task-url" href="${escapeHtml(task.checkout_url || "#")}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(task.checkout_url || "")}">
-                        ${escapeHtml(task.checkout_url || "-")}
-                    </a>
-                </td>
-                <td>${escapeHtml(task.checkout_source || "-")}</td>
-                <td>${format.date(task.created_at)}</td>
-                <td>
-                    <div class="bind-task-actions">
-                        <button class="btn btn-primary bind-task-action-btn" onclick="openBindCardTask(${task.id})">打开</button>
-                        <button class="btn btn-primary bind-task-action-btn" onclick="markBindCardTaskUserAction(${task.id})">我已完成支付</button>
-                        <button class="btn btn-secondary bind-task-action-btn" onclick="syncBindCardTask(${task.id})">同步订阅</button>
-                        <button class="btn btn-danger bind-task-action-btn" onclick="deleteBindCardTask(${task.id})">删除</button>
-                    </div>
-                    ${task.last_error ? `<div class="hint" style="margin-top:6px;color:var(--danger-color);" title="${escapeHtml(task.last_error)}">${escapeHtml(task.last_error)}</div>` : ""}
-                </td>
-            </tr>
-        `).join("");
-    } catch (e) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="8"><div class="empty-state">加载失败: ${escapeHtml(formatErrorMessage(e))}</div></td>
-            </tr>
-        `;
-    } finally {
+    if (bindTaskLoadPromise) {
         if (!silent) {
-            setButtonLoading("refresh-bind-task-btn", "刷新中...", false);
+            toast.info("列表正在刷新，请稍候...", 1800);
         }
+        return bindTaskLoadPromise;
+    }
+
+    const runner = async () => {
+        isLoadingBindTaskList = true;
+        if (!silent) {
+            setButtonLoading("refresh-bind-task-btn", "刷新中...", true);
+        }
+        try {
+            const params = new URLSearchParams({
+                page: String(bindTaskState.page),
+                page_size: String(bindTaskState.pageSize),
+            });
+            if (bindTaskState.status) params.set("status", bindTaskState.status);
+            if (bindTaskState.search) params.set("search", bindTaskState.search);
+
+            const data = await api.get(`/payment/bind-card/tasks?${params.toString()}`, {
+                timeoutMs: 45000,
+                retry: silent ? 0 : 1,
+                requestKey: "payment:bind-task-list",
+                cancelPrevious: true,
+                silentNetworkError: silent,
+                silentTimeoutError: silent,
+                priority: silent ? "low" : "normal",
+            });
+            const tasks = data?.tasks || [];
+
+            if (!tasks.length) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="8"><div class="empty-state">暂无绑卡任务</div></td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = tasks.map((task) => `
+                <tr>
+                    <td>${task.id}</td>
+                    <td>${escapeHtml(task.account_email || "-")}</td>
+                    <td>${String(task.plan_type || "-").toUpperCase()}</td>
+                    <td><span class="bind-task-badge ${escapeHtml(task.status || "")}">${escapeHtml(getTaskStatusText(task.status))}</span></td>
+                    <td>
+                        <a class="bind-task-url" href="${escapeHtml(task.checkout_url || "#")}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(task.checkout_url || "")}">
+                            ${escapeHtml(task.checkout_url || "-")}
+                        </a>
+                    </td>
+                    <td>${escapeHtml(task.checkout_source || "-")}</td>
+                    <td>${formatBeijingDateTime(task.created_at)}</td>
+                    <td>
+                        <div class="bind-task-actions">
+                            <button class="btn btn-primary bind-task-action-btn" onclick="openBindCardTask(${task.id})">打开</button>
+                            <button class="btn btn-primary bind-task-action-btn" onclick="markBindCardTaskUserAction(${task.id})">我已完成支付</button>
+                            <button class="btn btn-secondary bind-task-action-btn" onclick="syncBindCardTask(${task.id})">同步订阅</button>
+                            <button class="btn btn-danger bind-task-action-btn" onclick="deleteBindCardTask(${task.id})">删除</button>
+                        </div>
+                        ${task.last_error ? `<div class="hint" style="margin-top:6px;color:var(--danger-color);" title="${escapeHtml(task.last_error)}">${escapeHtml(task.last_error)}</div>` : ""}
+                    </td>
+                </tr>
+            `).join("");
+        } catch (e) {
+            if (!silent) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="8"><div class="empty-state">加载失败: ${escapeHtml(formatErrorMessage(e))}</div></td>
+                    </tr>
+                `;
+            }
+        } finally {
+            isLoadingBindTaskList = false;
+            if (!silent) {
+                setButtonLoading("refresh-bind-task-btn", "刷新中...", false);
+            }
+        }
+    };
+
+    bindTaskLoadPromise = runner();
+    try {
+        return await bindTaskLoadPromise;
+    } finally {
+        bindTaskLoadPromise = null;
     }
 }
 
@@ -1762,13 +2711,38 @@ async function openBindCardTask(taskId) {
 }
 
 async function markBindCardTaskUserAction(taskId) {
+    const lockKey = `mark:${taskId}`;
+    if (bindTaskActionRunning.has(lockKey)) {
+        toast.info(`任务 #${taskId} 正在验证中，请稍候...`, 2500);
+        return;
+    }
+    bindTaskActionRunning.add(lockKey);
     try {
-        toast.info(`任务 #${taskId} 正在验证订阅，最多等待 180 秒...`, 3000);
-        const data = await api.post(`/payment/bind-card/tasks/${taskId}/mark-user-action`, {
+        toast.info(`任务 #${taskId} 已进入后台验证，最多等待 180 秒...`, 3000);
+        const opTask = await api.post(`/payment/bind-card/tasks/${taskId}/mark-user-action/async`, {
             timeout_seconds: 180,
             interval_seconds: 10,
+        }, {
+            timeoutMs: 20000,
+            retry: 0,
         });
-        if (data?.verified) {
+
+        const opTaskId = String(opTask?.id || "").trim();
+        if (!opTaskId) {
+            throw new Error("任务创建失败：未返回任务 ID");
+        }
+
+        const finalTask = await watchPaymentOpTask(opTaskId);
+        const finalStatus = String(finalTask?.status || "").toLowerCase();
+        const data = finalTask?.result || {};
+
+        if (finalStatus === "failed") {
+            throw new Error(finalTask?.error || finalTask?.message || "验证任务失败");
+        }
+
+        if (finalStatus === "cancelled" || data?.cancelled) {
+            toast.warning(`任务 #${taskId} 验证已取消`, 5000);
+        } else if (data?.verified) {
             toast.success(`任务 #${taskId} 验证成功: ${String(data.subscription_type || "").toUpperCase()}`);
         } else {
             const sub = String(data?.subscription_type || "free").toUpperCase();
@@ -1783,32 +2757,65 @@ async function markBindCardTaskUserAction(taskId) {
         }
         await loadBindCardTasks();
     } catch (e) {
-        // 兼容旧后端：如果 mark-user-action 尚未部署，自动降级到 sync-subscription。
+        // 兼容旧后端：如果 mark-user-action/async 尚未部署，自动降级到旧同步接口。
         const detail = String(e?.data?.detail || "").toLowerCase();
         const isRouteNotFound = e?.response?.status === 404 && detail === "not found";
         if (isRouteNotFound) {
             try {
-                const fallback = await api.post(`/payment/bind-card/tasks/${taskId}/sync-subscription`, {});
-                const sub = String(fallback?.subscription_type || "free").toUpperCase();
-                if (sub === "PLUS" || sub === "TEAM") {
-                    toast.success(`任务 #${taskId} 已通过兼容模式同步成功: ${sub}`);
+                const fallbackMark = await api.post(`/payment/bind-card/tasks/${taskId}/mark-user-action`, {
+                    timeout_seconds: 180,
+                    interval_seconds: 10,
+                }, {
+                    timeoutMs: 210000,
+                    retry: 0,
+                });
+                if (fallbackMark?.verified) {
+                    toast.success(`任务 #${taskId} 验证成功: ${String(fallbackMark.subscription_type || "").toUpperCase()}`);
                 } else {
-                    toast.warning(`任务 #${taskId} 兼容同步完成，但当前仍是 ${sub}`, 5000);
+                    const sub = String(fallbackMark?.subscription_type || "free").toUpperCase();
+                    toast.warning(`任务 #${taskId} 兼容验证完成，但当前仍是 ${sub}`, 5000);
                 }
                 await loadBindCardTasks();
                 return;
             } catch (fallbackErr) {
-                toast.error(`验证订阅失败（兼容模式也失败）: ${formatErrorMessage(fallbackErr)}`);
+                // 兼容极老版本：mark-user-action 不存在时再降级 sync-subscription。
+                const detail2 = String(fallbackErr?.data?.detail || "").toLowerCase();
+                const isMarkRouteMissing = fallbackErr?.response?.status === 404 && detail2 === "not found";
+                if (isMarkRouteMissing) {
+                    try {
+                        const fallback = await api.post(`/payment/bind-card/tasks/${taskId}/sync-subscription`, {}, {
+                            timeoutMs: 60000,
+                            retry: 0,
+                        });
+                        const sub = String(fallback?.subscription_type || "free").toUpperCase();
+                        if (sub === "PLUS" || sub === "TEAM") {
+                            toast.success(`任务 #${taskId} 已通过兼容模式同步成功: ${sub}`);
+                        } else {
+                            toast.warning(`任务 #${taskId} 兼容同步完成，但当前仍是 ${sub}`, 5000);
+                        }
+                        await loadBindCardTasks();
+                        return;
+                    } catch (fallbackSyncErr) {
+                        toast.error(`验证订阅失败（兼容模式也失败）: ${formatErrorMessage(fallbackSyncErr)}`);
+                        return;
+                    }
+                }
+                toast.error(`验证订阅失败（兼容模式失败）: ${formatErrorMessage(fallbackErr)}`);
                 return;
             }
         }
         toast.error(`验证订阅失败: ${formatErrorMessage(e)}`);
+    } finally {
+        bindTaskActionRunning.delete(lockKey);
     }
 }
 
 async function syncBindCardTask(taskId) {
     try {
-        const data = await api.post(`/payment/bind-card/tasks/${taskId}/sync-subscription`, {});
+        const data = await api.post(`/payment/bind-card/tasks/${taskId}/sync-subscription`, {}, {
+            timeoutMs: 60000,
+            retry: 0,
+        });
         const sub = String(data?.subscription_type || "free").toUpperCase();
         const source = String(data?.detail?.source || "unknown");
         const confidence = String(data?.detail?.confidence || "unknown");
@@ -1854,3 +2861,9 @@ window.syncBindCardTask = syncBindCardTask;
 window.deleteBindCardTask = deleteBindCardTask;
 window.fillFromBatchProfile = fillFromBatchProfile;
 window.randomBillingByCountry = randomBillingByCountry;
+window.redeemEfunAndFill = redeemEfunAndFill;
+window.queryEfunCard = queryEfunCard;
+window.queryEfunBilling = queryEfunBilling;
+window.queryEfun3ds = queryEfun3ds;
+window.cancelEfunCard = cancelEfunCard;
+window.retryVendorAutoTask = retryVendorAutoTask;

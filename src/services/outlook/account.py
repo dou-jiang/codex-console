@@ -18,7 +18,7 @@ class OutlookAccount:
     def from_config(cls, config: Dict[str, Any]) -> "OutlookAccount":
         """从配置创建账户"""
         return cls(
-            email=config.get("email", ""),
+            email=str(config.get("email", "") or "").strip().lower(),
             password=config.get("password", ""),
             client_id=config.get("client_id", ""),
             refresh_token=config.get("refresh_token", "")

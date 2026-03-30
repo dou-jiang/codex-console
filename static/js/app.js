@@ -117,6 +117,7 @@ const elements = {
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
     initEventListeners();
+    syncRegistrationModeUI();
     loadAvailableServices();
     loadRecentAccounts();
     startAccountsPolling();
@@ -418,16 +419,14 @@ function handleServiceChange(e) {
     if (type === 'outlook_batch') {
         isOutlookBatchMode = true;
         elements.outlookBatchSection.style.display = 'block';
-        elements.regModeGroup.style.display = 'none';
-        elements.batchCountGroup.style.display = 'none';
-        elements.batchOptions.style.display = 'none';
+        syncRegistrationModeUI();
         loadOutlookAccounts();
         addLog('info', '[系统] 已切换到 Outlook 批量注册模式');
         return;
     } else {
         isOutlookBatchMode = false;
         elements.outlookBatchSection.style.display = 'none';
-        elements.regModeGroup.style.display = 'block';
+        syncRegistrationModeUI();
     }
 
     // 显示服务信息
@@ -464,13 +463,28 @@ function handleServiceChange(e) {
     }
 }
 
-// 模式切换
-function handleModeChange(e) {
-    const mode = e.target.value;
-    isBatchMode = mode === 'batch';
+function getIsBatchMode() {
+    return !isOutlookBatchMode && elements.regMode && elements.regMode.value === 'batch';
+}
 
+function syncRegistrationModeUI() {
+    isBatchMode = getIsBatchMode();
+
+    if (isOutlookBatchMode) {
+        elements.regModeGroup.style.display = 'none';
+        elements.batchCountGroup.style.display = 'none';
+        elements.batchOptions.style.display = 'none';
+        return;
+    }
+
+    elements.regModeGroup.style.display = 'block';
     elements.batchCountGroup.style.display = isBatchMode ? 'block' : 'none';
     elements.batchOptions.style.display = isBatchMode ? 'block' : 'none';
+}
+
+// 模式切换
+function handleModeChange(e) {
+    syncRegistrationModeUI();
 }
 
 // 并发模式切换（批量）
@@ -526,7 +540,7 @@ async function handleStartRegistration(e) {
         requestData.email_service_id = parseInt(serviceId);
     }
 
-    if (isBatchMode) {
+    if (getIsBatchMode()) {
         await handleBatchRegistration(requestData);
     } else {
         await handleSingleRegistration(requestData);
@@ -795,12 +809,13 @@ async function handleBatchRegistration(requestData) {
     displayedLogs.clear();  // 清空日志去重集合
     toastShown = false;  // 重置 toast 标志
 
-    const count = parseInt(elements.batchCount.value) || 5;
+    const count = Math.min(1000, Math.max(1, parseInt(elements.batchCount.value) || 5));
     const intervalMin = parseInt(elements.intervalMin.value) || 5;
     const intervalMax = parseInt(elements.intervalMax.value) || 30;
     const concurrency = parseInt(elements.concurrencyCount.value) || 3;
     const mode = elements.concurrencyMode.value || 'pipeline';
 
+    elements.batchCount.value = count;
     requestData.count = count;
     requestData.interval_min = intervalMin;
     requestData.interval_max = intervalMax;
@@ -838,7 +853,8 @@ async function handleCancelTask() {
 
     try {
         // 批量任务取消（包括普通批量模式和 Outlook 批量模式）
-        if (currentBatch && (isBatchMode || isOutlookBatchMode)) {
+        if (currentBatch) {
+            const isOutlookTask = currentBatch.pollingMode === 'outlook_batch' || isOutlookBatchMode;
             // 优先通过 WebSocket 取消
             if (batchWebSocket && batchWebSocket.readyState === WebSocket.OPEN) {
                 batchWebSocket.send(JSON.stringify({ type: 'cancel' }));
@@ -846,7 +862,7 @@ async function handleCancelTask() {
                 toast.info('任务取消请求已提交');
             } else {
                 // 降级到 REST API
-                const endpoint = isOutlookBatchMode
+                const endpoint = isOutlookTask
                     ? `/registration/outlook-batch/${currentBatch.batch_id}/cancel`
                     : `/registration/batch/${currentBatch.batch_id}/cancel`;
 
@@ -1273,7 +1289,6 @@ function resetButtons() {
     clearBatchWebSocketReconnect();
     currentTask = null;
     currentBatch = null;
-    isBatchMode = false;
     // 重置完成标志
     taskCompleted = false;
     batchCompleted = false;
@@ -1289,6 +1304,7 @@ function resetButtons() {
     disconnectWebSocket();
     disconnectBatchWebSocket();
     // 注意：不重置 isOutlookBatchMode，因为用户可能想继续使用 Outlook 批量模式
+    syncRegistrationModeUI();
 }
 
 // HTML 转义
@@ -1702,6 +1718,9 @@ async function restoreActiveTask() {
     const { mode, task_uuid, batch_id, total } = state;
 
     if (mode === 'single' && task_uuid) {
+        isOutlookBatchMode = false;
+        elements.regMode.value = 'single';
+        syncRegistrationModeUI();
         // 查询任务是否仍在运行
         try {
             const data = await api.get(`/registration/tasks/${task_uuid}`);
@@ -1726,6 +1745,11 @@ async function restoreActiveTask() {
             sessionStorage.removeItem('activeTask');
         }
     } else if ((mode === 'batch' || mode === 'outlook_batch') && batch_id) {
+        isOutlookBatchMode = (mode === 'outlook_batch');
+        if (mode === 'batch') {
+            elements.regMode.value = 'batch';
+        }
+        syncRegistrationModeUI();
         // 查询批量任务是否仍在运行
         const endpoint = mode === 'outlook_batch'
             ? `/registration/outlook-batch/${batch_id}`
@@ -1739,7 +1763,6 @@ async function restoreActiveTask() {
             // 批量任务仍在运行，恢复状态
             currentBatch = { batch_id, ...data, pollingMode: mode };
             activeBatchId = batch_id;
-            isOutlookBatchMode = (mode === 'outlook_batch');
             batchCompleted = false;
             batchFinalStatus = null;
             toastShown = false;

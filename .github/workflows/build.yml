@@ -25,9 +25,15 @@ jobs:
           - os: ubuntu-latest
             source_name: codex-console
             asset_name: codex-console-linux-x64
+          - os: ubuntu-24.04-arm
+            source_name: codex-console
+            asset_name: codex-console-linux-arm64
           - os: macos-latest
             source_name: codex-console
             asset_name: codex-console-macos-arm64
+          - os: macos-26-intel
+            source_name: codex-console
+            asset_name: codex-console-macos-amd64
 
     steps:
       - name: Checkout code
@@ -89,8 +95,10 @@ jobs:
             | Platform | File |
             |------|------|
             | Windows x64 | `codex-console-windows-x64.exe` |
+            | Linux ARM64 | `codex-console-linux-arm64` |
             | Linux x64 | `codex-console-linux-x64` |
             | macOS ARM64 | `codex-console-macos-arm64` |
+            | macOS AMD64 | `codex-console-macos-amd64` |
 
             ### Usage
             ```bash

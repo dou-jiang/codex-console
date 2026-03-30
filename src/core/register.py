@@ -2771,7 +2771,12 @@ class RegistrationEngine:
             result.error_message = str(e)
             return result
 
-    def save_to_database(self, result: RegistrationResult) -> bool:
+    def save_to_database(
+        self,
+        result: RegistrationResult,
+        account_label: Optional[str] = None,
+        role_tag: Optional[str] = None,
+    ) -> bool:
         """
         保存注册结果到数据库
 
@@ -2806,7 +2811,9 @@ class RegistrationEngine:
                     id_token=result.id_token,
                     proxy_used=self.proxy_url,
                     extra_data=result.metadata,
-                    source=result.source
+                    source=result.source,
+                    account_label=account_label,
+                    role_tag=role_tag,
                 )
 
                 self._log(f"账户已存进数据库，落袋为安，ID: {account.id}")
