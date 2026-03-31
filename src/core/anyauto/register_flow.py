@@ -136,6 +136,42 @@ class AnyAutoRegistrationEngine:
             )
         )
 
+    def _passwordless_oauth_reauth(
+        self,
+        chatgpt_client: ChatGPTClient,
+        email: str,
+        skymail_adapter: EmailServiceAdapter,
+        oauth_config: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        self._log("检测到 add_phone，尝试 passwordless OTP 登录补全 workspace...")
+        oauth_client = OAuthClient(
+            config=oauth_config,
+            proxy=self.proxy_url,
+            verbose=False,
+            browser_mode=self.browser_mode,
+        )
+        oauth_client._log = self._log
+
+        tokens = oauth_client.login_passwordless_and_get_tokens(
+            email,
+            chatgpt_client.device_id,
+            chatgpt_client.ua,
+            chatgpt_client.sec_ch_ua,
+            chatgpt_client.impersonate,
+            skymail_adapter,
+        )
+        if tokens and tokens.get("access_token"):
+            return {
+                "access_token": tokens.get("access_token", ""),
+                "refresh_token": tokens.get("refresh_token", ""),
+                "id_token": tokens.get("id_token", ""),
+                "session": oauth_client.session,
+            }
+
+        if oauth_client.last_error:
+            self._log(f"Passwordless OAuth 失败: {oauth_client.last_error}")
+        return None
+
     def run(self):
         """
         执行 any-auto-register 风格注册流程。
@@ -212,9 +248,35 @@ class AnyAutoRegistrationEngine:
                         continue
                     return {"success": False, "error_message": last_error}
 
+                add_phone_required = "add_phone" in str(msg or "").lower()
+                try:
+                    state = getattr(chatgpt_client, "last_registration_state", None)
+                    if state:
+                        target = f"{getattr(state, 'continue_url', '')} {getattr(state, 'current_url', '')}".lower()
+                        if "add-phone" in target or "add_phone" in str(getattr(state, "page_type", "")).lower():
+                            add_phone_required = True
+                except Exception:
+                    pass
+
                 # 保存会话与设备
                 self.session = chatgpt_client.session
                 self.device_id = chatgpt_client.device_id
+
+                if add_phone_required:
+                    pwdless = self._passwordless_oauth_reauth(
+                        chatgpt_client,
+                        normalized_email,
+                        skymail_adapter,
+                        oauth_config,
+                    )
+                    if pwdless and pwdless.get("access_token"):
+                        self.session = pwdless.get("session") or self.session
+                        return {
+                            "success": True,
+                            "access_token": pwdless.get("access_token", ""),
+                            "refresh_token": pwdless.get("refresh_token", ""),
+                            "id_token": pwdless.get("id_token", ""),
+                        }
 
                 # 5. 复用 session 取 token
                 self._log("步骤 2/2: 优先复用注册会话提取 ChatGPT Session / AccessToken...")

@@ -427,6 +427,7 @@ class OAuthClient:
         impersonate=None,
         authorize_url=None,
         authorize_params=None,
+        screen_hint: str | None = None,
     ):
         """提交邮箱，获取 OAuth 流程的第一页状态。"""
         self._log("步骤2: POST /api/accounts/authorize/continue")
@@ -460,6 +461,8 @@ class OAuthClient:
         )
         headers.update(generate_datadog_trace())
         payload = {"username": {"kind": "email", "value": email}}
+        if screen_hint:
+            payload["screen_hint"] = screen_hint
 
         try:
             kwargs = {"json": payload, "headers": headers, "timeout": 30, "allow_redirects": False}
@@ -757,6 +760,167 @@ class OAuthClient:
             return None
 
         self._set_error("OAuth 状态机超出最大步数")
+        return None
+
+    def login_passwordless_and_get_tokens(self, email, device_id, user_agent=None, sec_ch_ua=None, impersonate=None, skymail_client=None):
+        """
+        使用 passwordless 邮箱 OTP 完成 OAuth 登录流程，获取 tokens。
+        """
+        self.last_error = ""
+        self._log("开始 OAuth Passwordless 登录流程...")
+
+        if not skymail_client:
+            self._set_error("缺少接码客户端，无法执行 passwordless OTP")
+            return None
+
+        code_verifier, code_challenge = generate_pkce()
+        oauth_state = secrets.token_urlsafe(32)
+        authorize_params = {
+            "response_type": "code",
+            "client_id": self.oauth_client_id,
+            "redirect_uri": self.oauth_redirect_uri,
+            "scope": "openid profile email offline_access",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": oauth_state,
+            "prompt": "login",
+            "screen_hint": "login",
+            "login_hint": email,
+        }
+        authorize_url = f"{self.oauth_issuer}/oauth/authorize"
+
+        seed_oai_device_cookie(self.session, device_id)
+
+        self._log("步骤1: Bootstrap OAuth session (passwordless)...")
+        authorize_final_url = self._bootstrap_oauth_session(
+            authorize_url,
+            authorize_params,
+            device_id=device_id,
+            user_agent=user_agent,
+            sec_ch_ua=sec_ch_ua,
+            impersonate=impersonate,
+        )
+        if not authorize_final_url:
+            self._set_error("Bootstrap 失败")
+            return None
+
+        continue_referer = (
+            authorize_final_url
+            if authorize_final_url.startswith(self.oauth_issuer)
+            else f"{self.oauth_issuer}/log-in"
+        )
+
+        state = self._submit_authorize_continue(
+            email,
+            device_id,
+            continue_referer,
+            user_agent=user_agent,
+            sec_ch_ua=sec_ch_ua,
+            impersonate=impersonate,
+            authorize_url=authorize_url,
+            authorize_params=authorize_params,
+            screen_hint="login",
+        )
+        if not state:
+            if not self.last_error:
+                self._set_error("提交邮箱后未进入有效的 OAuth 状态")
+            return None
+
+        self._log(f"Passwordless OAuth 状态起点: {describe_flow_state(state)}")
+
+        send_ok, send_detail = self._send_email_otp(
+            device_id,
+            user_agent,
+            sec_ch_ua,
+            impersonate,
+            referer=state.current_url or continue_referer,
+        )
+        if not send_ok:
+            self._set_error(send_detail or "email-otp/send 失败")
+            return None
+
+        otp_state = self._state_from_url(f"{self.oauth_issuer}/email-verification")
+        next_state = self._handle_otp_verification(
+            email,
+            device_id,
+            user_agent,
+            sec_ch_ua,
+            impersonate,
+            skymail_client,
+            otp_state,
+        )
+        if not next_state:
+            if not self.last_error:
+                self._set_error("邮箱 OTP 验证后未进入下一步 OAuth 状态")
+            return None
+
+        state = next_state
+        referer = state.current_url or continue_referer
+
+        for step in range(20):
+            code = self._extract_code_from_state(state)
+            if code:
+                self._log(f"获取到 authorization code: {code[:20]}...")
+                self._log("步骤: POST /oauth/token")
+                tokens = self._exchange_code_for_tokens(code, code_verifier, user_agent, impersonate)
+                if tokens:
+                    self._log("✅ Passwordless OAuth 登录成功")
+                else:
+                    self._log("换取 tokens 失败")
+                return tokens
+
+            if self._state_is_add_phone(state):
+                self._set_error("add_phone_required")
+                return None
+
+            if self._state_requires_navigation(state):
+                code, next_state = self._follow_flow_state(
+                    state,
+                    referer=referer,
+                    user_agent=user_agent,
+                    impersonate=impersonate,
+                )
+                if code:
+                    self._log(f"获取到 authorization code: {code[:20]}...")
+                    self._log("步骤: POST /oauth/token")
+                    tokens = self._exchange_code_for_tokens(code, code_verifier, user_agent, impersonate)
+                    if tokens:
+                        self._log("✅ Passwordless OAuth 登录成功")
+                    else:
+                        self._log("换取 tokens 失败")
+                    return tokens
+                referer = state.current_url or referer
+                state = next_state
+                self._log(f"follow state -> {describe_flow_state(state)}")
+                continue
+
+            if self._state_supports_workspace_resolution(state):
+                self._log("执行 workspace/org 选择")
+                code, next_state = self._oauth_submit_workspace_and_org(
+                    state.continue_url or state.current_url or f"{self.oauth_issuer}/sign-in-with-chatgpt/codex/consent",
+                    device_id,
+                    user_agent,
+                    impersonate,
+                )
+                if code:
+                    self._log(f"获取到 authorization code: {code[:20]}...")
+                    self._log("步骤: POST /oauth/token")
+                    tokens = self._exchange_code_for_tokens(code, code_verifier, user_agent, impersonate)
+                    if tokens:
+                        self._log("✅ Passwordless OAuth 登录成功")
+                    else:
+                        self._log("换取 tokens 失败")
+                    return tokens
+                if next_state:
+                    referer = state.current_url or referer
+                    state = next_state
+                    self._log(f"workspace state -> {describe_flow_state(state)}")
+                    continue
+
+            self._set_error(f"未支持的 Passwordless OAuth 状态: {describe_flow_state(state)}")
+            return None
+
+        self._set_error("Passwordless OAuth 状态机超出最大步数")
         return None
     
     def _extract_code_from_url(self, url):
@@ -1170,6 +1334,34 @@ class OAuthClient:
             self._set_error(f"换取 tokens 异常: {e}")
         
         return None
+
+    def _send_email_otp(self, device_id, user_agent, sec_ch_ua, impersonate, referer=None):
+        request_url = f"{self.oauth_issuer}/api/accounts/email-otp/send"
+        headers = self._headers(
+            request_url,
+            user_agent=user_agent,
+            sec_ch_ua=sec_ch_ua,
+            accept="application/json",
+            referer=referer or f"{self.oauth_issuer}/log-in",
+            origin=self.oauth_issuer,
+            fetch_site="same-origin",
+            extra_headers={"oai-device-id": device_id} if device_id else None,
+        )
+        headers.update(generate_datadog_trace())
+
+        try:
+            kwargs = {"headers": headers, "timeout": 30, "allow_redirects": False}
+            if impersonate:
+                kwargs["impersonate"] = impersonate
+            self._browser_pause(0.12, 0.25)
+            resp = self.session.get(request_url, **kwargs)
+        except Exception as e:
+            return False, f"email-otp/send 异常: {e}"
+
+        self._log(f"/email-otp/send -> {resp.status_code}")
+        if resp.status_code != 200:
+            return False, f"email-otp/send 失败: {resp.status_code} - {resp.text[:180]}"
+        return True, ""
 
     def _send_phone_number(self, phone, device_id, user_agent, sec_ch_ua, impersonate):
         request_url = f"{self.oauth_issuer}/api/accounts/add-phone/send"

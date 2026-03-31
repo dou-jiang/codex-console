@@ -228,6 +228,10 @@ class ChatGPTClient:
         target = f"{state.continue_url} {state.current_url}".lower()
         return state.page_type == "about_you" or "about-you" in target
 
+    def _state_is_add_phone(self, state: FlowState):
+        target = f"{state.continue_url} {state.current_url}".lower()
+        return state.page_type == "add_phone" or "add-phone" in target
+
     def _state_requires_navigation(self, state: FlowState):
         if (state.method or "GET").upper() != "GET":
             return False
@@ -880,6 +884,11 @@ class ChatGPTClient:
                 state = next_state
                 self.last_registration_state = state
                 continue
+
+            if self._state_is_add_phone(state):
+                self._log("检测到 add_phone 阶段，交由后续登录补全流程处理")
+                self.last_registration_state = state
+                return True, "add_phone_required"
 
             if self._state_requires_navigation(state):
                 success, next_state = self._follow_flow_state(
