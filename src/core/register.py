@@ -2945,6 +2945,34 @@ class RegistrationEngine:
             result.workspace_id = flow_result.get("workspace_id", "") or ""
             result.source = "register"
 
+            def _extract_account_id_from_token(token: str) -> str:
+                try:
+                    text = str(token or "").strip()
+                    if "." not in text:
+                        return ""
+                    payload_part = text.split(".")[1]
+                    pad = "=" * (-len(payload_part) % 4)
+                    import base64, json as _json
+                    decoded = base64.urlsafe_b64decode(payload_part + pad).decode("utf-8")
+                    payload = _json.loads(decoded)
+                    if not isinstance(payload, dict):
+                        return ""
+                    auth_claims = payload.get("https://api.openai.com/auth") or {}
+                    for key in ("chatgpt_account_id", "account_id", "workspace_id"):
+                        value = str(auth_claims.get(key) or payload.get(key) or "").strip()
+                        if value:
+                            return value
+                except Exception:
+                    return ""
+                return ""
+
+            if not result.account_id:
+                result.account_id = _extract_account_id_from_token(result.access_token or result.id_token)
+            if not result.account_id and result.workspace_id:
+                result.account_id = result.workspace_id
+            if not result.workspace_id and result.account_id:
+                result.workspace_id = result.account_id
+
             metadata = flow_result.get("metadata") or {}
             metadata.update({
                 "email_service": self.email_service.service_type.value,

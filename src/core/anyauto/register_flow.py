@@ -12,7 +12,7 @@ from typing import Optional, Callable, Dict, Any
 
 from .chatgpt_client import ChatGPTClient
 from .oauth_client import OAuthClient
-from .utils import generate_random_name, generate_random_birthday
+from .utils import generate_random_name, generate_random_birthday, decode_jwt_payload
 from ...config.constants import PASSWORD_CHARSET, DEFAULT_PASSWORD_LENGTH
 from ...config.settings import get_settings
 
@@ -108,6 +108,18 @@ class AnyAutoRegistrationEngine:
             "next-auth",
         ]
         return any(marker.lower() in text for marker in retriable_markers)
+
+    @staticmethod
+    def _extract_account_id_from_token(token: str) -> str:
+        payload = decode_jwt_payload(token)
+        if not isinstance(payload, dict):
+            return ""
+        auth_claims = payload.get("https://api.openai.com/auth") or {}
+        for key in ("chatgpt_account_id", "account_id", "workspace_id"):
+            value = str(auth_claims.get(key) or payload.get(key) or "").strip()
+            if value:
+                return value
+        return ""
 
     @staticmethod
     def _is_phone_required_error(message: str) -> bool:
@@ -209,12 +221,18 @@ class AnyAutoRegistrationEngine:
                 session_ok, session_result = chatgpt_client.reuse_session_and_get_tokens()
                 if session_ok:
                     self._log("Token 提取完成！")
+                    account_id = str(session_result.get("account_id", "") or "").strip()
+                    if not account_id:
+                        account_id = str(session_result.get("workspace_id", "") or "").strip()
+                    if not account_id:
+                        account_id = self._extract_account_id_from_token(session_result.get("access_token", ""))
+                    workspace_id = str(session_result.get("workspace_id", "") or "").strip() or account_id
                     return {
                         "success": True,
                         "access_token": session_result.get("access_token", ""),
                         "session_token": session_result.get("session_token", ""),
-                        "account_id": session_result.get("account_id", "") or session_result.get("user_id", ""),
-                        "workspace_id": session_result.get("workspace_id", ""),
+                        "account_id": account_id,
+                        "workspace_id": workspace_id,
                         "metadata": {
                             "auth_provider": session_result.get("auth_provider", ""),
                             "expires": session_result.get("expires", ""),
@@ -280,13 +298,14 @@ class AnyAutoRegistrationEngine:
                     except Exception:
                         pass
 
+                    account_id = self._extract_account_id_from_token(tokens.get("access_token", "")) or workspace_id
                     return {
                         "success": True,
                         "access_token": tokens.get("access_token", ""),
                         "refresh_token": tokens.get("refresh_token", ""),
                         "id_token": tokens.get("id_token", ""),
-                        "account_id": "v2_acct_" + chatgpt_client.device_id[:8],
-                        "workspace_id": workspace_id,
+                        "account_id": account_id or ("v2_acct_" + chatgpt_client.device_id[:8]),
+                        "workspace_id": workspace_id or account_id,
                         "session_token": session_cookie,
                     }
 
