@@ -12,7 +12,7 @@ import string
 import uuid
 from typing import Optional, Dict, Any, Tuple, Callable, List
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from curl_cffi import requests as cffi_requests
 
@@ -1858,6 +1858,52 @@ class RegistrationEngine:
         except Exception:
             return ""
 
+    def _extract_token_timestamps(self, token: str) -> Tuple[Optional[datetime], Optional[datetime]]:
+        """
+        从 JWT（access_token / id_token）payload 提取 iat / exp，返回 naive UTC datetime。
+        """
+        try:
+            raw = str(token or "").strip()
+            if raw.count(".") < 2:
+                return None, None
+            payload = raw.split(".")[1]
+            import base64
+            pad = "=" * ((4 - (len(payload) % 4)) % 4)
+            decoded = base64.urlsafe_b64decode((payload + pad).encode("ascii"))
+            claims = json.loads(decoded.decode("utf-8"))
+            if not isinstance(claims, dict):
+                return None, None
+
+            iat = claims.get("iat")
+            exp = claims.get("exp")
+
+            issued_at = (
+                datetime.fromtimestamp(int(iat), tz=timezone.utc).replace(tzinfo=None)
+                if iat not in (None, "")
+                else None
+            )
+            expires_at = (
+                datetime.fromtimestamp(int(exp), tz=timezone.utc).replace(tzinfo=None)
+                if exp not in (None, "")
+                else None
+            )
+            return issued_at, expires_at
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _parse_iso_datetime_to_naive_utc(value: str) -> Optional[datetime]:
+        try:
+            text = str(value or "").strip()
+            if not text:
+                return None
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        except Exception:
+            return None
+
     def _ensure_native_required_tokens(self, result: RegistrationResult) -> bool:
         """
         原生注册入口要求拿齐：
@@ -2995,6 +3041,17 @@ class RegistrationEngine:
         try:
             # 获取默认 client_id
             settings = get_settings()
+            token_issued_at, token_expires_at = self._extract_token_timestamps(
+                result.access_token or result.id_token
+            )
+            metadata_expires_at = None
+            if isinstance(result.metadata, dict):
+                metadata_expires_at = self._parse_iso_datetime_to_naive_utc(
+                    str(result.metadata.get("expires") or "")
+                )
+            final_expires_at = token_expires_at or metadata_expires_at
+            now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+            final_last_refresh = token_issued_at or (now_utc_naive if result.access_token else None)
 
             with get_db() as db:
                 # 保存账户信息
@@ -3013,6 +3070,8 @@ class RegistrationEngine:
                     refresh_token=result.refresh_token,
                     id_token=result.id_token,
                     proxy_used=self.proxy_url,
+                    last_refresh=final_last_refresh,
+                    expires_at=final_expires_at,
                     extra_data=result.metadata,
                     source=result.source,
                     account_label=account_label,
