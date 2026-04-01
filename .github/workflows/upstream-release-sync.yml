@@ -101,7 +101,11 @@ jobs:
         run: |
           set -Eeuo pipefail
 
+          LIGHTWEIGHT_DOCKERFILE="$RUNNER_TEMP/Dockerfile.lightweight"
+          cp "$GITHUB_WORKSPACE/Dockerfile" "$LIGHTWEIGHT_DOCKERFILE"
+
           git checkout --detach "refs/tags/${{ steps.resolve.outputs.upstream_tag }}"
+          cp "$LIGHTWEIGHT_DOCKERFILE" "$GITHUB_WORKSPACE/Dockerfile"
 
           echo "build_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
