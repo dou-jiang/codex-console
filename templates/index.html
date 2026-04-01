@@ -210,7 +210,7 @@
                                     </div>
                                     <div class="form-group">
                                         <label for="outlook-concurrency-count">并发数 (1-50)</label>
-                                        <input type="number" id="outlook-concurrency-count" name="outlook_concurrency_count" min="1" max="50" value="1">
+                                        <input type="number" id="outlook-concurrency-count" name="outlook_concurrency_count" min="1" max="50" value="3">
                                         <small id="outlook-concurrency-hint" style="color: var(--text-muted); font-size: 0.75rem;">同时最多运行 N 个任务，每隔 interval 秒启动新任务</small>
                                     </div>
                                     <div id="outlook-interval-group">
@@ -235,13 +235,13 @@
                                     <label for="reg-mode">注册模式</label>
                                     <select id="reg-mode" name="reg_mode">
                                         <option value="single">单次注册</option>
-                                        <option value="batch" selected>批量注册</option>
+                                        <option value="batch">批量注册</option>
                                     </select>
                                 </div>
 
                                 <div class="form-group" id="batch-count-group" style="display: none;">
                                     <label for="batch-count">注册数量 (1-100)</label>
-                                    <input type="number" id="batch-count" name="batch_count" min="1" max="100" value="100">
+                                    <input type="number" id="batch-count" name="batch_count" min="1" max="100" value="5">
                                 </div>
 
                                 <div id="batch-options" style="display: none;">
@@ -255,7 +255,7 @@
 
                                     <div class="form-group">
                                         <label for="concurrency-count">并发数 (1-50)</label>
-                                        <input type="number" id="concurrency-count" name="concurrency_count" min="1" max="50" value="1">
+                                        <input type="number" id="concurrency-count" name="concurrency_count" min="1" max="50" value="3">
                                         <small id="concurrency-hint" style="color: var(--text-muted); font-size: 0.75rem;">同时最多运行 N 个任务，每隔 interval 秒启动新任务</small>
                                     </div>
 
@@ -310,22 +310,6 @@
                                     <button type="button" class="btn btn-secondary" id="cancel-btn" disabled style="width: 100%;">
                                         取消任务
                                     </button>
-                                </div>
-
-                                <div class="form-group" id="schedule-group" style="margin-top: 10px; padding-top: 12px; border-top: 1px dashed var(--border-light);">
-                                    <label style="font-weight: 500; margin-bottom: var(--spacing-xs); display: block;">定时注册</label>
-                                    <label for="schedule-cron-expression">Cron 表达式 (5位)</label>
-                                    <input type="text" id="schedule-cron-expression" value="*/30 * * * *" placeholder="例如: */30 * * * *">
-                                    <small style="display: block; margin-top: 6px; color: var(--text-muted);">格式: 分 时 日 月 周</small>
-                                    <div style="display: flex; gap: var(--spacing-sm); margin-top: 8px;">
-                                        <button type="button" class="btn btn-primary" id="schedule-start-btn" style="flex: 1;">
-                                            ⏰ 启动定时注册
-                                        </button>
-                                        <button type="button" class="btn btn-secondary" id="schedule-stop-btn" style="flex: 1;" disabled>
-                                            停止定时
-                                        </button>
-                                    </div>
-                                    <small id="schedule-status-text" style="display: block; margin-top: 8px; color: var(--text-muted);">状态: 未启用</small>
                                 </div>
                             </form>
                         </div>
@@ -428,6 +412,5 @@
 
     <script src="/static/js/utils.js?v={{ static_version }}"></script>
     <script src="/static/js/app.js?v={{ static_version }}"></script>
-    <script src="/static/js/schedule-app.js?v={{ static_version }}"></script>
 </body>
 </html>

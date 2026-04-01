@@ -7,7 +7,7 @@ import logging
 import uuid
 import random
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple, Any
+from typing import List, Optional, Dict, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -27,6 +27,7 @@ router = APIRouter()
 running_tasks: dict = {}
 # 批量任务存储
 batch_tasks: Dict[str, dict] = {}
+
 
 # ============== Proxy Helper Functions ==============
 
@@ -80,7 +81,7 @@ class RegistrationTaskCreate(BaseModel):
 
 class BatchRegistrationRequest(BaseModel):
     """批量注册请求"""
-    count: int = 100
+    count: int = 1
     email_service_type: str = "tempmail"
     proxy: Optional[str] = None
     email_service_config: Optional[dict] = None
@@ -218,132 +219,6 @@ def _normalize_email_service_config(
         normalized['proxy_url'] = proxy_url
 
     return normalized
-
-
-def _validate_email_service_type(email_service_type: str):
-    """验证邮箱服务类型。"""
-    try:
-        EmailServiceType(email_service_type)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"无效的邮箱服务类型: {email_service_type}"
-        )
-
-
-def _validate_batch_params(count: int, interval_min: int, interval_max: int, concurrency: int, mode: str):
-    """验证批量参数。"""
-    if count < 1 or count > 100:
-        raise HTTPException(status_code=400, detail="注册数量必须在 1-100 之间")
-
-    if interval_min < 0 or interval_max < interval_min:
-        raise HTTPException(status_code=400, detail="间隔时间参数无效")
-
-    if not 1 <= concurrency <= 50:
-        raise HTTPException(status_code=400, detail="并发数必须在 1-50 之间")
-
-    if mode not in ("parallel", "pipeline"):
-        raise HTTPException(status_code=400, detail="模式必须为 parallel 或 pipeline")
-
-
-async def _enqueue_single_registration(
-    request: RegistrationTaskCreate,
-    background_tasks: Optional[BackgroundTasks] = None,
-) -> RegistrationTaskResponse:
-    """创建并启动单次注册任务。"""
-    _validate_email_service_type(request.email_service_type)
-
-    task_uuid = str(uuid.uuid4())
-    with get_db() as db:
-        task = crud.create_registration_task(
-            db,
-            task_uuid=task_uuid,
-            proxy=request.proxy
-        )
-
-    args = (
-        task_uuid,
-        request.email_service_type,
-        request.proxy,
-        request.email_service_config,
-        request.email_service_id,
-        "",
-        "",
-        request.auto_upload_cpa,
-        request.cpa_service_ids,
-        request.auto_upload_sub2api,
-        request.sub2api_service_ids,
-        request.auto_upload_tm,
-        request.tm_service_ids,
-    )
-
-    if background_tasks is not None:
-        background_tasks.add_task(run_registration_task, *args)
-    else:
-        asyncio.create_task(run_registration_task(*args))
-
-    return task_to_response(task)
-
-
-async def _enqueue_batch_registration(
-    request: BatchRegistrationRequest,
-    background_tasks: Optional[BackgroundTasks] = None,
-) -> BatchRegistrationResponse:
-    """创建并启动批量注册任务。"""
-    _validate_email_service_type(request.email_service_type)
-    _validate_batch_params(
-        count=request.count,
-        interval_min=request.interval_min,
-        interval_max=request.interval_max,
-        concurrency=request.concurrency,
-        mode=request.mode,
-    )
-
-    batch_id = str(uuid.uuid4())
-    task_uuids = []
-
-    with get_db() as db:
-        for _ in range(request.count):
-            task_uuid = str(uuid.uuid4())
-            crud.create_registration_task(
-                db,
-                task_uuid=task_uuid,
-                proxy=request.proxy
-            )
-            task_uuids.append(task_uuid)
-
-    with get_db() as db:
-        tasks = [crud.get_registration_task(db, task_uuid) for task_uuid in task_uuids]
-
-    args = (
-        batch_id,
-        task_uuids,
-        request.email_service_type,
-        request.proxy,
-        request.email_service_config,
-        request.email_service_id,
-        request.interval_min,
-        request.interval_max,
-        request.concurrency,
-        request.mode,
-        request.auto_upload_cpa,
-        request.cpa_service_ids,
-        request.auto_upload_sub2api,
-        request.sub2api_service_ids,
-        request.auto_upload_tm,
-        request.tm_service_ids,
-    )
-
-    if background_tasks is not None:
-        background_tasks.add_task(run_batch_registration, *args)
-    else:
-        asyncio.create_task(run_batch_registration(*args))
-
-    return BatchRegistrationResponse(
-        batch_id=batch_id,
-        count=request.count,
-        tasks=[task_to_response(task) for task in tasks if task]
-    )
 
 
 def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
@@ -939,7 +814,44 @@ async def start_registration(
     - proxy: 代理地址
     - email_service_config: 邮箱服务配置（outlook 需要提供账户信息）
     """
-    return await _enqueue_single_registration(request, background_tasks)
+    # 验证邮箱服务类型
+    try:
+        EmailServiceType(request.email_service_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"无效的邮箱服务类型: {request.email_service_type}"
+        )
+
+    # 创建任务
+    task_uuid = str(uuid.uuid4())
+
+    with get_db() as db:
+        task = crud.create_registration_task(
+            db,
+            task_uuid=task_uuid,
+            proxy=request.proxy
+        )
+
+    # 在后台运行注册任务
+    background_tasks.add_task(
+        run_registration_task,
+        task_uuid,
+        request.email_service_type,
+        request.proxy,
+        request.email_service_config,
+        request.email_service_id,
+        "",
+        "",
+        request.auto_upload_cpa,
+        request.cpa_service_ids,
+        request.auto_upload_sub2api,
+        request.sub2api_service_ids,
+        request.auto_upload_tm,
+        request.tm_service_ids,
+    )
+
+    return task_to_response(task)
 
 
 @router.post("/batch", response_model=BatchRegistrationResponse)
@@ -956,7 +868,71 @@ async def start_batch_registration(
     - interval_min: 最小间隔秒数
     - interval_max: 最大间隔秒数
     """
-    return await _enqueue_batch_registration(request, background_tasks)
+    # 验证参数
+    if request.count < 1 or request.count > 100:
+        raise HTTPException(status_code=400, detail="注册数量必须在 1-100 之间")
+
+    try:
+        EmailServiceType(request.email_service_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"无效的邮箱服务类型: {request.email_service_type}"
+        )
+
+    if request.interval_min < 0 or request.interval_max < request.interval_min:
+        raise HTTPException(status_code=400, detail="间隔时间参数无效")
+
+    if not 1 <= request.concurrency <= 50:
+        raise HTTPException(status_code=400, detail="并发数必须在 1-50 之间")
+
+    if request.mode not in ("parallel", "pipeline"):
+        raise HTTPException(status_code=400, detail="模式必须为 parallel 或 pipeline")
+
+    # 创建批量任务
+    batch_id = str(uuid.uuid4())
+    task_uuids = []
+
+    with get_db() as db:
+        for _ in range(request.count):
+            task_uuid = str(uuid.uuid4())
+            task = crud.create_registration_task(
+                db,
+                task_uuid=task_uuid,
+                proxy=request.proxy
+            )
+            task_uuids.append(task_uuid)
+
+    # 获取所有任务
+    with get_db() as db:
+        tasks = [crud.get_registration_task(db, uuid) for uuid in task_uuids]
+
+    # 在后台运行批量注册
+    background_tasks.add_task(
+        run_batch_registration,
+        batch_id,
+        task_uuids,
+        request.email_service_type,
+        request.proxy,
+        request.email_service_config,
+        request.email_service_id,
+        request.interval_min,
+        request.interval_max,
+        request.concurrency,
+        request.mode,
+        request.auto_upload_cpa,
+        request.cpa_service_ids,
+        request.auto_upload_sub2api,
+        request.sub2api_service_ids,
+        request.auto_upload_tm,
+        request.tm_service_ids,
+    )
+
+    return BatchRegistrationResponse(
+        batch_id=batch_id,
+        count=request.count,
+        tasks=[task_to_response(t) for t in tasks if t]
+    )
 
 
 @router.get("/batch/{batch_id}")

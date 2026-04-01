@@ -7,7 +7,7 @@ WORKDIR /app
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    TZ=Asia/Shanghai \
+    # WebUI 默认配置
     WEBUI_HOST=0.0.0.0 \
     WEBUI_PORT=1455 \
     LOG_LEVEL=info \

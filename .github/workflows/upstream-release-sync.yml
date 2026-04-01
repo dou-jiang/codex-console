@@ -79,23 +79,6 @@ jobs:
         shell: bash
         run: exit 0
 
-      - name: Stage overlay files
-        if: steps.image.outputs.exists != 'true'
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          OVERLAY_SOURCE="$GITHUB_WORKSPACE/.upstream-overlay/files"
-          OVERLAY_STAGING="$RUNNER_TEMP/upstream-overlay"
-          if [[ ! -d "$OVERLAY_SOURCE" ]]; then
-            echo "overlay 目录不存在: $OVERLAY_SOURCE" >&2
-            exit 1
-          fi
-
-          rm -rf "$OVERLAY_STAGING"
-          mkdir -p "$OVERLAY_STAGING"
-          cp -a "$OVERLAY_SOURCE/." "$OVERLAY_STAGING/"
-
       - name: Prepare source from upstream tag
         id: prepare
         if: steps.image.outputs.exists != 'true'
@@ -104,14 +87,6 @@ jobs:
           set -Eeuo pipefail
 
           git checkout --detach "refs/tags/${{ steps.resolve.outputs.upstream_tag }}"
-
-          OVERLAY_STAGING="$RUNNER_TEMP/upstream-overlay"
-          if [[ ! -d "$OVERLAY_STAGING" ]]; then
-            echo "overlay 暂存目录不存在: $OVERLAY_STAGING" >&2
-            exit 1
-          fi
-
-          cp -a "$OVERLAY_STAGING/." "$GITHUB_WORKSPACE/"
 
           echo "build_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -155,7 +130,6 @@ jobs:
             echo "- Upstream tag: ${{ steps.resolve.outputs.upstream_tag }}"
             echo "- Image: ${IMAGE_NAME}:${{ steps.resolve.outputs.version }}"
             echo "- Platforms: ${PLATFORMS}"
-            echo "- Overlay source: .upstream-overlay/files"
             if [[ "${{ steps.image.outputs.exists }}" == 'true' ]]; then
               echo "- Result: skipped (already published)"
             elif [[ "${{ job.status }}" == 'success' ]]; then
