@@ -163,6 +163,7 @@ class AutoRegistrationCoordinator:
     async def stop(self) -> None:
         if not self._task:
             return
+        self._wake_event.set()
         self._task.cancel()
         try:
             await self._task

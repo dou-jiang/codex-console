@@ -8,7 +8,7 @@ import asyncio
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from ..config.settings import get_settings
 from ..core.system_selfcheck import create_selfcheck_run, execute_selfcheck_run, has_running_selfcheck_run
@@ -59,6 +59,7 @@ class SelfCheckScheduler:
         self._last_run: Optional[Dict[str, Any]] = None
         self._consecutive_failures: int = 0
         self._logs: List[Dict[str, str]] = []
+        self._run_tasks: Set[asyncio.Task] = set()
 
     def _read_schedule(self) -> Dict[str, Any]:
         settings = get_settings()
@@ -141,6 +142,18 @@ class SelfCheckScheduler:
             self._append_log_locked("info", "已请求立即执行一次系统自检", now)
             return self._snapshot_locked()
 
+    def _track_run_task(self, task: asyncio.Task) -> None:
+        self._run_tasks.add(task)
+        task.add_done_callback(lambda done: self._run_tasks.discard(done))
+
+    async def _cancel_run_tasks(self) -> None:
+        pending = [task for task in list(self._run_tasks) if not task.done()]
+        if not pending:
+            return
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
     async def run_loop(self) -> None:
         logger.info("系统自检调度器启动")
         self._append_log("info", "调度器已启动")
@@ -151,6 +164,7 @@ class SelfCheckScheduler:
             except asyncio.CancelledError:
                 logger.info("系统自检调度器已停止")
                 self._append_log("info", "调度器已停止")
+                await self._cancel_run_tasks()
                 break
             except Exception as exc:
                 logger.warning("系统自检调度器异常: %s", exc)
@@ -189,7 +203,8 @@ class SelfCheckScheduler:
                 self._append_log_locked("info", f"开始执行系统自检（{reason}）", now)
 
         if should_start:
-            asyncio.create_task(self._run_once(schedule, reason))
+            task = asyncio.create_task(self._run_once(schedule, reason))
+            self._track_run_task(task)
 
     async def _run_once(self, schedule: Dict[str, Any], reason: str) -> None:
         mode = _normalize_mode(schedule.get("mode"))

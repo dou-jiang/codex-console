@@ -120,21 +120,29 @@ def create_app() -> FastAPI:
         try:
             yield
         finally:
+            async def _cancel_and_wait(task):
+                if not task:
+                    return
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.warning("Background task shutdown failed: %s", exc)
+
             cleanup_task = getattr(app.state, "log_cleanup_task", None)
-            if cleanup_task:
-                cleanup_task.cancel()
+            await _cancel_and_wait(cleanup_task)
 
             scheduler_service = getattr(app.state, "scheduled_registration_service", None)
             if scheduler_service:
                 await scheduler_service.stop()
 
             auto_quick_refresh_task = getattr(app.state, "auto_quick_refresh_task", None)
-            if auto_quick_refresh_task:
-                auto_quick_refresh_task.cancel()
+            await _cancel_and_wait(auto_quick_refresh_task)
 
             selfcheck_scheduler_task = getattr(app.state, "selfcheck_scheduler_task", None)
-            if selfcheck_scheduler_task:
-                selfcheck_scheduler_task.cancel()
+            await _cancel_and_wait(selfcheck_scheduler_task)
 
             if auto_registration_coordinator is not None:
                 await auto_registration_coordinator.stop()

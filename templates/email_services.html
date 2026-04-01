@@ -406,6 +406,31 @@
                             <input type="password" id="custom-imap-password" name="imap_password" placeholder="Gmail 需使用 App Password，QQ/163 需使用授权码">
                         </div>
                     </div>
+                    <div id="add-cloudmail-fields" style="display:none;">
+                        <div class="form-group">
+                            <label for="custom-cm-base-url">API 地址</label>
+                            <input type="text" id="custom-cm-base-url" name="cm_base_url" placeholder="https://mail.example.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="custom-cm-admin-email">管理员邮箱</label>
+                            <input type="email" id="custom-cm-admin-email" name="cm_admin_email" placeholder="admin@example.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="custom-cm-admin-password">管理员密码</label>
+                            <input type="password" id="custom-cm-admin-password" name="cm_admin_password" placeholder="管理员邮箱密码">
+                        </div>
+                        <div class="form-group">
+                            <label for="custom-cm-domain">邮箱域名</label>
+                            <input type="text" id="custom-cm-domain" name="cm_domain" placeholder="example.com 或 domain1.com,domain2.com">
+                            <small style="color: var(--text-muted);">支持多个域名，用英文逗号分隔</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="custom-cm-subdomain">子域（可选）</label>
+                            <input type="text" id="custom-cm-subdomain" name="cm_subdomain" placeholder="test">
+                            <small style="color: var(--text-muted);">例如填写 "test"，生成的邮箱为 xxx@test.example.com</small>
+                        </div>
+                    </div>
+
                     <div class="form-row">
                         <div class="form-group">
                             <label for="custom-priority">优先级</label>
@@ -609,6 +634,32 @@
                             <label for="edit-imap-password">密码 / 授权码</label>
                             <input type="password" id="edit-imap-password" name="imap_password" placeholder="留空则保持原值不变">
                             <small style="color: var(--text-muted);">留空则保持原值不变</small>
+                        </div>
+                    </div>
+                    <!-- CloudMail 字段 -->
+                    <div id="edit-cloudmail-fields" style="display:none;">
+                        <div class="form-group">
+                            <label for="edit-cm-base-url">API 地址</label>
+                            <input type="text" id="edit-cm-base-url" name="cm_base_url" placeholder="https://mail.example.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-cm-admin-email">管理员邮箱</label>
+                            <input type="email" id="edit-cm-admin-email" name="cm_admin_email" placeholder="admin@example.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-cm-admin-password">管理员密码</label>
+                            <input type="password" id="edit-cm-admin-password" name="cm_admin_password" placeholder="留空则不修改">
+                            <small style="color: var(--text-muted);">留空则保持原值不变</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-cm-domain">邮箱域名</label>
+                            <input type="text" id="edit-cm-domain" name="cm_domain" placeholder="example.com">
+                            <small style="color: var(--text-muted);">支持多个域名，用英文逗号分隔</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-cm-subdomain">子域（可选）</label>
+                            <input type="text" id="edit-cm-subdomain" name="cm_subdomain" placeholder="test">
+                            <small style="color: var(--text-muted);">例如填写 "test"，生成的邮箱为 xxx@test.example.com</small>
                         </div>
                     </div>
                     <div class="form-row">
