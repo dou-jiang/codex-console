@@ -168,6 +168,18 @@ def main():
     parser.add_argument("--access-password", help="Web UI 访问密钥 (也可通过 WEBUI_ACCESS_PASSWORD 环境变量设置)")
     args = parser.parse_args()
 
+    # 先准备运行目录与数据库，再应用命令行/环境变量覆盖。
+    # 否则 update_settings 会在数据库未初始化时退回默认内存配置，
+    # 导致像 registration_entry_flow 这类已保存设置在重启后看起来“被重置”。
+    _load_dotenv()
+    data_dir = project_root / "data"
+    logs_dir = project_root / "logs"
+    data_dir.mkdir(exist_ok=True)
+    logs_dir.mkdir(exist_ok=True)
+    os.environ.setdefault("APP_DATA_DIR", str(data_dir))
+    os.environ.setdefault("APP_LOGS_DIR", str(logs_dir))
+    initialize_database()
+
     # 更新配置
     from src.config.settings import update_settings
 
