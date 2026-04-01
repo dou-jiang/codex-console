@@ -1,0 +1,147 @@
+name: Upstream Release Sync Docker
+
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional upstream tag, for example v1.1.2"
+        required: false
+        type: string
+
+env:
+  UPSTREAM_REPO: https://github.com/dou-jiang/codex-console.git
+  IMAGE_NAME: lifj25/codex-console
+  PLATFORMS: linux/amd64,linux/arm64
+  CUSTOM_COMMITS: 34fd4d6
+
+jobs:
+  sync-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: upstream-release-sync
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve upstream tag
+        id: resolve
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          git remote add upstream "${UPSTREAM_REPO}" || git remote set-url upstream "${UPSTREAM_REPO}"
+          git fetch --force --tags upstream
+
+          if [[ -n "${{ github.event.inputs.upstream_tag }}" ]]; then
+            UPSTREAM_TAG="${{ github.event.inputs.upstream_tag }}"
+          else
+            UPSTREAM_TAG="$(git ls-remote --tags --refs --sort='version:refname' upstream 'v*' | tail -n 1 | awk '{print $2}' | sed 's#refs/tags/##')"
+          fi
+
+          if [[ -z "${UPSTREAM_TAG}" ]]; then
+            echo "未找到上游 release tag" >&2
+            exit 1
+          fi
+
+          VERSION="${UPSTREAM_TAG#v}"
+
+          echo "upstream_tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Check image existence
+        id: image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          VERSION="${{ steps.resolve.outputs.version }}"
+          if docker manifest inspect "${IMAGE_NAME}:${VERSION}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "镜像 ${IMAGE_NAME}:${VERSION} 已存在，跳过构建。" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop when image already exists
+        if: steps.image.outputs.exists == 'true'
+        shell: bash
+        run: exit 0
+
+      - name: Prepare source from upstream tag
+        id: prepare
+        if: steps.image.outputs.exists != 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          git checkout --detach "refs/tags/${{ steps.resolve.outputs.upstream_tag }}"
+
+          for commit in ${CUSTOM_COMMITS}; do
+            git cherry-pick "$commit"
+          done
+
+          echo "build_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        if: steps.image.outputs.exists != 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.image.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: steps.image.outputs.exists != 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        if: steps.image.outputs.exists != 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.resolve.outputs.version }}
+            ${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.resolve.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.prepare.outputs.build_revision }}
+
+      - name: Summarize result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Upstream release sync"
+            echo "- Upstream tag: ${{ steps.resolve.outputs.upstream_tag }}"
+            echo "- Image: ${IMAGE_NAME}:${{ steps.resolve.outputs.version }}"
+            echo "- Platforms: ${PLATFORMS}"
+            echo "- Custom commits: ${CUSTOM_COMMITS}"
+            if [[ "${{ steps.image.outputs.exists }}" == 'true' ]]; then
+              echo "- Result: skipped (already published)"
+            elif [[ "${{ job.status }}" == 'success' ]]; then
+              echo "- Result: published"
+              echo "- Build revision: ${{ steps.prepare.outputs.build_revision }}"
+            else
+              echo "- Result: failed"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
