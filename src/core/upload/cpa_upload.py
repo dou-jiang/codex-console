@@ -4,6 +4,7 @@ CPA (Codex Protocol API) 上传功能
 
 import json
 import logging
+import base64
 from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime
 from urllib.parse import quote
@@ -14,9 +15,56 @@ from curl_cffi import CurlMime
 from ...database.session import get_db
 from ...database.models import Account
 from ...config.settings import get_settings
-from ..timezone_utils import utcnow_naive
+from ..timezone_utils import UTC, SHANGHAI_TZ, utcnow_naive
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_jwt_payload_unverified(token: str) -> Dict[str, Any]:
+    text = str(token or "").strip()
+    if not text or text.count(".") < 2:
+        return {}
+    try:
+        payload_b64 = text.split(".")[1]
+        padding = "=" * (-len(payload_b64) % 4)
+        raw = base64.urlsafe_b64decode((payload_b64 + padding).encode("utf-8"))
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _parse_unix_ts_to_naive_utc(value: Any) -> Optional[datetime]:
+    try:
+        if value in (None, ""):
+            return None
+        ts = int(value)
+        return datetime.fromtimestamp(ts, tz=UTC).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _parse_iso_to_naive_utc(value: Any) -> Optional[datetime]:
+    try:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            return dt
+        return dt.astimezone(UTC).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _format_cpa_datetime(dt: Optional[datetime]) -> str:
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    else:
+        dt = dt.astimezone(UTC)
+    return dt.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
 
 def _normalize_cpa_auth_files_url(api_url: str) -> str:
@@ -100,15 +148,67 @@ def generate_token_json(account: Account) -> dict:
     Returns:
         CPA 格式的 Token 字典
     """
+    access_token = str(account.access_token or "").strip()
+    id_token_raw = str(account.id_token or "").strip()
+    # 兼容历史下游：部分工具只从 id_token 提取 chatgpt_account_id。
+    # 当注册链路仅拿到 access_token 时，使用 access_token 作为兜底 id_token 供解析。
+    id_token = id_token_raw or access_token
+    refresh_token = str(account.refresh_token or "").strip()
+
+    claims = _decode_jwt_payload_unverified(access_token) or _decode_jwt_payload_unverified(id_token)
+    auth_claims = claims.get("https://api.openai.com/auth") if isinstance(claims, dict) else {}
+    auth_claims = auth_claims if isinstance(auth_claims, dict) else {}
+    profile_claims = claims.get("https://api.openai.com/profile") if isinstance(claims, dict) else {}
+    profile_claims = profile_claims if isinstance(profile_claims, dict) else {}
+
+    account_id = str(
+        account.account_id
+        or auth_claims.get("chatgpt_account_id")
+        or claims.get("chatgpt_account_id")
+        or ""
+    ).strip()
+    workspace_id = str(account.workspace_id or account_id).strip()
+    chatgpt_user_id = str(
+        auth_claims.get("chatgpt_user_id")
+        or auth_claims.get("user_id")
+        or claims.get("chatgpt_user_id")
+        or claims.get("user_id")
+        or ""
+    ).strip()
+
+    email = str(
+        account.email
+        or profile_claims.get("email")
+        or ""
+    ).strip()
+
+    token_issued_at = _parse_unix_ts_to_naive_utc(claims.get("iat"))
+    token_expires_at = _parse_unix_ts_to_naive_utc(claims.get("exp"))
+    extra_data = account.extra_data if isinstance(account.extra_data, dict) else {}
+    metadata_expires_at = _parse_iso_to_naive_utc(extra_data.get("expires"))
+
+    last_refresh = account.last_refresh or token_issued_at or account.registered_at
+    expires_at = account.expires_at or token_expires_at or metadata_expires_at
+
+    client_id = str(
+        claims.get("client_id")
+        or account.client_id
+        or ""
+    ).strip()
+
     return {
         "type": "codex",
-        "email": account.email,
-        "expired": account.expires_at.strftime("%Y-%m-%dT%H:%M:%S+08:00") if account.expires_at else "",
-        "id_token": account.id_token or "",
-        "account_id": account.account_id or "",
-        "access_token": account.access_token or "",
-        "last_refresh": account.last_refresh.strftime("%Y-%m-%dT%H:%M:%S+08:00") if account.last_refresh else "",
-        "refresh_token": account.refresh_token or "",
+        "email": email,
+        "expired": _format_cpa_datetime(expires_at),
+        "id_token": id_token,
+        "account_id": account_id,
+        "workspace_id": workspace_id,
+        "chatgpt_account_id": account_id,
+        "chatgpt_user_id": chatgpt_user_id,
+        "client_id": client_id,
+        "access_token": access_token,
+        "last_refresh": _format_cpa_datetime(last_refresh),
+        "refresh_token": refresh_token,
     }
 
 
