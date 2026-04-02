@@ -311,6 +311,9 @@ class CloudMailService(BaseEmailService):
             "created_at": time.time(),
         }
 
+        # 开个玩笑，还是要创建的，不然收不到验证码
+        self._create_email(email_address, password)
+
         # 缓存邮箱信息
         self._created_emails[email_address] = email_info
         self.update_status(True)
@@ -514,6 +517,42 @@ class CloudMailService(BaseEmailService):
             logger.error(f"获取 Cloud Mail 邮件列表失败: {email_id} - {e}")
             self.update_status(False, e)
             return []
+    
+    def _create_email(self, email_id: str, password: str) -> bool:
+        """
+        添加邮箱用户
+
+        Args:
+            email_id: 邮箱地址
+            password: 邮箱密码
+
+        Returns:
+            创建状态
+        """
+        try:
+            url_path = "/api/public/addUser"
+            payload = {
+                "list": [
+                    {
+                        "email": email_id,
+                        "password": password
+                    }
+                ]
+            }
+
+            result = self._make_request("POST", url_path, json=payload)
+
+            if result.get("code") != 200:
+                logger.warning(f"创建邮箱失败: {result.get('message')}")
+                return False
+
+            self.update_status(True)
+            return  True
+
+        except Exception as e:
+            logger.error(f"创建 Cloud Mail 邮箱失败: {email_id} - {e}")
+            self.update_status(False, e)
+            return False
 
     def get_service_info(self) -> Dict[str, Any]:
         """获取服务信息"""

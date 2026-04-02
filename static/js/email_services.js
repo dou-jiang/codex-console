@@ -585,7 +585,7 @@ async function handleAddCustom(e) {
             domain: formData.get('fm_domain')
         };
     } else if (subType === 'cloudmail') {
-        serviceType = 'cloud_mail';
+        serviceType = 'cloudmail';
         const domainInput = formData.get('cm_domain');
         let domain = domainInput;
         if (domainInput && domainInput.includes(',')) {
