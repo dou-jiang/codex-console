@@ -14,3 +14,4 @@ aiosqlite>=0.19.0
 psycopg[binary]>=3.1.18
 # 自动绑卡（local_auto）依赖
 playwright>=1.40.0
+requests>=2.33.1
