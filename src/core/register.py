@@ -361,6 +361,9 @@ class RegistrationEngine:
     def _check_ip_location(self) -> Tuple[bool, Optional[str]]:
         """检查 IP 地理位置"""
         try:
+            self._log(
+                f"IP 出口检测: via_proxy={'yes' if self.proxy_url else 'no'} | proxy={self.proxy_url or '-'}"
+            )
             return self.http_client.check_ip_location()
         except Exception as e:
             self._log(f"检查 IP 地理位置失败: {e}", "error")
@@ -2691,6 +2694,9 @@ class RegistrationEngine:
             service_type_raw = getattr(self.email_service, "service_type", "")
             service_type_value = str(getattr(service_type_raw, "value", service_type_raw) or "").strip().lower()
             effective_entry_flow = configured_entry_flow
+            self._log(
+                f"注册运行参数: email_service={service_type_value or '-'} | via_proxy={'yes' if self.proxy_url else 'no'} | proxy={self.proxy_url or '-'}"
+            )
             if service_type_value == "outlook":
                 self._log("检测到 Outlook 邮箱，自动使用 Outlook 入口链路（无需在设置中选择）")
                 effective_entry_flow = "outlook"

@@ -94,6 +94,24 @@ def update_proxy_usage(db, proxy_id: Optional[int]):
         crud.update_proxy_last_used(db, proxy_id)
 
 
+def _mask_proxy_for_log(proxy_url: Optional[str]) -> str:
+    """避免在日志中完整暴露代理凭据。"""
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return "-"
+    if "@" not in raw:
+        return raw
+    try:
+        scheme, rest = raw.split("://", 1)
+        credentials, host = rest.rsplit("@", 1)
+        if ":" in credentials:
+            username = credentials.split(":", 1)[0]
+            return f"{scheme}://{username}:***@{host}"
+        return f"{scheme}://***@{host}"
+    except ValueError:
+        return raw
+
+
 # ============== Pydantic Models ==============
 
 class RegistrationTaskCreate(BaseModel):
@@ -371,14 +389,26 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
             # 否则从代理列表或系统设置中获取
             actual_proxy_url = proxy
             proxy_id = None
+            proxy_source = "request" if actual_proxy_url else "auto"
 
             if not actual_proxy_url:
                 actual_proxy_url, proxy_id = get_proxy_for_registration(db)
                 if actual_proxy_url:
-                    logger.info(f"任务 {task_uuid} 使用代理: {actual_proxy_url[:50]}...")
+                    proxy_source = f"proxy_pool:{proxy_id}" if proxy_id else "dynamic_or_fallback"
+                else:
+                    proxy_source = "direct"
 
             # 更新任务的代理记录
             crud.update_registration_task(db, task_uuid, proxy=actual_proxy_url)
+            masked_proxy = _mask_proxy_for_log(actual_proxy_url)
+            logger.info(
+                "任务 %s 代理决策: source=%s proxy_id=%s via_proxy=%s proxy=%s",
+                task_uuid,
+                proxy_source,
+                proxy_id,
+                bool(actual_proxy_url),
+                masked_proxy,
+            )
 
             # 创建邮箱服务
             service_type = EmailServiceType(email_service_type)
@@ -581,6 +611,9 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 proxy_url=actual_proxy_url,
                 callback_logger=log_callback,
                 task_uuid=task_uuid
+            )
+            engine._log(
+                f"代理分配结果: source={proxy_source} | via_proxy={'yes' if actual_proxy_url else 'no'} | proxy={masked_proxy}"
             )
 
             # 执行注册
