@@ -27,6 +27,9 @@ dev = [
 payment = [
     "playwright>=1.40.0",
 ]
+desktop = [
+    "pyautogui>=0.9.54",
+]
 
 [project.scripts]
 codex-console = "webui:main"

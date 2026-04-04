@@ -1,6 +1,5 @@
 """
-DuckMail 邮箱服务实现
-兼容 DuckMail 的 accounts/token/messages 接口模型
+DuckMail service implementation.
 """
 
 import logging
@@ -10,10 +9,10 @@ import string
 import time
 from datetime import datetime, timezone
 from html import unescape
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import BaseEmailService, EmailServiceError, EmailServiceType
-from ..config.constants import OTP_CODE_PATTERN
+from ..config.constants import OTP_CODE_PATTERN, OTP_CODE_SEMANTIC_PATTERN
 from ..core.http_client import HTTPClient, RequestConfig
 
 
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class DuckMailService(BaseEmailService):
-    """DuckMail 邮箱服务"""
+    """DuckMail temporary mailbox service."""
 
     def __init__(self, config: Dict[str, Any] = None, name: str = None):
         super().__init__(EmailServiceType.DUCK_MAIL, name)
@@ -29,7 +28,7 @@ class DuckMailService(BaseEmailService):
         required_keys = ["base_url", "default_domain"]
         missing_keys = [key for key in required_keys if not (config or {}).get(key)]
         if missing_keys:
-            raise ValueError(f"缺少必需配置: {missing_keys}")
+            raise ValueError(f"Missing required config keys: {missing_keys}")
 
         default_config = {
             "api_key": "",
@@ -54,6 +53,7 @@ class DuckMailService(BaseEmailService):
 
         self._accounts_by_id: Dict[str, Dict[str, Any]] = {}
         self._accounts_by_email: Dict[str, Dict[str, Any]] = {}
+        self._last_used_message_ids: Dict[str, str] = {}
 
     def _build_headers(
         self,
@@ -96,10 +96,9 @@ class DuckMailService(BaseEmailService):
         try:
             response = self.http_client.request(method, url, **kwargs)
             if response.status_code >= 400:
-                error_message = f"API 请求失败: {response.status_code}"
+                error_message = f"API request failed: {response.status_code}"
                 try:
-                    error_payload = response.json()
-                    error_message = f"{error_message} - {error_payload}"
+                    error_message = f"{error_message} - {response.json()}"
                 except Exception:
                     error_message = f"{error_message} - {response.text[:200]}"
                 raise EmailServiceError(error_message)
@@ -108,11 +107,11 @@ class DuckMailService(BaseEmailService):
                 return response.json()
             except Exception:
                 return {"raw_response": response.text}
-        except Exception as e:
-            self.update_status(False, e)
-            if isinstance(e, EmailServiceError):
+        except Exception as exc:
+            self.update_status(False, exc)
+            if isinstance(exc, EmailServiceError):
                 raise
-            raise EmailServiceError(f"请求失败: {method} {path} - {e}")
+            raise EmailServiceError(f"Request failed: {method} {path} - {exc}")
 
     def _generate_local_part(self) -> str:
         first = random.choice(string.ascii_lowercase)
@@ -133,7 +132,11 @@ class DuckMailService(BaseEmailService):
         if email:
             self._accounts_by_email[email] = account_info
 
-    def _get_account_info(self, email: Optional[str] = None, email_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def _get_account_info(
+        self,
+        email: Optional[str] = None,
+        email_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         if email_id:
             cached = self._accounts_by_id.get(str(email_id))
             if cached:
@@ -152,33 +155,86 @@ class DuckMailService(BaseEmailService):
         text = str(html_content or "")
         return unescape(re.sub(r"<[^>]+>", " ", text))
 
-    def _parse_message_time(self, value: Optional[str]) -> Optional[float]:
-        if not value:
+    def _parse_message_time(self, value: Any) -> Optional[float]:
+        if value is None:
             return None
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            if ts > 10**12:
+                ts /= 1000.0
+            return ts if ts > 0 else None
+
+        text = str(value or "").strip()
+        if not text:
+            return None
+
+        if text.isdigit():
+            ts = float(text)
+            if ts > 10**12:
+                ts /= 1000.0
+            return ts if ts > 0 else None
+
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
         try:
-            normalized = value.replace("Z", "+00:00")
-            return datetime.fromisoformat(normalized).astimezone(timezone.utc).timestamp()
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
         except Exception:
             return None
 
     def _message_search_text(self, summary: Dict[str, Any], detail: Dict[str, Any]) -> str:
         sender = summary.get("from") or detail.get("from") or {}
         if isinstance(sender, dict):
-            sender_text = " ".join(
-                str(sender.get(key) or "") for key in ("name", "address")
-            ).strip()
+            sender_text = " ".join(str(sender.get(key) or "") for key in ("name", "address")).strip()
         else:
-            sender_text = str(sender)
+            sender_text = str(sender or "")
 
         subject = str(summary.get("subject") or detail.get("subject") or "")
         text_body = str(detail.get("text") or "")
         html_body = self._strip_html(detail.get("html"))
         return "\n".join(part for part in [sender_text, subject, text_body, html_body] if part).strip()
 
+    def _is_openai_otp_mail(self, content: str) -> bool:
+        text = str(content or "").lower()
+        if "openai" not in text:
+            return False
+        keywords = (
+            "verification code",
+            "verify",
+            "one-time code",
+            "one time code",
+            "security code",
+            "your openai code",
+            "otp",
+            "code is",
+            "验证码",
+        )
+        return any(keyword in text for keyword in keywords)
+
+    def _extract_otp_code(self, content: str, pattern: str) -> Tuple[Optional[str], bool]:
+        text = str(content or "")
+        if not text:
+            return None, False
+
+        semantic_match = re.search(OTP_CODE_SEMANTIC_PATTERN, text, re.IGNORECASE)
+        if semantic_match:
+            return semantic_match.group(1), True
+
+        simple_match = re.search(pattern, text)
+        if simple_match:
+            return simple_match.group(1), False
+        return None, False
+
     def create_email(self, config: Dict[str, Any] = None) -> Dict[str, Any]:
         request_config = config or {}
         local_part = str(request_config.get("name") or self._generate_local_part()).strip()
-        domain = str(request_config.get("default_domain") or request_config.get("domain") or self.config["default_domain"]).strip().lstrip("@")
+        domain = str(
+            request_config.get("default_domain")
+            or request_config.get("domain")
+            or self.config["default_domain"]
+        ).strip().lstrip("@")
         address = f"{local_part}@{domain}"
         password = self._generate_password()
 
@@ -211,7 +267,7 @@ class DuckMailService(BaseEmailService):
         token = str(token_response.get("token") or "").strip()
 
         if not account_id or not resolved_address or not token:
-            raise EmailServiceError("DuckMail 返回数据不完整")
+            raise EmailServiceError("DuckMail create_email returned incomplete data")
 
         email_info = {
             "email": resolved_address,
@@ -238,16 +294,18 @@ class DuckMailService(BaseEmailService):
     ) -> Optional[str]:
         account_info = self._get_account_info(email=email, email_id=email_id)
         if not account_info:
-            logger.warning(f"DuckMail 未找到邮箱缓存: {email}, {email_id}")
+            logger.warning("DuckMail mailbox cache missing: email=%s email_id=%s", email, email_id)
             return None
 
         token = account_info.get("token")
         if not token:
-            logger.warning(f"DuckMail 邮箱缺少访问 token: {email}")
+            logger.warning("DuckMail mailbox token missing: email=%s", email)
             return None
 
         start_time = time.time()
         seen_message_ids = set()
+        last_used_message_id = self._last_used_message_ids.get(str(email).strip().lower())
+        unknown_ts_grace_seconds = 15
 
         while time.time() - start_time < timeout:
             try:
@@ -258,33 +316,81 @@ class DuckMailService(BaseEmailService):
                     params={"page": 1},
                 )
                 messages = response.get("hydra:member", [])
+                candidates: List[Dict[str, Any]] = []
+                unknown_ts_candidates: List[Dict[str, Any]] = []
 
                 for message in messages:
                     message_id = str(message.get("id") or "").strip()
                     if not message_id or message_id in seen_message_ids:
                         continue
+                    if last_used_message_id and message_id == last_used_message_id:
+                        continue
 
-                    created_at = self._parse_message_time(message.get("createdAt"))
-                    if otp_sent_at and created_at and created_at + 1 < otp_sent_at:
+                    message_ts = self._parse_message_time(message.get("createdAt"))
+                    if otp_sent_at and message_ts and message_ts + 2 < otp_sent_at:
                         continue
 
                     seen_message_ids.add(message_id)
-                    detail = self._make_request(
-                        "GET",
-                        f"/messages/{message_id}",
-                        token=token,
-                    )
+                    detail = self._make_request("GET", f"/messages/{message_id}", token=token)
 
                     content = self._message_search_text(message, detail)
-                    if "openai" not in content.lower():
+                    if not self._is_openai_otp_mail(content):
                         continue
 
-                    match = re.search(pattern, content)
-                    if match:
-                        self.update_status(True)
-                        return match.group(1)
-            except Exception as e:
-                logger.debug(f"DuckMail 轮询验证码失败: {e}")
+                    detail_ts = self._parse_message_time(
+                        detail.get("createdAt") or detail.get("created_at") or detail.get("date")
+                    )
+                    if detail_ts is not None:
+                        message_ts = detail_ts
+
+                    code, semantic_hit = self._extract_otp_code(content, pattern)
+                    if not code:
+                        continue
+
+                    candidate = {
+                        "message_id": message_id,
+                        "code": code,
+                        "message_ts": message_ts,
+                        "semantic_hit": bool(semantic_hit),
+                        "is_recent": bool(
+                            otp_sent_at and (message_ts is not None) and (message_ts + 2 >= otp_sent_at)
+                        ),
+                    }
+                    if otp_sent_at and message_ts is None:
+                        unknown_ts_candidates.append(candidate)
+                    else:
+                        candidates.append(candidate)
+
+                elapsed = time.time() - start_time
+                if otp_sent_at and (not candidates) and unknown_ts_candidates and elapsed < unknown_ts_grace_seconds:
+                    time.sleep(3)
+                    continue
+
+                all_candidates = candidates + unknown_ts_candidates
+                if all_candidates:
+                    best = sorted(
+                        all_candidates,
+                        key=lambda item: (
+                            1 if item.get("is_recent") else 0,
+                            1 if item.get("message_ts") is not None else 0,
+                            float(item.get("message_ts") or 0.0),
+                            1 if item.get("semantic_hit") else 0,
+                        ),
+                        reverse=True,
+                    )[0]
+                    self._last_used_message_ids[str(email).strip().lower()] = str(best["message_id"])
+                    logger.info(
+                        "DuckMail OTP selected: email=%s code=%s message_id=%s ts=%s semantic=%s",
+                        email,
+                        best["code"],
+                        best["message_id"],
+                        best.get("message_ts"),
+                        best.get("semantic_hit"),
+                    )
+                    self.update_status(True)
+                    return str(best["code"])
+            except Exception as exc:
+                logger.debug("DuckMail polling failed: %s", exc)
 
             time.sleep(3)
 
@@ -304,18 +410,14 @@ class DuckMailService(BaseEmailService):
             return False
 
         try:
-            self._make_request(
-                "DELETE",
-                f"/accounts/{account_id}",
-                token=token,
-            )
+            self._make_request("DELETE", f"/accounts/{account_id}", token=token)
             self._accounts_by_id.pop(str(account_id), None)
             self._accounts_by_email.pop(str(account_info.get("email") or "").lower(), None)
             self.update_status(True)
             return True
-        except Exception as e:
-            logger.warning(f"DuckMail 删除邮箱失败: {e}")
-            self.update_status(False, e)
+        except Exception as exc:
+            logger.warning("DuckMail delete_email failed: %s", exc)
+            self.update_status(False, exc)
             return False
 
     def check_health(self) -> bool:
@@ -328,9 +430,9 @@ class DuckMailService(BaseEmailService):
             )
             self.update_status(True)
             return True
-        except Exception as e:
-            logger.warning(f"DuckMail 健康检查失败: {e}")
-            self.update_status(False, e)
+        except Exception as exc:
+            logger.warning("DuckMail health check failed: %s", exc)
+            self.update_status(False, exc)
             return False
 
     def get_email_messages(self, email_id: str, **kwargs) -> List[Dict[str, Any]]:
@@ -349,11 +451,7 @@ class DuckMailService(BaseEmailService):
         account_info = self._get_account_info(email_id=email_id) or self._get_account_info(email=email_id)
         if not account_info or not account_info.get("token"):
             return None
-        return self._make_request(
-            "GET",
-            f"/messages/{message_id}",
-            token=account_info["token"],
-        )
+        return self._make_request("GET", f"/messages/{message_id}", token=account_info["token"])
 
     def get_service_info(self) -> Dict[str, Any]:
         return {

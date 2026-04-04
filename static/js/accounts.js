@@ -1630,16 +1630,362 @@ async function viewAccount(id) {
                     </div>
                 </div>
             </div>
-            <div style="margin-top: var(--spacing-lg); display: flex; gap: var(--spacing-sm);">
+            <div style="margin-top: var(--spacing-lg); display: flex; gap: var(--spacing-sm); flex-wrap: wrap;">
+                <button class="btn btn-secondary" onclick="beginManualOAuthRepair(${id})">
+                    浏览器 OAuth 补齐
+                </button>
                 <button class="btn btn-primary" onclick="refreshToken(${id}); elements.detailModal.classList.remove('active');">
                     🔄 刷新Token
                 </button>
             </div>
         `;
 
+        const oauthRepairBtn = elements.modalBody.querySelector('button[onclick*="beginManualOAuthRepair"]');
+        if (oauthRepairBtn) {
+            oauthRepairBtn.textContent = 'Browser OAuth Repair';
+        }
+
         elements.detailModal.classList.add('active');
     } catch (error) {
         toast.error('加载账号详情失败: ' + error.message);
+    }
+}
+
+/*
+async function beginManualOAuthRepair(id, email = '') {
+    let startResult;
+    try {
+        startResult = await api.post(`/accounts/${id}/oauth/manual/start`, {
+            use_playwright: true,
+            headless: false,
+        });
+    } catch (error) {
+        toast.error('启动浏览器 OAuth 失败: ' + error.message);
+        return;
+    }
+
+    const modal = document.createElement('div');
+    modal.className = 'modal active';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 760px;">
+            <div class="modal-header">
+                <h3>浏览器 OAuth 补齐</h3>
+                <button class="modal-close" id="_oauth_close">&times;</button>
+            </div>
+            <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;">
+                <div style="color:var(--text-secondary);line-height:1.6;">
+                    为账号 <strong>${escapeHtml(email || startResult.email || '')}</strong> 补齐真实 OAuth tokens。
+                    请在浏览器里完成 OpenAI 授权，然后把完整回调地址粘贴回来。
+                </div>
+                <div>
+                    <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:6px;">授权链接</div>
+                    <div style="display:flex;gap:8px;align-items:stretch;">
+                        <textarea id="_oauth_auth_url" rows="3" readonly style="flex:1;font-size:0.78rem;font-family:var(--font-mono);background:var(--surface-hover);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text-primary);resize:vertical;">${escapeHtml(startResult.auth_url || '')}</textarea>
+                        <div style="display:flex;flex-direction:column;gap:8px;">
+                            <button class="btn btn-primary" id="_oauth_open">在浏览器打开</button>
+                            <button class="btn btn-secondary" id="_oauth_copy">复制链接</button>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:6px;">完整回调地址</div>
+                    <textarea id="_oauth_callback" rows="3" placeholder="粘贴完整回调地址，例如: http://localhost:1455/auth/callback?code=...&state=..." style="width:100%;font-size:0.78rem;font-family:var(--font-mono);background:var(--surface-hover);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text-primary);resize:vertical;"></textarea>
+                </div>
+                <div style="font-size:0.82rem;color:var(--text-muted);line-height:1.6;">
+                    如果浏览器跳到本地回调页打不开，也没关系。把地址栏里的完整 URL 复制回来即可。
+                </div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+                    <button class="btn btn-secondary" id="_oauth_cancel">取消</button>
+                    <button class="btn btn-primary" id="_oauth_submit">提交回调并补齐</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const closeModal = () => modal.remove();
+    document.body.appendChild(modal);
+
+    modal.querySelector('#_oauth_close').addEventListener('click', closeModal);
+    modal.querySelector('#_oauth_cancel').addEventListener('click', closeModal);
+    modal.addEventListener('click', (event) => {
+        if (event.target === modal) closeModal();
+    });
+    modal.querySelector('#_oauth_copy').addEventListener('click', () => {
+        copyToClipboard(startResult.auth_url || '');
+    });
+    modal.querySelector('#_oauth_open').addEventListener('click', () => {
+        const targetUrl = String(startResult.auth_url || '').trim();
+        if (!targetUrl) {
+            toast.warning('授权链接为空');
+            return;
+        }
+        window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    });
+    modal.querySelector('#_oauth_submit').addEventListener('click', async () => {
+        const callbackUrl = String(modal.querySelector('#_oauth_callback').value || '').trim();
+        if (!callbackUrl) {
+            toast.warning('请先粘贴完整回调地址');
+            return;
+        }
+
+        const submitBtn = modal.querySelector('#_oauth_submit');
+        submitBtn.disabled = true;
+        submitBtn.textContent = '提交中...';
+        try {
+            const result = await api.post(`/accounts/${id}/oauth/manual/complete`, {
+                callback_url: callbackUrl,
+            });
+            toast.success(result?.message || '真实 OAuth tokens 已补齐');
+            closeModal();
+            await viewAccount(id);
+            loadAccounts();
+        } catch (error) {
+            toast.error('提交 OAuth 回调失败: ' + error.message);
+        } finally {
+            if (document.body.contains(modal)) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = '提交回调并补齐';
+            }
+        }
+    });
+}
+
+*/
+
+async function beginManualOAuthRepair(id, email = '') {
+    let popupRef = null;
+    try {
+        popupRef = window.open('about:blank', '_blank', 'popup=yes,width=1200,height=900');
+    } catch (error) {
+        popupRef = null;
+    }
+
+    let startResult;
+    try {
+        startResult = await api.post(`/accounts/${id}/oauth/manual/start`, {
+            use_desktop_automation: true,
+            use_current_browser_window: true,
+            use_edge_attach: false,
+            use_playwright: false,
+        });
+    } catch (error) {
+        try {
+            if (popupRef && !popupRef.closed) {
+                popupRef.close();
+            }
+        } catch (closeError) {
+        }
+        toast.error('Failed to start browser OAuth: ' + error.message);
+        return;
+    }
+
+    const targetUrl = String(startResult.auth_url || '').trim();
+    if (popupRef && !popupRef.closed && targetUrl) {
+        try {
+            popupRef.location.replace(targetUrl);
+        } catch (error) {
+        }
+    }
+
+    const modal = document.createElement('div');
+    modal.className = 'modal active';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 760px;">
+            <div class="modal-header">
+                <h3>Browser OAuth Repair</h3>
+                <button class="modal-close" id="_oauth_close">&times;</button>
+            </div>
+            <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;">
+                <div style="color:var(--text-secondary);line-height:1.6;">
+                    Complete OpenAI OAuth in your browser for
+                    <strong>${escapeHtml(email || startResult.email || '')}</strong>,
+                    and this page will try to capture the callback automatically.
+                </div>
+                <div>
+                    <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:6px;">Authorization URL</div>
+                    <div style="display:flex;gap:8px;align-items:stretch;">
+                        <textarea id="_oauth_auth_url" rows="3" readonly style="flex:1;font-size:0.78rem;font-family:var(--font-mono);background:var(--surface-hover);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text-primary);resize:vertical;">${escapeHtml(startResult.auth_url || '')}</textarea>
+                        <div style="display:flex;flex-direction:column;gap:8px;">
+                            <button class="btn btn-primary" id="_oauth_open">Open Browser Window</button>
+                            <button class="btn btn-secondary" id="_oauth_copy">Copy URL</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="_oauth_status" style="font-size:0.82rem;color:var(--text-muted);line-height:1.6;">
+                    Waiting for authorization in the current browser window...
+                </div>
+                <div>
+                    <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:6px;">Fallback Callback URL</div>
+                    <textarea id="_oauth_callback" rows="3" placeholder="Only use this if the browser callback page reports a failure. Paste the full callback URL here." style="width:100%;font-size:0.78rem;font-family:var(--font-mono);background:var(--surface-hover);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text-primary);resize:vertical;"></textarea>
+                </div>
+                <div style="font-size:0.82rem;color:var(--text-muted);line-height:1.6;">
+                    Redirect URI: <code>${escapeHtml(startResult.redirect_uri || '')}</code>
+                </div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+                    <button class="btn btn-secondary" id="_oauth_cancel">Cancel</button>
+                    <button class="btn btn-primary" id="_oauth_submit">Submit Callback</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    let pollTimer = null;
+    let resolved = false;
+    const statusEl = () => modal.querySelector('#_oauth_status');
+    const setStatus = (message, isError = false) => {
+        const node = statusEl();
+        if (!node) return;
+        node.textContent = message;
+        node.style.color = isError ? 'var(--danger)' : 'var(--text-muted)';
+    };
+    const browserStatusText = (statusValue) => {
+        const key = String(statusValue || '').trim();
+        const mapping = {
+            awaiting_browser: 'Waiting for authorization in the current browser window...',
+            awaiting_browser_window: 'Waiting for the authorization popup window to become active in Edge...',
+            queued: 'Desktop automation queued. Preparing Edge...',
+            launching: 'Launching browser: Edge',
+            running: 'Edge window opened. Trying to focus and drive the login form...',
+            email: 'Email submitted in Edge. Waiting for password step...',
+            password: 'Password submitted in Edge. Waiting for the email verification code...',
+            wait_otp: 'Waiting for the email verification code...',
+            consent_click: 'Trying to click the right-side Continue button in the Edge consent page...',
+            consent: 'Trying to confirm the final authorization step in Edge...',
+            closed: 'Browser window closed before the OAuth callback completed.',
+            closed_by_user: 'Browser window was closed by the user before completion.',
+            completed: 'OAuth callback received. Saving tokens...',
+        };
+        return mapping[key] || '';
+    };
+    if (startResult?.browser_worker_started) {
+        if (String(startResult?.browser_mode || '') === 'desktop') {
+            setStatus('Desktop automation launched in the current Edge browser. Keep the mouse and keyboard idle while the authorization window is being driven automatically.');
+        } else {
+            setStatus('Edge automation launched. The browser window will try to fill the OAuth flow automatically and this dialog will finish after the localhost callback arrives.');
+        }
+    } else if (startResult?.browser_worker_error) {
+        setStatus(`Automatic browser startup failed: ${startResult.browser_worker_error}`, true);
+    } else {
+        setStatus('The authorization link will open in the current browser window and complete automatically after the localhost callback arrives.');
+    }
+    const cleanupListeners = () => {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+        window.removeEventListener('message', onMessage);
+    };
+    const closeModal = () => {
+        cleanupListeners();
+        modal.remove();
+    };
+    const finishSuccess = async (result) => {
+        if (resolved) return;
+        resolved = true;
+        cleanupListeners();
+        toast.success(result?.message || result?.result?.message || 'Real OAuth tokens saved');
+        closeModal();
+        await viewAccount(id);
+        loadAccounts();
+    };
+    const checkStatus = async () => {
+        if (resolved) return;
+        try {
+            const status = await api.get(`/accounts/${id}/oauth/manual/status`);
+            if (status?.status === 'completed') {
+                await finishSuccess({
+                    message: 'Real OAuth tokens saved',
+                    result: status?.result || null,
+                });
+                return;
+            }
+            if (status?.status === 'failed') {
+                setStatus(status?.last_error || 'Automatic callback failed. You can paste the callback URL manually below.', true);
+                return;
+            }
+            if (status?.browser_status === 'failed' && status?.browser_error) {
+                setStatus(`Automatic browser flow failed: ${status.browser_error}`, true);
+                return;
+            }
+            if (status?.browser_status === 'launching' && status?.browser_binary) {
+                setStatus(`Launching browser: ${status.browser_binary}`);
+                return;
+            }
+            const browserMessage = browserStatusText(status?.browser_status);
+            if (browserMessage) {
+                setStatus(browserMessage, false);
+            }
+        } catch (error) {
+            setStatus('Unable to poll OAuth status right now. Manual callback paste is still available.', true);
+        }
+    };
+    const onMessage = async (event) => {
+        const data = event?.data || {};
+        if (data?.type !== 'codex-manual-oauth' || Number(data?.accountId) !== Number(id)) {
+            return;
+        }
+        await checkStatus();
+    };
+
+    document.body.appendChild(modal);
+
+    modal.querySelector('#_oauth_close').addEventListener('click', closeModal);
+    modal.querySelector('#_oauth_cancel').addEventListener('click', closeModal);
+    modal.addEventListener('click', (event) => {
+        if (event.target === modal) closeModal();
+    });
+    modal.querySelector('#_oauth_copy').addEventListener('click', () => {
+        copyToClipboard(startResult.auth_url || '');
+    });
+    modal.querySelector('#_oauth_open').addEventListener('click', () => {
+        const targetUrl = String(startResult.auth_url || '').trim();
+        if (!targetUrl) {
+            toast.warning('Authorization URL is empty');
+            return;
+        }
+        popupRef = window.open(targetUrl, '_blank', 'popup=yes,width=1200,height=900');
+        if (!popupRef) {
+            setStatus('Browser popup was blocked. Use Copy URL and open it manually.', true);
+        } else {
+            setStatus('Browser window opened in Edge. Desktop automation should take over there and this dialog will auto-complete when the localhost callback arrives.');
+        }
+    });
+    modal.querySelector('#_oauth_submit').addEventListener('click', async () => {
+        const callbackUrl = String(modal.querySelector('#_oauth_callback').value || '').trim();
+        if (!callbackUrl) {
+            toast.warning('Paste the full callback URL first');
+            return;
+        }
+
+        const submitBtn = modal.querySelector('#_oauth_submit');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting...';
+        try {
+            const result = await api.post(`/accounts/${id}/oauth/manual/complete`, {
+                callback_url: callbackUrl,
+            });
+            await finishSuccess(result);
+        } catch (error) {
+            toast.error('Failed to submit OAuth callback: ' + error.message);
+        } finally {
+            if (document.body.contains(modal)) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Submit Callback';
+            }
+        }
+    });
+
+    window.addEventListener('message', onMessage);
+    pollTimer = window.setInterval(checkStatus, 1500);
+    await checkStatus();
+    const authUrl = String(startResult.auth_url || '').trim();
+    if (authUrl && !startResult?.browser_worker_started) {
+        popupRef = window.open(authUrl, '_blank', 'popup=yes,width=1200,height=900');
+        if (!popupRef) {
+            setStatus('Browser popup was blocked. Use Copy URL and open it manually.', true);
+        } else {
+            setStatus('Browser window opened. Finish authorization there; this dialog will auto-complete when the localhost callback arrives.');
+        }
     }
 }
 
@@ -1735,15 +2081,23 @@ async function exportAccounts(format) {
         });
 
         if (!response.ok) {
-            throw new Error(`导出失败: HTTP ${response.status}`);
+            let detail = '';
+            try {
+                const errData = await response.json();
+                detail = errData?.detail || '';
+            } catch {
+                detail = '';
+            }
+            throw new Error(detail || `导出失败: HTTP ${response.status}`);
         }
 
         // 获取文件内容
         const blob = await response.blob();
+        const exportWarning = response.headers.get('X-Export-Warning') || '';
 
         // 从 Content-Disposition 获取文件名
         const disposition = response.headers.get('Content-Disposition');
-        let filename = `accounts_${Date.now()}.${(format === 'cpa' || format === 'sub2api') ? 'json' : (format === 'codex' ? 'jsonl' : format)}`;
+        let filename = `accounts_${Date.now()}.${(format === 'cpa' || format === 'sub2api' || format === 'cockpit') ? 'json' : (format === 'codex' ? 'jsonl' : format)}`;
         if (disposition) {
             const match = disposition.match(/filename=(.+)/);
             if (match) {
@@ -1761,6 +2115,9 @@ async function exportAccounts(format) {
         window.URL.revokeObjectURL(url);
         a.remove();
 
+        if (exportWarning) {
+            toast.warning(exportWarning);
+        }
         toast.success('导出成功');
     } catch (error) {
         console.error('导出失败:', error);

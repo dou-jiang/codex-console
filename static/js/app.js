@@ -24,6 +24,7 @@ let taskFinalStatus = null;  // 保存任务的最终状态
 let batchFinalStatus = null;  // 保存批量任务的最终状态
 let displayedLogs = new Set();  // 用于日志去重
 let toastShown = false;  // 标记是否已显示过 toast
+let postRegistrationOAuthPrompted = false;
 let availableServices = {
     tempmail: { available: true, services: [] },
     yyds_mail: { available: false, services: [] },
@@ -1173,6 +1174,7 @@ async function handleSingleRegistration(requestData) {
     taskFinalStatus = null;
     displayedLogs.clear();  // 清空日志去重集合
     toastShown = false;  // 重置 toast 标志
+    postRegistrationOAuthPrompted = false;
 
     addLog('info', '[系统] 正在启动注册任务...');
 
@@ -1194,6 +1196,248 @@ async function handleSingleRegistration(requestData) {
         addLog('error', `[错误] 启动失败: ${error.message}`);
         toast.error(error.message);
         resetButtons();
+    }
+}
+
+async function maybeStartPostRegistrationOAuthRepair(taskData) {
+    if (postRegistrationOAuthPrompted) return;
+
+    const accountId = Number(
+        taskData?.account_db_id
+        || taskData?.accountId
+        || taskData?.result?.account_db_id
+        || taskData?.result?.accountId
+        || 0
+    );
+    const needsRepair = Boolean(
+        taskData?.needs_manual_oauth_repair
+        ?? taskData?.result?.needs_manual_oauth_repair
+        ?? false
+    );
+    const email = String(taskData?.email || taskData?.result?.email || '').trim();
+
+    if (!accountId || !needsRepair) {
+        return;
+    }
+
+    postRegistrationOAuthPrompted = true;
+    await beginPostRegistrationOAuthRepair(accountId, email);
+}
+
+async function beginPostRegistrationOAuthRepair(accountId, email = '') {
+    let startResult;
+    try {
+        startResult = await api.post(`/accounts/${accountId}/oauth/manual/start`, {
+            use_desktop_automation: true,
+            use_current_browser_window: true,
+            use_edge_attach: false,
+            use_playwright: false,
+            headless: false,
+        });
+    } catch (error) {
+        toast.warning(`账号已注册成功，但启动 Browser OAuth Repair 失败: ${error.message}`, 6000);
+        return;
+    }
+
+    const modal = document.createElement('div');
+    modal.className = 'modal active';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 760px;">
+            <div class="modal-header">
+                <h3>Post-Registration OAuth Repair</h3>
+                <button class="modal-close" id="_post_oauth_close">&times;</button>
+            </div>
+            <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;">
+                <div style="color:var(--text-secondary);line-height:1.6;">
+                    The account <strong>${escapeHtml(email || startResult.email || '')}</strong> was created,
+                    but it still needs real OAuth tokens for Cockpit or official Codex login.
+                    Complete the authorization in your browser and this dialog will try to finish automatically.
+                </div>
+                <div>
+                    <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:6px;">Authorization URL</div>
+                    <div style="display:flex;gap:8px;align-items:stretch;">
+                        <textarea id="_post_oauth_auth_url" rows="3" readonly style="flex:1;font-size:0.78rem;font-family:var(--font-mono);background:var(--surface-hover);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text-primary);resize:vertical;">${escapeHtml(startResult.auth_url || '')}</textarea>
+                        <div style="display:flex;flex-direction:column;gap:8px;">
+                            <button class="btn btn-primary" id="_post_oauth_open">Open Browser Window</button>
+                            <button class="btn btn-secondary" id="_post_oauth_copy">Copy URL</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="_post_oauth_status" style="font-size:0.82rem;color:var(--text-muted);line-height:1.6;">
+                    Waiting for authorization in the current browser window...
+                </div>
+                <div>
+                    <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:6px;">Fallback Callback URL</div>
+                    <textarea id="_post_oauth_callback" rows="3" placeholder="Only use this if the browser callback page reports a failure. Paste the full callback URL here." style="width:100%;font-size:0.78rem;font-family:var(--font-mono);background:var(--surface-hover);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text-primary);resize:vertical;"></textarea>
+                </div>
+                <div style="font-size:0.82rem;color:var(--text-muted);line-height:1.6;">
+                    Redirect URI: <code>${escapeHtml(startResult.redirect_uri || '')}</code>
+                </div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+                    <button class="btn btn-secondary" id="_post_oauth_cancel">Later</button>
+                    <button class="btn btn-primary" id="_post_oauth_submit">Submit Callback</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    let pollTimer = null;
+    let popupRef = null;
+    let resolved = false;
+    const statusEl = () => modal.querySelector('#_post_oauth_status');
+    const setStatus = (message, isError = false) => {
+        const node = statusEl();
+        if (!node) return;
+        node.textContent = message;
+        node.style.color = isError ? 'var(--danger)' : 'var(--text-muted)';
+    };
+    const browserStatusText = (statusValue) => {
+        const key = String(statusValue || '').trim();
+        const mapping = {
+            awaiting_browser: 'Waiting for authorization in the current browser window...',
+            awaiting_browser_window: 'Waiting for the authorization popup window to become active in Edge...',
+            queued: 'Desktop automation queued. Preparing Edge...',
+            launching: 'Launching browser: Edge',
+            running: 'Edge window opened. Trying to focus and drive the login form...',
+            email: 'Email submitted in Edge. Waiting for password step...',
+            password: 'Password submitted in Edge. Waiting for the email verification code...',
+            wait_otp: 'Waiting for the email verification code...',
+            consent_click: 'Trying to click the right-side Continue button in the Edge consent page...',
+            consent: 'Trying to confirm the final authorization step in Edge...',
+            closed: 'Browser window closed before the OAuth callback completed.',
+            closed_by_user: 'Browser window was closed by the user before completion.',
+            completed: 'OAuth callback received. Saving tokens...',
+        };
+        return mapping[key] || '';
+    };
+    if (startResult?.browser_worker_started) {
+        if (String(startResult?.browser_mode || '') === 'desktop') {
+            setStatus('Desktop automation launched in the current Edge browser. Keep the mouse and keyboard idle while the authorization window is being driven automatically.');
+        } else {
+            setStatus('Edge automation launched. The browser window will try to fill the OAuth flow automatically and this dialog will finish after the localhost callback arrives.');
+        }
+    } else if (startResult?.browser_worker_error) {
+        setStatus(`Automatic browser startup failed: ${startResult.browser_worker_error}`, true);
+    } else {
+        setStatus('The authorization link will open in the current browser window and complete automatically after the localhost callback arrives.');
+    }
+    const cleanupListeners = () => {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+        window.removeEventListener('message', onMessage);
+    };
+    const closeModal = () => {
+        cleanupListeners();
+        modal.remove();
+    };
+    const finishSuccess = async (result) => {
+        if (resolved) return;
+        resolved = true;
+        cleanupListeners();
+        toast.success(result?.message || result?.result?.message || 'Real OAuth tokens saved');
+        closeModal();
+        loadRecentAccounts();
+    };
+    const checkStatus = async () => {
+        if (resolved) return;
+        try {
+            const status = await api.get(`/accounts/${accountId}/oauth/manual/status`);
+            if (status?.status === 'completed') {
+                await finishSuccess({
+                    message: 'Real OAuth tokens saved',
+                    result: status?.result || null,
+                });
+                return;
+            }
+            if (status?.status === 'failed') {
+                setStatus(status?.last_error || 'Automatic callback failed. Manual callback paste is still available below.', true);
+                return;
+            }
+            if (status?.browser_status === 'failed' && status?.browser_error) {
+                setStatus(`Automatic browser flow failed: ${status.browser_error}`, true);
+                return;
+            }
+            if (status?.browser_status === 'launching' && status?.browser_binary) {
+                setStatus(`Launching browser: ${status.browser_binary}`);
+                return;
+            }
+            const browserMessage = browserStatusText(status?.browser_status);
+            if (browserMessage) {
+                setStatus(browserMessage, false);
+            }
+        } catch (error) {
+            setStatus('Unable to poll OAuth status right now. Manual callback paste is still available.', true);
+        }
+    };
+    const onMessage = async (event) => {
+        const data = event?.data || {};
+        if (data?.type !== 'codex-manual-oauth' || Number(data?.accountId) !== Number(accountId)) {
+            return;
+        }
+        await checkStatus();
+    };
+
+    document.body.appendChild(modal);
+
+    modal.querySelector('#_post_oauth_close').addEventListener('click', closeModal);
+    modal.querySelector('#_post_oauth_cancel').addEventListener('click', closeModal);
+    modal.addEventListener('click', (event) => {
+        if (event.target === modal) closeModal();
+    });
+    modal.querySelector('#_post_oauth_copy').addEventListener('click', () => {
+        copyToClipboard(startResult.auth_url || '');
+    });
+    modal.querySelector('#_post_oauth_open').addEventListener('click', () => {
+        const targetUrl = String(startResult.auth_url || '').trim();
+        if (!targetUrl) {
+            toast.warning('Authorization URL is empty');
+            return;
+        }
+        popupRef = window.open(targetUrl, '_blank', 'popup=yes,width=1200,height=900');
+        if (!popupRef) {
+            setStatus('Browser popup was blocked. Use Copy URL and open it manually.', true);
+        } else {
+            setStatus('Browser window opened. Finish authorization there; this dialog will auto-complete when the localhost callback arrives.');
+        }
+    });
+    modal.querySelector('#_post_oauth_submit').addEventListener('click', async () => {
+        const callbackUrl = String(modal.querySelector('#_post_oauth_callback').value || '').trim();
+        if (!callbackUrl) {
+            toast.warning('Paste the full callback URL first');
+            return;
+        }
+
+        const submitBtn = modal.querySelector('#_post_oauth_submit');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting...';
+        try {
+            const result = await api.post(`/accounts/${accountId}/oauth/manual/complete`, {
+                callback_url: callbackUrl,
+            });
+            await finishSuccess(result);
+        } catch (error) {
+            toast.error('Failed to submit OAuth callback: ' + error.message);
+        } finally {
+            if (document.body.contains(modal)) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Submit Callback';
+            }
+        }
+    });
+
+    window.addEventListener('message', onMessage);
+    pollTimer = window.setInterval(checkStatus, 1500);
+    await checkStatus();
+    const authUrl = String(startResult.auth_url || '').trim();
+    if (authUrl && !startResult?.browser_worker_started) {
+        popupRef = window.open(authUrl, '_blank', 'popup=yes,width=1200,height=900');
+        if (!popupRef) {
+            setStatus('Browser popup was blocked. Use Copy URL and open it manually.', true);
+        } else {
+            setStatus('Browser window opened. Finish authorization there; this dialog will auto-complete when the localhost callback arrives.');
+        }
     }
 }
 
@@ -1333,6 +1577,7 @@ function connectWebSocket(taskUuid) {
                             toast.success('注册成功！');
                             // 刷新账号列表
                             loadRecentAccounts();
+                            maybeStartPostRegistrationOAuthRepair(data);
                         } else if (data.status === 'failed') {
                             addLog('error', '[错误] 注册失败');
                             toast.error('注册失败');
@@ -1439,6 +1684,7 @@ async function handleBatchRegistration(requestData) {
     requestData.interval_max = intervalMax;
     requestData.concurrency = Math.min(50, Math.max(1, concurrency));
     requestData.mode = mode;
+    requestData.auto_repair_oauth = mode === 'pipeline';
 
     addLog('info', `[系统] 正在启动批量注册任务 (数量: ${count})...`);
 
@@ -1567,6 +1813,7 @@ function startLogPolling(taskUuid) {
                         toast.success('注册成功！');
                         // 刷新账号列表
                         loadRecentAccounts();
+                        maybeStartPostRegistrationOAuthRepair(data);
                     } else if (data.status === 'failed') {
                         addLog('error', '[错误] 注册失败');
                         toast.error('注册失败');
@@ -2167,6 +2414,7 @@ async function handleOutlookBatchRegistration() {
         interval_max: intervalMax,
         concurrency: Math.min(50, Math.max(1, concurrency)),
         mode: mode,
+        auto_repair_oauth: mode === 'pipeline',
         auto_upload_cpa: elements.autoUploadCpa ? elements.autoUploadCpa.checked : false,
         cpa_service_ids: elements.autoUploadCpa && elements.autoUploadCpa.checked ? getSelectedServiceIds(elements.cpaServiceSelect) : [],
         auto_upload_sub2api: elements.autoUploadSub2api ? elements.autoUploadSub2api.checked : false,

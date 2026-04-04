@@ -1295,27 +1295,42 @@ class RegistrationEngine:
         self._log("摸一下 Workspace ID，看看该坐哪桌...")
         workspace_id = self._get_workspace_id()
         continue_url = ""
+        otp_continue = str(self._last_validate_otp_continue_url or "").strip()
         if workspace_id:
             result.workspace_id = workspace_id
+        else:
+            workspace_id = str(result.workspace_id or self._create_account_workspace_id or "").strip()
+            if workspace_id:
+                result.workspace_id = workspace_id
+                self._log(f"复用已知 Workspace ID: {workspace_id}", "warning")
 
+        if workspace_id:
             self._log("选择 Workspace，安排个靠谱座位...")
             continue_url = self._select_workspace(workspace_id)
             if not continue_url:
+                if otp_continue:
+                    continue_url = otp_continue
+                    self._log("workspace/select 未返回 continue_url，改用 OTP 校验返回 continue_url", "warning")
+                else:
+                    cached_continue = str(self._create_account_continue_url or "").strip()
+                    if cached_continue:
+                        continue_url = cached_continue
+                        self._log("workspace/select 未返回 continue_url，改用 create_account 缓存 continue_url", "warning")
+                    else:
+                        result.error_message = "选择 Workspace 失败"
+                        return False
+        else:
+            if otp_continue:
+                continue_url = otp_continue
+                self._log("未获取到 Workspace ID，改用 OTP 校验返回 continue_url 继续链路", "warning")
+            else:
                 cached_continue = str(self._create_account_continue_url or "").strip()
                 if cached_continue:
                     continue_url = cached_continue
-                    self._log("workspace/select 未返回 continue_url，改用 create_account 缓存 continue_url", "warning")
+                    self._log("未获取到 Workspace ID，改用 create_account 缓存 continue_url 继续链路", "warning")
                 else:
-                    result.error_message = "选择 Workspace 失败"
+                    result.error_message = "获取 Workspace ID 失败"
                     return False
-        else:
-            cached_continue = str(self._create_account_continue_url or "").strip()
-            if cached_continue:
-                continue_url = cached_continue
-                self._log("未获取到 Workspace ID，改用 create_account 缓存 continue_url 继续链路", "warning")
-            else:
-                result.error_message = "获取 Workspace ID 失败"
-                return False
 
         self._log("顺着重定向面包屑往前走，别跟丢了...")
         callback_url, final_url = self._follow_redirects(continue_url)

@@ -128,6 +128,7 @@ class BatchRegistrationRequest(BaseModel):
     interval_max: int = 30
     concurrency: int = 1
     mode: str = "pipeline"
+    auto_repair_oauth: bool = True
     auto_upload_cpa: bool = False
     cpa_service_ids: List[int] = []
     auto_upload_sub2api: bool = False
@@ -198,6 +199,7 @@ class OutlookBatchRegistrationRequest(BaseModel):
     interval_max: int = 30
     concurrency: int = 1
     mode: str = "pipeline"
+    auto_repair_oauth: bool = True
     auto_upload_cpa: bool = False
     cpa_service_ids: List[int] = []
     auto_upload_sub2api: bool = False
@@ -635,6 +637,14 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 _raise_if_cancelled("任务在保存账户前收到取消请求，停止后处理")
                 engine.save_to_database(result, account_label=account_label, role_tag=role_tag)
 
+                from ...database.models import Account as AccountModel
+                saved_account = (
+                    db.query(AccountModel)
+                    .filter_by(email=result.email)
+                    .order_by(AccountModel.id.desc())
+                    .first()
+                )
+
                 if callable(marker) and result.email:
                     try:
                         marker(
@@ -650,8 +660,6 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     _raise_if_cancelled("任务在 CPA 上传前收到取消请求，停止后处理")
                     try:
                         from ...core.upload.cpa_upload import upload_to_cpa, generate_token_json
-                        from ...database.models import Account as AccountModel
-                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
                         if saved_account and saved_account.access_token:
                             token_data = generate_token_json(saved_account)
                             _cpa_ids = cpa_service_ids or []
@@ -685,8 +693,6 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     _raise_if_cancelled("任务在 Sub2API 上传前收到取消请求，停止后处理")
                     try:
                         from ...core.upload.sub2api_upload import upload_to_sub2api
-                        from ...database.models import Account as AccountModel
-                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
                         if saved_account and saved_account.access_token:
                             _s2a_ids = sub2api_service_ids or []
                             if not _s2a_ids:
@@ -712,8 +718,6 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     _raise_if_cancelled("任务在 Team Manager 上传前收到取消请求，停止后处理")
                     try:
                         from ...core.upload.team_manager_upload import upload_to_team_manager
-                        from ...database.models import Account as AccountModel
-                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
                         if saved_account and saved_account.access_token:
                             _tm_ids = tm_service_ids or []
                             if not _tm_ids:
@@ -738,8 +742,6 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     _raise_if_cancelled("任务在 NewAPI 上传前收到取消请求，停止后处理")
                     try:
                         from ...core.upload.new_api_upload import upload_to_new_api
-                        from ...database.models import Account as AccountModel
-                        saved_account = db.query(AccountModel).filter_by(email=result.email).first()
                         if saved_account and saved_account.access_token:
                             _new_api_ids = new_api_service_ids or []
                             if not _new_api_ids:
@@ -767,15 +769,37 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                 # 更新任务状态
                 _raise_if_cancelled("任务在收尾前收到取消请求，停止标记成功")
+                task_result = result.to_dict()
+                if saved_account:
+                    has_real_oauth = bool(
+                        str(saved_account.id_token or "").strip()
+                        and str(saved_account.refresh_token or "").strip()
+                    )
+                    task_result["account_db_id"] = saved_account.id
+                    task_result["needs_manual_oauth_repair"] = not has_real_oauth
+                    task_result["has_real_oauth_tokens"] = has_real_oauth
+
                 crud.update_registration_task(
                     db, task_uuid,
                     status="completed",
                     completed_at=utcnow_naive(),
-                    result=result.to_dict()
+                    result=task_result
                 )
 
                 # 更新 TaskManager 状态
-                task_manager.update_status(task_uuid, "completed", email=result.email)
+                task_manager.update_status(
+                    task_uuid,
+                    "completed",
+                    email=result.email,
+                    account_db_id=(saved_account.id if saved_account else None),
+                    needs_manual_oauth_repair=bool(
+                        saved_account
+                        and not (
+                            str(saved_account.id_token or "").strip()
+                            and str(saved_account.refresh_token or "").strip()
+                        )
+                    ),
+                )
 
                 logger.info(f"注册任务完成: {task_uuid}, 邮箱: {result.email}")
             else:
@@ -900,6 +924,104 @@ def _make_batch_helpers(batch_id: str):
     return add_batch_log, update_batch_status
 
 
+def _extract_task_oauth_repair_info(task: Optional[RegistrationTask]) -> Dict[str, Any]:
+    result = task.result if task and isinstance(task.result, dict) else {}
+    account_id = int(
+        result.get("account_db_id")
+        or result.get("accountId")
+        or 0
+    )
+    needs_repair = bool(result.get("needs_manual_oauth_repair"))
+    return {
+        "account_id": account_id,
+        "needs_repair": needs_repair,
+        "email": str(result.get("email") or getattr(task, "email", "") or "").strip(),
+        "result": dict(result),
+    }
+
+
+async def _run_pipeline_oauth_repair_for_task(
+    task_uuid: str,
+    proxy: Optional[str],
+    prefix: str,
+    add_batch_log,
+) -> bool:
+    with get_db() as db:
+        task = crud.get_registration_task(db, task_uuid)
+        info = _extract_task_oauth_repair_info(task)
+
+    account_id = int(info.get("account_id") or 0)
+    if not account_id or not bool(info.get("needs_repair")):
+        return True
+
+    email = str(info.get("email") or "").strip()
+    add_batch_log(f"{prefix} [OAuth] 检测到账号缺少真实 OAuth tokens，开始桌面补齐: {email or account_id}")
+    task_manager.add_log(task_uuid, f"{prefix} [OAuth] 开始桌面补齐真实 OAuth tokens")
+
+    try:
+        from .accounts import run_desktop_oauth_backfill_and_wait
+
+        await asyncio.to_thread(
+            run_desktop_oauth_backfill_and_wait,
+            account_id,
+            proxy,
+            360,
+            True,
+        )
+
+        with get_db() as db:
+            task = crud.get_registration_task(db, task_uuid)
+            result = dict(task.result) if task and isinstance(task.result, dict) else {}
+            result["needs_manual_oauth_repair"] = False
+            result["has_real_oauth_tokens"] = True
+            result["oauth_repair_status"] = "completed"
+            result["oauth_repair_error"] = None
+            crud.update_registration_task(
+                db,
+                task_uuid,
+                result=result,
+            )
+
+        task_manager.add_log(task_uuid, f"{prefix} [OAuth] 真实 OAuth tokens 已补齐")
+        task_manager.update_status(
+            task_uuid,
+            "completed",
+            email=email or None,
+            account_db_id=account_id,
+            needs_manual_oauth_repair=False,
+            has_real_oauth_tokens=True,
+            oauth_repair_status="completed",
+        )
+        add_batch_log(f"{prefix} [OAuth] 补齐成功: {email or account_id}")
+        return True
+    except Exception as exc:
+        error_text = str(exc)
+        with get_db() as db:
+            task = crud.get_registration_task(db, task_uuid)
+            result = dict(task.result) if task and isinstance(task.result, dict) else {}
+            result["oauth_repair_status"] = "failed"
+            result["oauth_repair_error"] = error_text
+            crud.update_registration_task(
+                db,
+                task_uuid,
+                result=result,
+            )
+
+        task_manager.add_log(task_uuid, f"{prefix} [OAuth] 自动补齐失败: {error_text}")
+        task_manager.update_status(
+            task_uuid,
+            "completed",
+            email=email or None,
+            account_db_id=account_id,
+            needs_manual_oauth_repair=True,
+            has_real_oauth_tokens=False,
+            oauth_repair_status="failed",
+            oauth_repair_error=error_text,
+        )
+        add_batch_log(f"{prefix} [OAuth] 补齐失败: {email or account_id} -> {error_text}")
+        return False
+
+
 async def run_batch_parallel(
     batch_id: str,
     task_uuids: List[str],
@@ -917,6 +1039,7 @@ async def run_batch_parallel(
     auto_upload_new_api: bool = False,
     new_api_service_ids: List[int] = None,
     registration_type: str = RoleTag.CHILD.value,
+    auto_repair_oauth: bool = False,
 ):
     """
     并行模式：所有任务同时提交，Semaphore 控制最大并发数
@@ -926,6 +1049,8 @@ async def run_batch_parallel(
     semaphore = asyncio.Semaphore(concurrency)
     counter_lock = asyncio.Lock()
     add_batch_log(f"[系统] 并行模式启动，并发数: {concurrency}，总任务: {len(task_uuids)}")
+    if auto_repair_oauth:
+        add_batch_log("[系统] 并行模式下不会自动串行执行 OAuth 补齐，已跳过该步骤")
 
     async def _run_one(idx: int, uuid: str):
         prefix = f"[任务{idx + 1}]"
@@ -1000,18 +1125,42 @@ async def run_batch_pipeline(
     auto_upload_new_api: bool = False,
     new_api_service_ids: List[int] = None,
     registration_type: str = RoleTag.CHILD.value,
+    auto_repair_oauth: bool = True,
 ):
     """
     流水线模式：每隔 interval 秒启动一个新任务，Semaphore 限制最大并发数
     """
     _init_batch_state(batch_id, task_uuids)
     add_batch_log, update_batch_status = _make_batch_helpers(batch_id)
+    if auto_repair_oauth:
+        concurrency = 1
     semaphore = asyncio.Semaphore(concurrency)
     counter_lock = asyncio.Lock()
     running_tasks_list = []
     add_batch_log(f"[系统] 流水线模式启动，并发数: {concurrency}，总任务: {len(task_uuids)}")
+    if auto_repair_oauth:
+        add_batch_log("[系统] 已启用注册后 OAuth 补齐，流水线将按 1 个账号串行推进")
 
-    async def _run_and_release(idx: int, uuid: str, pfx: str):
+    async def _update_batch_counter(uuid: str, pfx: str, oauth_ok: bool = True):
+        with get_db() as db:
+            t = crud.get_registration_task(db, uuid)
+            if t:
+                async with counter_lock:
+                    new_completed = batch_tasks[batch_id]["completed"] + 1
+                    new_success = batch_tasks[batch_id]["success"]
+                    new_failed = batch_tasks[batch_id]["failed"]
+                    if t.status == "completed" and oauth_ok:
+                        new_success += 1
+                        add_batch_log(f"{pfx} [成功] 注册成功")
+                    elif t.status == "completed" and not oauth_ok:
+                        new_failed += 1
+                        add_batch_log(f"{pfx} [失败] 注册成功但 OAuth 补齐失败")
+                    elif t.status == "failed":
+                        new_failed += 1
+                        add_batch_log(f"{pfx} [失败] 注册失败: {t.error_message}")
+                    update_batch_status(completed=new_completed, success=new_success, failed=new_failed)
+
+    async def _run_and_release(idx: int, uuid: str, pfx: str, release_semaphore: bool = True):
         try:
             if task_manager.is_batch_cancelled(batch_id) or batch_tasks[batch_id]["cancelled"]:
                 with get_db() as db:
@@ -1034,24 +1183,45 @@ async def run_batch_pipeline(
                 auto_upload_new_api=auto_upload_new_api, new_api_service_ids=new_api_service_ids or [],
                 registration_type=registration_type,
             )
-            with get_db() as db:
-                t = crud.get_registration_task(db, uuid)
-                if t:
-                    async with counter_lock:
-                        new_completed = batch_tasks[batch_id]["completed"] + 1
-                        new_success = batch_tasks[batch_id]["success"]
-                        new_failed = batch_tasks[batch_id]["failed"]
-                        if t.status == "completed":
-                            new_success += 1
-                            add_batch_log(f"{pfx} [成功] 注册成功")
-                        elif t.status == "failed":
-                            new_failed += 1
-                            add_batch_log(f"{pfx} [失败] 注册失败: {t.error_message}")
-                        update_batch_status(completed=new_completed, success=new_success, failed=new_failed)
+            oauth_ok = True
+            if auto_repair_oauth:
+                oauth_ok = await _run_pipeline_oauth_repair_for_task(
+                    uuid,
+                    proxy,
+                    pfx,
+                    add_batch_log,
+                )
+            await _update_batch_counter(uuid, pfx, oauth_ok=oauth_ok)
         finally:
-            semaphore.release()
+            if release_semaphore:
+                semaphore.release()
 
     try:
+        if auto_repair_oauth:
+            for i, task_uuid in enumerate(task_uuids):
+                if task_manager.is_batch_cancelled(batch_id) or batch_tasks[batch_id]["cancelled"]:
+                    with get_db() as db:
+                        for remaining_uuid in task_uuids[i:]:
+                            crud.update_registration_task(db, remaining_uuid, status="cancelled")
+                    add_batch_log("[取消] 批量任务已取消")
+                    update_batch_status(finished=True, status="cancelled")
+                    break
+
+                update_batch_status(current_index=i)
+                prefix = f"[任务{i + 1}]"
+                add_batch_log(f"{prefix} 开始注册...")
+                await _run_and_release(i, task_uuid, prefix, release_semaphore=False)
+
+                if i < len(task_uuids) - 1 and not task_manager.is_batch_cancelled(batch_id):
+                    wait_time = random.randint(interval_min, interval_max)
+                    logger.info(f"批量任务 {batch_id}: 等待 {wait_time} 秒后启动下一个任务")
+                    await asyncio.sleep(wait_time)
+
+            if not task_manager.is_batch_cancelled(batch_id):
+                add_batch_log(f"[完成] 批量任务完成！成功: {batch_tasks[batch_id]['success']}, 失败: {batch_tasks[batch_id]['failed']}")
+                update_batch_status(finished=True, status="completed")
+            return
+
         for i, task_uuid in enumerate(task_uuids):
             if task_manager.is_batch_cancelled(batch_id) or batch_tasks[batch_id]["cancelled"]:
                 with get_db() as db:
@@ -1107,6 +1277,7 @@ async def run_batch_registration(
     auto_upload_new_api: bool = False,
     new_api_service_ids: List[int] = None,
     registration_type: str = RoleTag.CHILD.value,
+    auto_repair_oauth: bool = True,
 ):
     """根据 mode 分发到并行或流水线执行"""
     if mode == "parallel":
@@ -1118,6 +1289,7 @@ async def run_batch_registration(
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
             auto_upload_new_api=auto_upload_new_api, new_api_service_ids=new_api_service_ids,
             registration_type=registration_type,
+            auto_repair_oauth=auto_repair_oauth,
         )
     else:
         await run_batch_pipeline(
@@ -1129,6 +1301,7 @@ async def run_batch_registration(
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
             auto_upload_new_api=auto_upload_new_api, new_api_service_ids=new_api_service_ids,
             registration_type=registration_type,
+            auto_repair_oauth=auto_repair_oauth,
         )
 
 
@@ -1197,6 +1370,7 @@ async def run_auto_registration_batch(plan, settings: Settings) -> str:
         tm_service_ids=[],
         auto_upload_new_api=False,
         new_api_service_ids=[],
+        auto_repair_oauth=True,
     )
 
     batch = batch_tasks.get(batch_id)
@@ -1359,6 +1533,7 @@ async def _start_batch_registration_internal(
         request.auto_upload_new_api,
         request.new_api_service_ids,
         request.registration_type,
+        request.auto_repair_oauth,
     )
 
     return BatchRegistrationResponse(
@@ -2112,6 +2287,8 @@ async def run_outlook_batch_registration(
     tm_service_ids: List[int] = None,
     auto_upload_new_api: bool = False,
     new_api_service_ids: List[int] = None,
+    registration_type: str = RoleTag.CHILD.value,
+    auto_repair_oauth: bool = True,
 ):
     """
     异步执行 Outlook 批量注册任务，复用通用并发逻辑
@@ -2157,6 +2334,8 @@ async def run_outlook_batch_registration(
         tm_service_ids=tm_service_ids,
         auto_upload_new_api=auto_upload_new_api,
         new_api_service_ids=new_api_service_ids,
+        registration_type=registration_type,
+        auto_repair_oauth=bool(auto_repair_oauth and mode == "pipeline"),
     )
 
 

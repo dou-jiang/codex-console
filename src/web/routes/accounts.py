@@ -5,24 +5,37 @@ import io
 import asyncio
 import json
 import logging
+import os
 import re
+import html
+import time
+import random
 import threading
 import zipfile
 import base64
+import hashlib
+import shutil
+import subprocess
+import tempfile
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Body
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Body, Request
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func
 
-from ...config.constants import AccountStatus
+from ...config.constants import AccountStatus, OPENAI_PAGE_TYPES
 from ...config.settings import get_settings
 from ...core.openai.overview import fetch_codex_overview, AccountDeactivatedError
+from ...core.openai.oauth import OAuthManager
 from ...core.openai.token_refresh import refresh_account_token as do_refresh
 from ...core.openai.token_refresh import validate_account_token as do_validate
+from ...core.openai.browser_bind import _find_chrome_binary
 from ...core.upload.cpa_upload import generate_token_json, batch_upload_to_cpa, upload_to_cpa
 from ...core.upload.team_manager_upload import upload_to_team_manager, batch_upload_to_team_manager
 from ...core.upload.sub2api_upload import batch_upload_to_sub2api, upload_to_sub2api
@@ -30,9 +43,11 @@ from ...core.upload.new_api_upload import batch_upload_to_new_api, upload_to_new
 
 from ...core.dynamic_proxy import get_proxy_url_for_task
 from ...core.timezone_utils import utcnow_naive
+from ...core.register import RegistrationEngine, RegistrationResult
 from ...database import crud
-from ...database.models import Account
+from ...database.models import Account, EmailService as EmailServiceModel
 from ...database.session import get_db
+from ...services import EmailServiceFactory, EmailServiceType
 from ..task_manager import task_manager
 
 logger = logging.getLogger(__name__)
@@ -50,6 +65,12 @@ INVALID_ACCOUNT_STATUSES = (
 )
 
 _QUICK_REFRESH_WORKFLOW_LOCK = threading.Lock()
+_MANUAL_OAUTH_SESSION_LOCK = threading.Lock()
+_MANUAL_OAUTH_SESSION_TTL_SECONDS = 1800
+_MANUAL_OAUTH_SESSIONS: Dict[int, Dict[str, Any]] = {}
+_MANUAL_OAUTH_LISTENER_LOCK = threading.Lock()
+_MANUAL_OAUTH_LISTENER: Optional[ThreadingHTTPServer] = None
+_MANUAL_OAUTH_LISTENER_THREAD: Optional[threading.Thread] = None
 
 
 def _is_retryable_validate_error(error_message: Optional[str]) -> bool:
@@ -242,6 +263,21 @@ class BatchUpdateRequest(BaseModel):
     """批量更新请求"""
     ids: List[int]
     status: str
+
+
+class ManualOAuthStartRequest(BaseModel):
+    """手动浏览器 OAuth 启动请求"""
+    proxy: Optional[str] = None
+    use_desktop_automation: bool = False
+    use_current_browser_window: bool = True
+    use_edge_attach: bool = True
+    use_playwright: bool = False
+    headless: bool = False
+
+
+class ManualOAuthCallbackRequest(BaseModel):
+    """手动浏览器 OAuth 回调提交请求"""
+    callback_url: str
 
 
 class OverviewRefreshRequest(BaseModel):
@@ -492,6 +528,8 @@ def _write_current_account_snapshot(account: Account) -> Optional[str]:
         data_dir = Path("data")
         data_dir.mkdir(parents=True, exist_ok=True)
         output_file = data_dir / "current_codex_account.json"
+        cockpit_tokens = _build_cockpit_tokens(account, include_account_hint=True)
+        cockpit_payload = _build_cockpit_account_export(account)
         payload = {
             "id": account.id,
             "email": account.email,
@@ -502,6 +540,9 @@ def _write_current_account_snapshot(account: Account) -> Optional[str]:
             "session_token": account.session_token,
             "account_id": account.account_id,
             "workspace_id": account.workspace_id,
+            "organization_id": cockpit_payload.get("organization_id"),
+            "auth_mode": "oauth",
+            "tokens": cockpit_tokens,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         output_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -509,6 +550,1404 @@ def _write_current_account_snapshot(account: Account) -> Optional[str]:
     except Exception as exc:
         logger.warning(f"写入 current_codex_account.json 失败: {exc}")
         return None
+
+
+def _build_oauth_manager(proxy: Optional[str] = None, redirect_uri: Optional[str] = None) -> OAuthManager:
+    settings = get_settings()
+    return OAuthManager(
+        client_id=settings.openai_client_id,
+        auth_url=settings.openai_auth_url,
+        token_url=settings.openai_token_url,
+        redirect_uri=str(redirect_uri or settings.openai_redirect_uri or "").strip(),
+        scope=settings.openai_scope,
+        proxy_url=proxy,
+    )
+
+
+def _cleanup_manual_oauth_sessions(now: Optional[datetime] = None) -> None:
+    now = now or datetime.now(timezone.utc)
+    expired_ids: List[int] = []
+    for account_id, session_data in list(_MANUAL_OAUTH_SESSIONS.items()):
+        created_at = session_data.get("created_at")
+        if not isinstance(created_at, datetime):
+            expired_ids.append(account_id)
+            continue
+        age = now - created_at.astimezone(timezone.utc)
+        if age > timedelta(seconds=_MANUAL_OAUTH_SESSION_TTL_SECONDS):
+            expired_ids.append(account_id)
+    for account_id in expired_ids:
+        _MANUAL_OAUTH_SESSIONS.pop(account_id, None)
+
+
+def _store_manual_oauth_session(account_id: int, start: Any, proxy: Optional[str] = None) -> Dict[str, Any]:
+    created_at = datetime.now(timezone.utc)
+    session_data = {
+        "auth_url": str(getattr(start, "auth_url", "") or "").strip(),
+        "state": str(getattr(start, "state", "") or "").strip(),
+        "code_verifier": str(getattr(start, "code_verifier", "") or "").strip(),
+        "redirect_uri": str(getattr(start, "redirect_uri", "") or "").strip(),
+        "proxy": str(proxy or "").strip() or None,
+        "created_at": created_at,
+        "status": "pending",
+        "last_error": None,
+        "completed_at": None,
+        "result": None,
+        "browser_mode": "external",
+        "browser_status": "idle",
+        "browser_error": None,
+        "browser_current_url": None,
+        "browser_started_at": None,
+        "browser_closed_at": None,
+    }
+    with _MANUAL_OAUTH_SESSION_LOCK:
+        _cleanup_manual_oauth_sessions(now=created_at)
+        _MANUAL_OAUTH_SESSIONS[account_id] = session_data
+    return session_data
+
+
+def _get_manual_oauth_session(account_id: int) -> Optional[Dict[str, Any]]:
+    with _MANUAL_OAUTH_SESSION_LOCK:
+        _cleanup_manual_oauth_sessions()
+        session_data = _MANUAL_OAUTH_SESSIONS.get(account_id)
+        return dict(session_data) if session_data else None
+
+
+def _update_manual_oauth_session(account_id: int, **updates: Any) -> Optional[Dict[str, Any]]:
+    with _MANUAL_OAUTH_SESSION_LOCK:
+        _cleanup_manual_oauth_sessions()
+        current = _MANUAL_OAUTH_SESSIONS.get(account_id)
+        if not current:
+            return None
+        current.update(updates)
+        _MANUAL_OAUTH_SESSIONS[account_id] = current
+        return dict(current)
+
+
+def _clear_manual_oauth_session(account_id: int) -> None:
+    with _MANUAL_OAUTH_SESSION_LOCK:
+        _MANUAL_OAUTH_SESSIONS.pop(account_id, None)
+
+
+def _manual_oauth_result_payload(account: Account, persisted: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "account": persisted,
+        "email": account.email,
+        "has_refresh_token": bool(account.refresh_token),
+        "has_id_token": bool(account.id_token),
+    }
+
+
+def _build_manual_oauth_redirect_uri(request: Request, account_id: int) -> str:
+    return str(request.url_for("manual_oauth_callback_landing", account_id=str(account_id)))
+
+
+def _find_manual_oauth_account_id_by_state(state: str) -> Optional[int]:
+    expected_state = str(state or "").strip()
+    if not expected_state:
+        return None
+    with _MANUAL_OAUTH_SESSION_LOCK:
+        _cleanup_manual_oauth_sessions()
+        for account_id, session_data in _MANUAL_OAUTH_SESSIONS.items():
+            if str(session_data.get("state") or "").strip() == expected_state:
+                return int(account_id)
+    return None
+
+
+def _render_manual_oauth_listener_html(title: str, status_line: str, detail: str, status_value: str, account_id: Optional[int]) -> str:
+    safe_title = html.escape(title)
+    safe_status = html.escape(status_line)
+    safe_detail = html.escape(detail)
+    safe_state = html.escape(str(status_value or "").upper())
+    badge_bg = "#e8f7ee" if status_value == "completed" else "#fff1f0"
+    badge_fg = "#0f7b3b" if status_value == "completed" else "#c0392b"
+    account_literal = "null" if account_id is None else str(int(account_id))
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f7fb; color: #172033; margin: 0; }}
+    .wrap {{ max-width: 560px; margin: 10vh auto; background: white; border-radius: 16px; padding: 24px; box-shadow: 0 18px 50px rgba(18, 38, 63, 0.12); }}
+    .badge {{ display: inline-block; padding: 6px 10px; border-radius: 999px; background: {badge_bg}; color: {badge_fg}; font-size: 12px; font-weight: 600; }}
+    h1 {{ font-size: 24px; margin: 14px 0 10px; }}
+    p {{ line-height: 1.6; margin: 8px 0; word-break: break-word; }}
+    button {{ margin-top: 16px; padding: 10px 16px; border: 0; border-radius: 10px; background: #1663ff; color: white; cursor: pointer; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <span class="badge">{safe_state}</span>
+    <h1>{safe_title}</h1>
+    <p>{safe_status}</p>
+    <p>{safe_detail}</p>
+    <button type="button" onclick="window.close()">Close Window</button>
+  </div>
+  <script>
+    try {{
+      if (window.opener && !window.opener.closed) {{
+        window.opener.postMessage({{ type: 'codex-manual-oauth', accountId: {account_literal}, status: '{html.escape(status_value)}' }}, '*');
+      }}
+    }} catch (e) {{}}
+    if ('{html.escape(status_value)}' === 'completed') {{
+      setTimeout(() => {{
+        try {{
+          window.close();
+        }} catch (e) {{}}
+      }}, 900);
+    }}
+  </script>
+</body>
+</html>"""
+
+
+class _ManualOAuthCallbackHandler(BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path != "/auth/callback":
+            self.send_error(404)
+            return
+
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        state = str((query.get("state") or [""])[0] or "").strip()
+        account_id = _find_manual_oauth_account_id_by_state(state)
+        callback_url = f"http://localhost:1455{self.path}"
+
+        if not account_id:
+            body = _render_manual_oauth_listener_html(
+                "OAuth Failed",
+                "No matching OAuth session was found.",
+                "Return to the console and restart Browser OAuth Repair.",
+                "failed",
+                None,
+            )
+            self._send_html(400, body)
+            return
+
+        try:
+            payload = _complete_manual_oauth_session(account_id, callback_url)
+            body = _render_manual_oauth_listener_html(
+                "OAuth Completed",
+                "OAuth tokens saved. You can return to the console.",
+                f"Account: {payload.get('email') or ''}",
+                "completed",
+                account_id,
+            )
+            self._send_html(200, body)
+        except LookupError:
+            _update_manual_oauth_session(
+                account_id,
+                status="failed",
+                last_error="Account not found",
+                completed_at=datetime.now(timezone.utc),
+            )
+            body = _render_manual_oauth_listener_html(
+                "OAuth Failed",
+                "The target account no longer exists.",
+                "Return to the console and restart Browser OAuth Repair.",
+                "failed",
+                account_id,
+            )
+            self._send_html(404, body)
+        except Exception as exc:
+            _update_manual_oauth_session(
+                account_id,
+                status="failed",
+                last_error=str(exc),
+                completed_at=datetime.now(timezone.utc),
+            )
+            body = _render_manual_oauth_listener_html(
+                "OAuth Failed",
+                "Automatic callback processing failed.",
+                str(exc),
+                "failed",
+                account_id,
+            )
+            self._send_html(400, body)
+
+    def log_message(self, format: str, *args):  # noqa: A003
+        logger.debug("manual oauth listener: " + format, *args)
+
+    def _send_html(self, status_code: int, body: str) -> None:
+        encoded = body.encode("utf-8", errors="replace")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+
+def _ensure_manual_oauth_listener() -> None:
+    global _MANUAL_OAUTH_LISTENER, _MANUAL_OAUTH_LISTENER_THREAD
+
+    with _MANUAL_OAUTH_LISTENER_LOCK:
+        if _MANUAL_OAUTH_LISTENER and _MANUAL_OAUTH_LISTENER_THREAD and _MANUAL_OAUTH_LISTENER_THREAD.is_alive():
+            return
+
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", 1455), _ManualOAuthCallbackHandler)
+        except OSError as exc:
+            raise RuntimeError(f"localhost:1455 unavailable: {exc}") from exc
+
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, name="manual-oauth-listener", daemon=True)
+        thread.start()
+        _MANUAL_OAUTH_LISTENER = server
+        _MANUAL_OAUTH_LISTENER_THREAD = thread
+        logger.info("Manual OAuth listener started on http://127.0.0.1:1455/auth/callback")
+
+
+def _manual_oauth_get_body_text(page) -> str:
+    try:
+        return str(page.locator("body").inner_text(timeout=1500) or "")
+    except Exception:
+        return ""
+
+
+def _manual_oauth_find_visible_locator(page, selectors: List[str], timeout_ms: int = 800):
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            count = min(locator.count(), 6)
+            for idx in range(count):
+                candidate = locator.nth(idx)
+                if candidate.is_visible(timeout=timeout_ms):
+                    return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _manual_oauth_click_best_effort(page, selectors: List[str]) -> bool:
+    locator = _manual_oauth_find_visible_locator(page, selectors)
+    if not locator:
+        return False
+    try:
+        locator.click(timeout=3000)
+        return True
+    except Exception:
+        try:
+            locator.press("Enter")
+            return True
+        except Exception:
+            return False
+
+
+def _manual_oauth_fill_email_step(page, email: str) -> bool:
+    locator = _manual_oauth_find_visible_locator(
+        page,
+        [
+            "input[type='email']",
+            "input[name='email']",
+            "input[autocomplete='username']",
+            "input[autocomplete='email']",
+        ],
+    )
+    if not locator:
+        return False
+
+    try:
+        locator.fill(str(email or ""), timeout=3000)
+    except Exception:
+        return False
+
+    return _manual_oauth_click_best_effort(
+        page,
+        [
+            "button:has-text('Continue')",
+            "button:has-text('Next')",
+            "button:has-text('继续')",
+            "button:has-text('下一步')",
+            "button[type='submit']",
+        ],
+    )
+
+
+def _manual_oauth_fill_password_step(page, password: str) -> bool:
+    locator = _manual_oauth_find_visible_locator(
+        page,
+        [
+            "input[type='password']",
+            "input[name='password']",
+            "input[autocomplete='current-password']",
+        ],
+    )
+    if not locator:
+        return False
+
+    try:
+        locator.fill(str(password or ""), timeout=3000)
+    except Exception:
+        return False
+
+    return _manual_oauth_click_best_effort(
+        page,
+        [
+            "button:has-text('Continue')",
+            "button:has-text('Log in')",
+            "button:has-text('Sign in')",
+            "button:has-text('登录')",
+            "button:has-text('继续')",
+            "button[type='submit']",
+        ],
+    )
+
+
+def _manual_oauth_fill_otp_step(page, code: str) -> bool:
+    digits = [ch for ch in str(code or "").strip() if ch.isdigit()]
+    if len(digits) != 6:
+        return False
+
+    multi_locator = page.locator(
+        "input[inputmode='numeric'][maxlength='1'], "
+        "input[autocomplete='one-time-code'][maxlength='1']"
+    )
+    try:
+        multi_count = multi_locator.count()
+    except Exception:
+        multi_count = 0
+
+    if multi_count >= 6:
+        try:
+            for idx, digit in enumerate(digits[:6]):
+                multi_locator.nth(idx).fill(digit, timeout=2000)
+        except Exception:
+            return False
+    else:
+        single = _manual_oauth_find_visible_locator(
+            page,
+            [
+                "input[autocomplete='one-time-code']",
+                "input[name='code']",
+                "input[name*='otp']",
+                "input[id*='otp']",
+                "input[id*='code']",
+                "input[inputmode='numeric']",
+            ],
+        )
+        if not single:
+            return False
+        try:
+            single.fill("".join(digits), timeout=3000)
+        except Exception:
+            return False
+
+    clicked = _manual_oauth_click_best_effort(
+        page,
+        [
+            "button:has-text('Continue')",
+            "button:has-text('Verify')",
+            "button:has-text('Submit')",
+            "button:has-text('继续')",
+            "button:has-text('验证')",
+            "button[type='submit']",
+        ],
+    )
+    if not clicked:
+        try:
+            page.keyboard.press("Enter")
+            return True
+        except Exception:
+            return False
+    return True
+
+
+def _manual_oauth_click_consent_step(page, email: str) -> bool:
+    email_text = str(email or "").strip()
+    if email_text:
+        account_choice = _manual_oauth_find_visible_locator(
+            page,
+            [
+                f"button:has-text('{email_text}')",
+                f"[role='button']:has-text('{email_text}')",
+                f"text='{email_text}'",
+            ],
+        )
+        if account_choice:
+            try:
+                account_choice.click(timeout=3000)
+                return True
+            except Exception:
+                pass
+
+    return _manual_oauth_click_best_effort(
+        page,
+        [
+            "button:has-text('Authorize')",
+            "button:has-text('Allow')",
+            "button:has-text('Continue to Codex')",
+            "button:has-text('Continue')",
+            "button:has-text('授权')",
+            "button:has-text('允许')",
+            "button:has-text('继续')",
+            "button[type='submit']",
+        ],
+    )
+
+
+def _manual_oauth_drive_playwright_page(
+    page,
+    account: Account,
+    email_service,
+    otp_state: Dict[str, Any],
+) -> str:
+    current_url = str(page.url or "")
+    body_text = _manual_oauth_get_body_text(page).lower()
+
+    if any(token in current_url.lower() for token in ("email-verification", "email-otp")) or (
+        "verification code" in body_text or "one-time code" in body_text or "验证码" in body_text
+    ):
+        if not otp_state.get("sent_at"):
+            otp_state["sent_at"] = time.time()
+        code = email_service.get_verification_code(
+            email=str(account.email or "").strip(),
+            email_id=str(account.email_service_id or "").strip() or None,
+            timeout=8,
+            otp_sent_at=float(otp_state["sent_at"]),
+        )
+        if code:
+            attempted = otp_state.setdefault("attempted_codes", set())
+            if code not in attempted and _manual_oauth_fill_otp_step(page, code):
+                attempted.add(code)
+                return f"otp:{code}"
+        return "wait_otp"
+
+    if _manual_oauth_fill_password_step(page, str(account.password or "").strip()):
+        return "password"
+
+    if _manual_oauth_fill_email_step(page, str(account.email or "").strip()):
+        return "email"
+
+    if _manual_oauth_click_consent_step(page, str(account.email or "").strip()):
+        return "consent"
+
+    return ""
+
+
+def _find_edge_binary_for_oauth() -> str:
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+        shutil.which("msedge"),
+    ]
+    for candidate in candidates:
+        path = str(candidate or "").strip()
+        if path and Path(path).exists():
+            return path
+    chrome_fallback = str(_find_chrome_binary() or "").strip()
+    return chrome_fallback
+
+
+def _run_manual_oauth_desktop_worker(
+    account_id: int,
+    auth_url: str,
+    redirect_uri: str,
+    proxy: Optional[str] = None,
+    headless: bool = False,
+    launch_browser: bool = True,
+) -> None:
+    account: Optional[Account] = None
+    email_service = None
+    edge_proc = None
+
+    try:
+        with get_db() as db:
+            account = crud.get_account_by_id(db, account_id)
+            if not account:
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_status="failed",
+                    browser_error="Account not found",
+                )
+                return
+            if not str(account.email or "").strip() or not str(account.password or "").strip():
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_status="failed",
+                    browser_error="Account is missing email or password",
+                )
+                return
+            email_service = _resolve_email_service_for_oauth_backfill(db, account, proxy)
+    except Exception as exc:
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="failed",
+            browser_error=f"unable to prepare email service: {exc}",
+        )
+        return
+
+    try:
+        import pyautogui
+        import pygetwindow as gw
+        import pyperclip
+    except Exception as exc:
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="failed",
+            browser_error=f"desktop automation dependencies missing: {exc}",
+        )
+        return
+
+    if bool(headless):
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="failed",
+            browser_error="desktop automation does not support headless mode",
+        )
+        return
+
+    edge_binary = str(_find_edge_binary_for_oauth() or "").strip()
+    if bool(launch_browser) and not edge_binary:
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="failed",
+            browser_error="system Edge/Chrome binary not found",
+        )
+        return
+
+    pyautogui.FAILSAFE = False
+    pyautogui.PAUSE = 0.08
+
+    def _window_handle(window_obj) -> Optional[int]:
+        try:
+            return int(getattr(window_obj, "_hWnd", None) or 0) or None
+        except Exception:
+            return None
+
+    def _snapshot_window_handles() -> set[int]:
+        handles: set[int] = set()
+        try:
+            for window_obj in gw.getAllWindows():
+                handle = _window_handle(window_obj)
+                if handle:
+                    handles.add(handle)
+        except Exception:
+            pass
+        return handles
+
+    def _focus_edge_window(known_handles: set[int], timeout_seconds: int = 20):
+        deadline = time.time() + max(1, int(timeout_seconds))
+        fallback_window = None
+        while time.time() < deadline:
+            try:
+                windows = list(gw.getAllWindows())
+            except Exception:
+                windows = []
+            for window_obj in windows:
+                title = str(getattr(window_obj, "title", "") or "").strip()
+                if not title:
+                    continue
+                handle = _window_handle(window_obj)
+                if fallback_window is None and "edge" in title.lower():
+                    fallback_window = window_obj
+                if handle and handle in known_handles:
+                    continue
+                if "edge" in title.lower() or "openai" in title.lower() or "auth" in title.lower():
+                    try:
+                        if getattr(window_obj, "isMinimized", False):
+                            window_obj.restore()
+                    except Exception:
+                        pass
+                    try:
+                        window_obj.activate()
+                    except Exception:
+                        pass
+                    time.sleep(1.2)
+                    return window_obj
+            if fallback_window is not None:
+                try:
+                    if getattr(fallback_window, "isMinimized", False):
+                        fallback_window.restore()
+                except Exception:
+                    pass
+                try:
+                    fallback_window.activate()
+                except Exception:
+                    pass
+                time.sleep(1.2)
+                return fallback_window
+            time.sleep(0.5)
+        return None
+
+    def _paste_text(value: str) -> None:
+        text = str(value or "")
+        if not text:
+            return
+        try:
+            pyperclip.copy(text)
+            pyautogui.hotkey("ctrl", "a")
+            pyautogui.press("backspace")
+            pyautogui.hotkey("ctrl", "v")
+        except Exception:
+            pyautogui.write(text, interval=0.03)
+
+    def _press_enter() -> None:
+        pyautogui.press("enter")
+
+    def _click_window_point(window_obj, x_ratio: float, y_ratio: float) -> bool:
+        if window_obj is None:
+            return False
+        try:
+            left = int(getattr(window_obj, "left", 0))
+            top = int(getattr(window_obj, "top", 0))
+            width = int(getattr(window_obj, "width", 0))
+            height = int(getattr(window_obj, "height", 0))
+            if width <= 0 or height <= 0:
+                return False
+            target_x = left + max(1, min(width - 1, int(width * x_ratio)))
+            target_y = top + max(1, min(height - 1, int(height * y_ratio)))
+            pyautogui.click(target_x, target_y)
+            return True
+        except Exception:
+            return False
+
+    def _click_continue_button(window_obj) -> bool:
+        # The Codex consent page places the primary "Continue" button in the
+        # lower-right half of the centered action row.
+        attempts = [
+            (0.61, 0.79),
+            (0.62, 0.80),
+            (0.60, 0.78),
+        ]
+        clicked = False
+        for x_ratio, y_ratio in attempts:
+            if _click_window_point(window_obj, x_ratio, y_ratio):
+                clicked = True
+                time.sleep(0.8)
+        return clicked
+
+    existing_handles = _snapshot_window_handles()
+
+    _update_manual_oauth_session(
+        account_id,
+        browser_mode="desktop",
+        browser_status="launching" if bool(launch_browser) else "awaiting_browser_window",
+        browser_error=None,
+        browser_started_at=datetime.now(timezone.utc),
+        browser_binary=edge_binary if bool(launch_browser) else "current_edge_window",
+        browser_current_url="",
+    )
+
+    try:
+        if bool(launch_browser):
+            edge_args = [edge_binary, "--new-window", auth_url]
+            if proxy:
+                edge_args.append(f"--proxy-server={proxy}")
+            edge_proc = subprocess.Popen(
+                edge_args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        window_obj = _focus_edge_window(existing_handles, timeout_seconds=40 if not bool(launch_browser) else 25)
+        if window_obj is None:
+            raise RuntimeError("unable to focus the Edge authorization window")
+
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="running",
+            browser_current_url=auth_url,
+        )
+
+        time.sleep(2.5)
+        _paste_text(str(account.email or "").strip())
+        _press_enter()
+        _update_manual_oauth_session(account_id, browser_status="email", browser_current_url=auth_url)
+
+        time.sleep(2.8)
+        _paste_text(str(account.password or "").strip())
+        _press_enter()
+        _update_manual_oauth_session(account_id, browser_status="password", browser_current_url=auth_url)
+
+        otp_sent_at = time.time()
+        _update_manual_oauth_session(account_id, browser_status="wait_otp", browser_current_url=auth_url)
+        code = email_service.get_verification_code(
+            email=str(account.email or "").strip(),
+            email_id=str(account.email_service_id or "").strip() or None,
+            timeout=75,
+            otp_sent_at=otp_sent_at,
+        )
+        if code:
+            window_obj = _focus_edge_window(set(), timeout_seconds=5) or window_obj
+            time.sleep(0.8)
+            _paste_text(str(code))
+            _press_enter()
+            _update_manual_oauth_session(account_id, browser_status=f"otp:{code}", browser_current_url=auth_url)
+        else:
+            _update_manual_oauth_session(account_id, browser_status="wait_otp", browser_error="email OTP not received in time")
+
+        post_otp_deadline = time.time() + 90
+        nudged = False
+        consent_click_attempted = False
+        while time.time() < post_otp_deadline:
+            session_data = _get_manual_oauth_session(account_id)
+            if not session_data:
+                break
+            status = str(session_data.get("status") or "pending")
+            if status in {"completed", "failed"}:
+                break
+
+            if code and not consent_click_attempted and time.time() - otp_sent_at > 9:
+                try:
+                    window_obj = _focus_edge_window(set(), timeout_seconds=3) or window_obj
+                    if _click_continue_button(window_obj):
+                        _update_manual_oauth_session(account_id, browser_status="consent_click", browser_current_url=auth_url)
+                        consent_click_attempted = True
+                except Exception:
+                    pass
+            elif code and consent_click_attempted and not nudged and time.time() - otp_sent_at > 18:
+                try:
+                    window_obj = _focus_edge_window(set(), timeout_seconds=3) or window_obj
+                    pyautogui.press("tab")
+                    pyautogui.press("tab")
+                    pyautogui.press("enter")
+                    _update_manual_oauth_session(account_id, browser_status="consent", browser_current_url=auth_url)
+                    nudged = True
+                except Exception:
+                    pass
+            time.sleep(1.5)
+
+        final_session = _get_manual_oauth_session(account_id) or {}
+        final_status = str(final_session.get("status") or "pending")
+        if final_status == "completed":
+            try:
+                window_obj = _focus_edge_window(set(), timeout_seconds=3) or window_obj
+                pyautogui.hotkey("alt", "f4")
+                time.sleep(0.4)
+            except Exception:
+                pass
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="completed" if final_status == "completed" else "closed",
+            browser_closed_at=datetime.now(timezone.utc),
+        )
+    except Exception as exc:
+        logger.warning("Desktop OAuth worker failed: account_id=%s error=%s", account_id, exc)
+        _update_manual_oauth_session(
+            account_id,
+            browser_mode="desktop",
+            browser_status="failed",
+            browser_error=str(exc),
+            browser_closed_at=datetime.now(timezone.utc),
+        )
+    finally:
+        if edge_proc is not None:
+            try:
+                if edge_proc.poll() is None:
+                    edge_proc.terminate()
+            except Exception:
+                pass
+
+
+def _start_manual_oauth_desktop_worker(
+    account_id: int,
+    auth_url: str,
+    redirect_uri: str,
+    proxy: Optional[str] = None,
+    headless: bool = False,
+    launch_browser: bool = True,
+) -> Dict[str, Any]:
+    try:
+        import pyautogui  # noqa: F401
+        import pygetwindow  # noqa: F401
+        import pyperclip  # noqa: F401
+    except Exception as exc:
+        return {"started": False, "error": f"desktop automation dependencies missing: {exc}"}
+
+    thread = threading.Thread(
+        target=_run_manual_oauth_desktop_worker,
+        args=(account_id, auth_url, redirect_uri),
+        kwargs={"proxy": proxy, "headless": headless, "launch_browser": launch_browser},
+        name=f"manual-oauth-desktop-{account_id}",
+        daemon=True,
+    )
+    thread.start()
+    return {"started": True, "error": None}
+
+
+def _run_manual_oauth_edge_attach_worker(
+    account_id: int,
+    auth_url: str,
+    redirect_uri: str,
+    proxy: Optional[str] = None,
+    headless: bool = False,
+) -> None:
+    account: Optional[Account] = None
+    email_service = None
+    edge_proc = None
+    user_data_dir = None
+    cdp_url = ""
+
+    try:
+        with get_db() as db:
+            account = crud.get_account_by_id(db, account_id)
+            if not account:
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_status="failed",
+                    browser_error="Account not found",
+                )
+                return
+            if not str(account.email or "").strip() or not str(account.password or "").strip():
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_status="failed",
+                    browser_error="Account is missing email or password",
+                )
+                return
+            email_service = _resolve_email_service_for_oauth_backfill(db, account, proxy)
+    except Exception as exc:
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="failed",
+            browser_error=f"unable to prepare email service: {exc}",
+        )
+        return
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="failed",
+            browser_error=f"playwright not installed: {exc}",
+        )
+        return
+
+    edge_binary = str(_find_edge_binary_for_oauth() or "").strip()
+    if not edge_binary:
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="failed",
+            browser_error="system Edge/Chrome binary not found",
+        )
+        return
+
+    cdp_port = random.randint(19455, 19999)
+    cdp_url = f"http://127.0.0.1:{cdp_port}"
+    user_data_dir = tempfile.mkdtemp(prefix=f"codex-edge-oauth-{account_id}-")
+    edge_args = [
+        edge_binary,
+        f"--remote-debugging-port={cdp_port}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-popup-blocking",
+        "--new-window",
+        f"--user-data-dir={user_data_dir}",
+        "--window-size=1366,900",
+        auth_url,
+    ]
+    if proxy:
+        edge_args.append(f"--proxy-server={proxy}")
+    if headless:
+        edge_args.extend(["--headless=new", "--disable-gpu"])
+
+    _update_manual_oauth_session(
+        account_id,
+        browser_mode="edge_cdp",
+        browser_status="launching",
+        browser_error=None,
+        browser_started_at=datetime.now(timezone.utc),
+        browser_binary=edge_binary,
+        browser_current_url="",
+    )
+
+    try:
+        edge_proc = subprocess.Popen(
+            edge_args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        cdp_ready = False
+        for _ in range(24):
+            try:
+                with urllib.request.urlopen(f"{cdp_url}/json/version", timeout=2) as resp:
+                    data = json.loads(resp.read() or b"{}")
+                    if data.get("Browser"):
+                        cdp_ready = True
+                        break
+            except Exception:
+                time.sleep(0.5)
+
+        if not cdp_ready:
+            raise RuntimeError("Edge CDP port not responding")
+
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(cdp_url)
+            try:
+                contexts = list(browser.contexts)
+                context = contexts[0] if contexts else browser.new_context(
+                    viewport={"width": 1366, "height": 900},
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                )
+
+                page = None
+                deadline = time.time() + 15
+                while time.time() < deadline and page is None:
+                    try:
+                        pages = list(context.pages)
+                    except Exception:
+                        pages = []
+                    for candidate in reversed(pages):
+                        candidate_url = str(getattr(candidate, "url", "") or "")
+                        if candidate_url.startswith("http://localhost:1455/auth/callback") or "auth.openai.com" in candidate_url:
+                            page = candidate
+                            break
+                    if page is None:
+                        time.sleep(0.5)
+
+                if page is None:
+                    page = context.new_page()
+                    page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
+
+                page.set_default_timeout(60000)
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_status="running",
+                    browser_error=None,
+                    browser_current_url=str(page.url or ""),
+                )
+
+                oauth_deadline = time.time() + _MANUAL_OAUTH_SESSION_TTL_SECONDS
+                otp_state: Dict[str, Any] = {"sent_at": None, "attempted_codes": set()}
+                while time.time() < oauth_deadline:
+                    session_data = _get_manual_oauth_session(account_id)
+                    if not session_data:
+                        break
+
+                    status = str(session_data.get("status") or "pending")
+                    if status in {"completed", "failed"}:
+                        break
+
+                    if page.is_closed():
+                        _update_manual_oauth_session(
+                            account_id,
+                            browser_status="closed_by_user",
+                            browser_current_url="",
+                        )
+                        return
+
+                    try:
+                        current_url = str(page.url or "")
+                        if current_url:
+                            last_action = _manual_oauth_drive_playwright_page(
+                                page,
+                                account,
+                                email_service,
+                                otp_state,
+                            )
+                            _update_manual_oauth_session(
+                                account_id,
+                                browser_status=str(last_action or "running"),
+                                browser_current_url=current_url,
+                            )
+                            if current_url.startswith(redirect_uri):
+                                page.wait_for_timeout(1200)
+
+                        page.wait_for_timeout(1000)
+                    except Exception as page_exc:
+                        latest_session = _get_manual_oauth_session(account_id) or {}
+                        latest_status = str(latest_session.get("status") or "pending")
+                        if latest_status == "completed":
+                            break
+                        page_exc_text = str(page_exc or "").lower()
+                        if "target page, context or browser has been closed" in page_exc_text:
+                            _update_manual_oauth_session(
+                                account_id,
+                                browser_status="closed_by_user",
+                                browser_current_url="",
+                            )
+                            return
+                        raise
+
+                final_session = _get_manual_oauth_session(account_id) or {}
+                final_status = str(final_session.get("status") or "pending")
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_status="completed" if final_status == "completed" else "closed",
+                    browser_current_url=str(page.url or ""),
+                    browser_closed_at=datetime.now(timezone.utc),
+                )
+            finally:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+    except Exception as exc:
+        logger.warning("Edge OAuth browser worker failed: account_id=%s error=%s", account_id, exc)
+        _update_manual_oauth_session(
+            account_id,
+            browser_mode="edge_cdp",
+            browser_status="failed",
+            browser_error=str(exc),
+            browser_closed_at=datetime.now(timezone.utc),
+        )
+    finally:
+        if edge_proc is not None:
+            try:
+                edge_proc.terminate()
+            except Exception:
+                pass
+        if user_data_dir:
+            try:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+
+def _start_manual_oauth_edge_attach_worker(
+    account_id: int,
+    auth_url: str,
+    redirect_uri: str,
+    proxy: Optional[str] = None,
+    headless: bool = False,
+) -> Dict[str, Any]:
+    try:
+        import playwright.sync_api  # noqa: F401
+    except Exception as exc:
+        return {
+            "started": False,
+            "error": f"playwright not installed (pip install playwright && playwright install chromium): {exc}",
+        }
+
+    thread = threading.Thread(
+        target=_run_manual_oauth_edge_attach_worker,
+        args=(account_id, auth_url, redirect_uri),
+        kwargs={"proxy": proxy, "headless": headless},
+        name=f"manual-oauth-edge-cdp-{account_id}",
+        daemon=True,
+    )
+    thread.start()
+    return {"started": True, "error": None}
+
+
+def _run_manual_oauth_playwright_worker(
+    account_id: int,
+    auth_url: str,
+    redirect_uri: str,
+    proxy: Optional[str] = None,
+    headless: bool = False,
+) -> None:
+    account: Optional[Account] = None
+    email_service = None
+    try:
+        with get_db() as db:
+            account = crud.get_account_by_id(db, account_id)
+            if not account:
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_status="failed",
+                    browser_error="Account not found",
+                )
+                return
+            if not str(account.email or "").strip() or not str(account.password or "").strip():
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_status="failed",
+                    browser_error="Account is missing email or password",
+                )
+                return
+            email_service = _resolve_email_service_for_oauth_backfill(db, account, proxy)
+    except Exception as exc:
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="failed",
+            browser_error=f"unable to prepare email service: {exc}",
+        )
+        return
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="failed",
+            browser_error=f"playwright not installed: {exc}",
+        )
+        return
+
+    try:
+        launch_kwargs: Dict[str, Any] = {"headless": bool(headless)}
+        proxy_server = str(proxy or "").strip()
+        if proxy_server:
+            launch_kwargs["proxy"] = {"server": proxy_server, "bypass": "localhost,127.0.0.1"}
+        chrome_binary = str(_find_chrome_binary() or "").strip()
+        if chrome_binary:
+            launch_kwargs["executable_path"] = chrome_binary
+        launch_kwargs["args"] = [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-networking",
+        ]
+
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="launching",
+            browser_error=None,
+            browser_started_at=datetime.now(timezone.utc),
+            browser_binary=chrome_binary or None,
+            browser_current_url="",
+        )
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(**launch_kwargs)
+            try:
+                context = browser.new_context(
+                    viewport={"width": 1366, "height": 900},
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/122.0.0.0 Safari/537.36"
+                    ),
+                )
+                page = context.new_page()
+                page.set_default_timeout(60000)
+                page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_status="running",
+                    browser_error=None,
+                    browser_current_url=str(page.url or ""),
+                )
+
+                deadline = time.time() + _MANUAL_OAUTH_SESSION_TTL_SECONDS
+                otp_state: Dict[str, Any] = {"sent_at": None, "attempted_codes": set()}
+                while time.time() < deadline:
+                    session_data = _get_manual_oauth_session(account_id)
+                    if not session_data:
+                        break
+
+                    status = str(session_data.get("status") or "pending")
+                    if status in {"completed", "failed"}:
+                        break
+
+                    if page.is_closed():
+                        _update_manual_oauth_session(
+                            account_id,
+                            browser_status="closed_by_user",
+                            browser_current_url="",
+                        )
+                        return
+
+                    try:
+                        current_url = str(page.url or "")
+                        if current_url:
+                            last_action = _manual_oauth_drive_playwright_page(
+                                page,
+                                account,
+                                email_service,
+                                otp_state,
+                            )
+                            _update_manual_oauth_session(
+                                account_id,
+                                browser_status=str(last_action or "running"),
+                                browser_current_url=current_url,
+                            )
+                            if current_url.startswith(redirect_uri):
+                                page.wait_for_timeout(1200)
+
+                        page.wait_for_timeout(1000)
+                    except Exception as page_exc:
+                        latest_session = _get_manual_oauth_session(account_id) or {}
+                        latest_status = str(latest_session.get("status") or "pending")
+                        if latest_status == "completed":
+                            break
+                        page_exc_text = str(page_exc or "").lower()
+                        if "target page, context or browser has been closed" in page_exc_text:
+                            _update_manual_oauth_session(
+                                account_id,
+                                browser_status="closed_by_user",
+                                browser_current_url="",
+                            )
+                            return
+                        raise
+
+                final_session = _get_manual_oauth_session(account_id) or {}
+                final_status = str(final_session.get("status") or "pending")
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_status="completed" if final_status == "completed" else "closed",
+                    browser_current_url=str(page.url or ""),
+                    browser_closed_at=datetime.now(timezone.utc),
+                )
+            finally:
+                browser.close()
+    except Exception as exc:
+        logger.warning("Playwright OAuth browser worker failed: account_id=%s error=%s", account_id, exc)
+        _update_manual_oauth_session(
+            account_id,
+            browser_status="failed",
+            browser_error=str(exc),
+            browser_closed_at=datetime.now(timezone.utc),
+        )
+
+
+def _start_manual_oauth_playwright_worker(
+    account_id: int,
+    auth_url: str,
+    redirect_uri: str,
+    proxy: Optional[str] = None,
+    headless: bool = False,
+) -> Dict[str, Any]:
+    try:
+        import playwright.sync_api  # noqa: F401
+    except Exception as exc:
+        return {
+            "started": False,
+            "error": f"playwright not installed (pip install playwright && playwright install chromium): {exc}",
+        }
+
+    thread = threading.Thread(
+        target=_run_manual_oauth_playwright_worker,
+        args=(account_id, auth_url, redirect_uri),
+        kwargs={"proxy": proxy, "headless": headless},
+        name=f"manual-oauth-playwright-{account_id}",
+        daemon=True,
+    )
+    thread.start()
+    return {"started": True, "error": None}
+
+
+def _save_manual_oauth_tokens_to_account(
+    db,
+    account: Account,
+    token_info: Dict[str, Any],
+) -> Dict[str, Any]:
+    resolved_email = str(token_info.get("email") or "").strip()
+    if resolved_email and resolved_email.lower() != str(account.email or "").strip().lower():
+        raise ValueError(f"OAuth 授权账号不匹配，当前记录是 {account.email}，本次授权得到的是 {resolved_email}")
+
+    access_token = str(token_info.get("access_token") or "").strip()
+    refresh_token = str(token_info.get("refresh_token") or "").strip()
+    id_token = str(token_info.get("id_token") or "").strip()
+    account_id = str(token_info.get("account_id") or "").strip()
+    expired_at = _parse_iso_datetime(str(token_info.get("expired") or "").strip())
+
+    if not access_token:
+        raise ValueError("OAuth 回调未返回 access_token")
+    if not refresh_token:
+        raise ValueError("OAuth 回调未返回 refresh_token")
+    if not id_token:
+        raise ValueError("OAuth 回调未返回 id_token")
+
+    account.access_token = access_token
+    account.refresh_token = refresh_token
+    account.id_token = id_token
+    account.client_id = str(get_settings().openai_client_id or account.client_id or "").strip() or None
+    if account_id:
+        account.account_id = account_id
+    if expired_at:
+        account.expires_at = expired_at.astimezone(timezone.utc).replace(tzinfo=None)
+    account.last_refresh = utcnow_naive()
+
+    current_account_id = _get_current_account_id(db)
+    db.commit()
+    db.refresh(account)
+
+    snapshot_path = None
+    if current_account_id == account.id:
+        snapshot_path = _write_current_account_snapshot(account)
+
+    return {
+        "email": account.email,
+        "account_id": account.account_id,
+        "workspace_id": account.workspace_id,
+        "snapshot_file": snapshot_path,
+    }
+
+
+def _complete_manual_oauth_session(account_id: int, callback_url: str) -> Dict[str, Any]:
+    callback_url = str(callback_url or "").strip()
+    if not callback_url:
+        raise ValueError("callback_url 涓嶅彲涓虹┖")
+
+    session_data = _get_manual_oauth_session(account_id)
+    if not session_data:
+        raise ValueError("褰撳墠璐﹀彿娌℃湁鍙敤鐨?OAuth 浼氳瘽锛岄渶閲嶆柊鐐瑰嚮 Browser OAuth Repair")
+
+    with get_db() as db:
+        account = crud.get_account_by_id(db, account_id)
+        if not account:
+            raise LookupError("account_not_found")
+
+        oauth_manager = _build_oauth_manager(
+            proxy=session_data.get("proxy"),
+            redirect_uri=session_data.get("redirect_uri"),
+        )
+        token_info = oauth_manager.handle_callback(
+            callback_url=callback_url,
+            expected_state=str(session_data.get("state") or ""),
+            code_verifier=str(session_data.get("code_verifier") or ""),
+        )
+        persisted = _save_manual_oauth_tokens_to_account(db, account, token_info)
+        payload = _manual_oauth_result_payload(account, persisted)
+        _update_manual_oauth_session(
+            account_id,
+            status="completed",
+            last_error=None,
+            completed_at=datetime.now(timezone.utc),
+            result=payload,
+        )
+        return payload
+
+
+def run_desktop_oauth_backfill_and_wait(
+    account_id: int,
+    proxy: Optional[str] = None,
+    timeout_seconds: int = 300,
+    launch_browser: bool = True,
+) -> Dict[str, Any]:
+    _ensure_manual_oauth_listener()
+    oauth_manager = _build_oauth_manager(proxy=proxy)
+    oauth_start = oauth_manager.start_oauth()
+    session_data = _store_manual_oauth_session(account_id, oauth_start, proxy=proxy)
+    _update_manual_oauth_session(
+        account_id,
+        browser_mode="desktop",
+        browser_status="queued",
+        browser_error=None,
+    )
+
+    worker_result = _start_manual_oauth_desktop_worker(
+        account_id=account_id,
+        auth_url=session_data["auth_url"],
+        redirect_uri=session_data["redirect_uri"],
+        proxy=proxy,
+        headless=False,
+        launch_browser=launch_browser,
+    )
+    if not worker_result.get("started"):
+        raise RuntimeError(str(worker_result.get("error") or "desktop oauth worker failed to start"))
+
+    deadline = time.time() + max(30, int(timeout_seconds))
+    last_error = None
+    while time.time() < deadline:
+        session_snapshot = _get_manual_oauth_session(account_id)
+        if not session_snapshot:
+            raise RuntimeError("manual oauth session expired")
+
+        status = str(session_snapshot.get("status") or "").strip().lower()
+        if status == "completed":
+            return dict(session_snapshot.get("result") or {})
+        if status == "failed":
+            last_error = str(session_snapshot.get("last_error") or session_snapshot.get("browser_error") or "oauth backfill failed")
+            raise RuntimeError(last_error)
+
+        browser_error = str(session_snapshot.get("browser_error") or "").strip()
+        if browser_error:
+            last_error = browser_error
+        time.sleep(1.0)
+
+    raise TimeoutError(last_error or f"oauth backfill timed out after {int(timeout_seconds)}s")
 
 
 def _plan_to_subscription_type(plan_type: Optional[str]) -> Optional[str]:
@@ -553,6 +1992,290 @@ def _pick_first_text(*values: Any) -> Optional[str]:
     return None
 
 
+def _normalize_optional_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _jwt_b64url_encode(data: Dict[str, Any]) -> str:
+    raw = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _build_synthetic_id_token(account: Any) -> str:
+    access_claims = _decode_jwt_payload_unverified(getattr(account, "access_token", None))
+    auth_claims = _get_nested(access_claims, ["https://api.openai.com/auth"]) or {}
+    profile_claims = _get_nested(access_claims, ["https://api.openai.com/profile"]) or {}
+
+    email = _pick_first_text(
+        getattr(account, "email", None),
+        profile_claims.get("email") if isinstance(profile_claims, dict) else None,
+        access_claims.get("email"),
+    ) or f"account-{getattr(account, 'id', 'unknown')}@unknown.local"
+    account_id = _pick_first_text(
+        getattr(account, "account_id", None),
+        auth_claims.get("account_id") if isinstance(auth_claims, dict) else None,
+        auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None,
+    )
+    organization_id = _pick_first_text(
+        getattr(account, "workspace_id", None),
+        getattr(account, "organization_id", None),
+        auth_claims.get("organization_id") if isinstance(auth_claims, dict) else None,
+        auth_claims.get("chatgpt_organization_id") if isinstance(auth_claims, dict) else None,
+    )
+    user_id = _pick_first_text(
+        auth_claims.get("chatgpt_user_id") if isinstance(auth_claims, dict) else None,
+        auth_claims.get("user_id") if isinstance(auth_claims, dict) else None,
+    )
+    plan_type = _pick_first_text(
+        getattr(account, "subscription_type", None),
+        auth_claims.get("chatgpt_plan_type") if isinstance(auth_claims, dict) else None,
+    ) or "free"
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    exp_ts = access_claims.get("exp") if isinstance(access_claims.get("exp"), int) else now_ts + 86400
+    iat_ts = access_claims.get("iat") if isinstance(access_claims.get("iat"), int) else now_ts
+    sub_value = _pick_first_text(
+        access_claims.get("sub"),
+        user_id,
+        email,
+    ) or email
+
+    payload = {
+        "iss": _pick_first_text(access_claims.get("iss"), "https://auth.openai.com"),
+        "aud": access_claims.get("aud") if access_claims.get("aud") is not None else "https://api.openai.com/v1",
+        "email": email,
+        "email_verified": bool(
+            profile_claims.get("email_verified") if isinstance(profile_claims, dict) else True
+        ),
+        "iat": iat_ts,
+        "exp": exp_ts,
+        "sub": sub_value,
+        "https://api.openai.com/auth": {
+            "chatgpt_user_id": user_id,
+            "chatgpt_plan_type": plan_type,
+            "account_id": account_id,
+            "organization_id": organization_id,
+        },
+        "synthetic": True,
+        "synthetic_source": "codex-console-export",
+    }
+    header = {"alg": "none", "typ": "JWT"}
+    signature_seed = f"{email}|{account_id or ''}|{organization_id or ''}|{iat_ts}"
+    signature = hashlib.md5(signature_seed.encode("utf-8")).hexdigest()
+    return f"{_jwt_b64url_encode(header)}.{_jwt_b64url_encode(payload)}.{signature}"
+
+
+def _datetime_to_unix_timestamp(
+    value: Optional[Any], fallback: Optional[Any] = None
+) -> int:
+    candidate = value or fallback or datetime.now(timezone.utc)
+    if isinstance(candidate, (int, float)):
+        return int(candidate)
+    if isinstance(candidate, str):
+        parsed = _parse_iso_datetime(candidate)
+        if parsed is not None:
+            candidate = parsed
+        else:
+            candidate = datetime.now(timezone.utc)
+    if candidate.tzinfo is None:
+        candidate = candidate.replace(tzinfo=timezone.utc)
+    else:
+        candidate = candidate.astimezone(timezone.utc)
+    return int(candidate.timestamp())
+
+
+def _normalize_email_service_config_for_oauth_backfill(
+    service_type: EmailServiceType,
+    config: Optional[dict],
+    proxy_url: Optional[str] = None,
+) -> dict:
+    normalized = dict(config or {})
+
+    if "api_url" in normalized and "base_url" not in normalized:
+        normalized["base_url"] = normalized.pop("api_url")
+
+    if service_type in (EmailServiceType.MOE_MAIL, EmailServiceType.YYDS_MAIL, EmailServiceType.DUCK_MAIL):
+        if "domain" in normalized and "default_domain" not in normalized:
+            normalized["default_domain"] = normalized.pop("domain")
+    elif service_type in (EmailServiceType.TEMP_MAIL, EmailServiceType.FREEMAIL):
+        if "default_domain" in normalized and "domain" not in normalized:
+            normalized["domain"] = normalized.pop("default_domain")
+    elif service_type == EmailServiceType.LUCKMAIL:
+        if "domain" in normalized and "preferred_domain" not in normalized:
+            normalized["preferred_domain"] = normalized.pop("domain")
+
+    if (
+        proxy_url
+        and "proxy_url" not in normalized
+        and service_type not in (EmailServiceType.TEMP_MAIL, EmailServiceType.FREEMAIL)
+    ):
+        normalized["proxy_url"] = proxy_url
+
+    return normalized
+
+
+def _resolve_email_service_for_oauth_backfill(db, account: Account, proxy: Optional[str]):
+    raw_type = str(account.email_service or "").strip().lower()
+    if not raw_type:
+        raise RuntimeError("账号缺少 email_service")
+    try:
+        service_type = EmailServiceType(raw_type)
+    except Exception as exc:
+        raise RuntimeError(f"不支持的邮箱服务类型: {raw_type}") from exc
+
+    settings = get_settings()
+    services = (
+        db.query(EmailServiceModel)
+        .filter(EmailServiceModel.service_type == service_type.value, EmailServiceModel.enabled == True)
+        .order_by(EmailServiceModel.priority.asc(), EmailServiceModel.id.asc())
+        .all()
+    )
+
+    selected = None
+    if services:
+        if service_type in (EmailServiceType.OUTLOOK, EmailServiceType.IMAP_MAIL):
+            email_lower = str(account.email or "").strip().lower()
+            for svc in services:
+                cfg_email = str((svc.config or {}).get("email") or "").strip().lower()
+                if cfg_email and cfg_email == email_lower:
+                    selected = svc
+                    break
+        if not selected:
+            selected = services[0]
+
+    if selected and selected.config:
+        config = _normalize_email_service_config_for_oauth_backfill(service_type, selected.config, proxy)
+    elif service_type == EmailServiceType.TEMPMAIL:
+        config = {
+            "base_url": settings.tempmail_base_url,
+            "timeout": settings.tempmail_timeout,
+            "max_retries": settings.tempmail_max_retries,
+            "proxy_url": proxy,
+        }
+    elif service_type == EmailServiceType.YYDS_MAIL:
+        api_key = settings.yyds_mail_api_key.get_secret_value() if settings.yyds_mail_api_key else ""
+        if not settings.yyds_mail_enabled or not api_key:
+            raise RuntimeError("YYDS Mail 未启用或缺少 API Key，无法补齐登录验证码")
+        config = {
+            "base_url": settings.yyds_mail_base_url,
+            "api_key": api_key,
+            "default_domain": settings.yyds_mail_default_domain,
+            "timeout": settings.yyds_mail_timeout,
+            "max_retries": settings.yyds_mail_max_retries,
+            "proxy_url": proxy,
+        }
+    else:
+        raise RuntimeError(f"未找到可用邮箱服务配置(type={service_type.value})，无法自动获取登录验证码")
+
+    return EmailServiceFactory.create(service_type, config, name=f"oauth_backfill_{service_type.value}")
+
+
+def _backfill_real_oauth_tokens_for_account(
+    db,
+    account: Account,
+    proxy: Optional[str] = None,
+) -> tuple[bool, str]:
+    if str(account.id_token or "").strip() and str(account.refresh_token or "").strip():
+        return True, "already_complete"
+
+    email = str(account.email or "").strip()
+    password = str(account.password or "").strip()
+    if not email or not password:
+        return False, "账号缺少邮箱或密码，无法重新登录补齐 OAuth tokens"
+
+    try:
+        email_service = _resolve_email_service_for_oauth_backfill(db, account, proxy)
+    except Exception as exc:
+        logger.warning(
+            "补齐 OAuth Tokens 无法创建邮箱服务: account_id=%s email=%s error=%s",
+            account.id,
+            account.email,
+            exc,
+        )
+        return False, str(exc)
+
+    engine = RegistrationEngine(
+        email_service=email_service,
+        proxy_url=proxy,
+        callback_logger=lambda msg: logger.info("OAuth Tokens 补齐: %s", msg),
+        task_uuid=None,
+    )
+    engine.email = email
+    engine.password = password
+    engine.email_info = {"service_id": account.email_service_id} if account.email_service_id else {}
+    engine._is_existing_account = True
+
+    try:
+        did, sen_token = engine._prepare_authorize_flow("补齐 OAuth Tokens")
+        if not did:
+            return False, "获取 Device ID 失败"
+
+        login_start = engine._submit_login_start(did, sen_token)
+        if not login_start.success:
+            return False, login_start.error_message or "提交登录入口失败"
+
+        if login_start.page_type == OPENAI_PAGE_TYPES["LOGIN_PASSWORD"]:
+            password_result = engine._submit_login_password()
+            if not password_result.success or not password_result.is_existing_account:
+                return False, password_result.error_message or "提交密码后未进入登录验证码页"
+        elif login_start.page_type != OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]:
+            return False, f"未进入登录验证码页: {login_start.page_type or 'unknown'}"
+
+        result = RegistrationResult(
+            success=False,
+            email=email,
+            password=password,
+            access_token=str(account.access_token or "").strip(),
+            refresh_token=str(account.refresh_token or "").strip(),
+            id_token=str(account.id_token or "").strip(),
+            session_token=str(account.session_token or "").strip(),
+            account_id=str(account.account_id or "").strip(),
+            workspace_id=str(account.workspace_id or "").strip(),
+            logs=engine.logs,
+            device_id=_resolve_account_device_id(account),
+            source="login",
+        )
+        if not engine._complete_token_exchange(result, require_login_otp=True):
+            otp_continue = str(getattr(engine, "_last_validate_otp_continue_url", "") or "").strip().lower()
+            if "auth.openai.com/add-phone" in otp_continue:
+                return False, "OTP 校验后进入 add-phone 风控页，无法补齐真实 OAuth tokens"
+            return False, result.error_message or "登录后补齐 OAuth tokens 失败"
+
+        if not str(result.id_token or "").strip():
+            otp_continue = str(getattr(engine, "_last_validate_otp_continue_url", "") or "").strip().lower()
+            if "auth.openai.com/add-phone" in otp_continue:
+                return False, "OTP 校验后进入 add-phone 风控页，无法补齐真实 OAuth tokens"
+            return False, "未获取到真实 id_token"
+        if not str(result.refresh_token or "").strip():
+            return False, "未获取到真实 refresh_token"
+
+        account.access_token = str(result.access_token or account.access_token or "").strip() or None
+        account.refresh_token = str(result.refresh_token or account.refresh_token or "").strip() or None
+        account.id_token = str(result.id_token or account.id_token or "").strip() or None
+        account.session_token = str(result.session_token or account.session_token or "").strip() or None
+        account.account_id = str(result.account_id or account.account_id or "").strip() or None
+        account.workspace_id = str(result.workspace_id or account.workspace_id or "").strip() or None
+        account.client_id = str(get_settings().openai_client_id or account.client_id or "").strip() or None
+        fresh_cookies = str(engine._dump_session_cookies() or "").strip()
+        if fresh_cookies:
+            account.cookies = fresh_cookies
+        account.last_refresh = utcnow_naive()
+        db.commit()
+        db.refresh(account)
+        return True, "ok"
+    except Exception as exc:
+        logger.warning(
+            "补齐 OAuth Tokens 异常: account_id=%s email=%s error=%s",
+            account.id,
+            account.email,
+            exc,
+        )
+        db.rollback()
+        return False, str(exc)
+
+
 def _decode_jwt_payload_unverified(token: Optional[str]) -> Dict[str, Any]:
     """
     无签名校验解码 JWT payload，仅用于导入兜底字段提取。
@@ -580,6 +2303,95 @@ def _get_nested(data: Dict[str, Any], path: List[str]) -> Any:
             return None
         cur = cur.get(key)
     return cur
+
+
+def _build_cockpit_tokens(account: Any, include_account_hint: bool = False) -> Dict[str, Any]:
+    id_token = _normalize_optional_text(getattr(account, "id_token", None))
+    if id_token is None:
+        id_token = _build_synthetic_id_token(account)
+    tokens: Dict[str, Any] = {
+        "id_token": id_token,
+        "access_token": str(getattr(account, "access_token", "") or "").strip(),
+    }
+    refresh_token = _normalize_optional_text(getattr(account, "refresh_token", None))
+    if refresh_token is not None:
+        tokens["refresh_token"] = refresh_token
+    if include_account_hint:
+        account_id = _normalize_optional_text(getattr(account, "account_id", None))
+        if account_id is not None:
+            tokens["account_id"] = account_id
+    return tokens
+
+
+def _build_cockpit_account_export(account: Any) -> Dict[str, Any]:
+    access_claims = _decode_jwt_payload_unverified(getattr(account, "access_token", None))
+    id_claims = _decode_jwt_payload_unverified(getattr(account, "id_token", None))
+    auth_paths = (
+        ["https://api.openai.com/auth", "chatgpt_user_id"],
+        ["https://api.openai.com/auth", "user_id"],
+    )
+
+    def _pick_claim(*paths: List[str]) -> Optional[str]:
+        values: List[Any] = []
+        for path in paths:
+            values.append(_get_nested(id_claims, path))
+            values.append(_get_nested(access_claims, path))
+        return _pick_first_text(*values)
+
+    email = _pick_first_text(
+        getattr(account, "email", None),
+        id_claims.get("email"),
+        access_claims.get("email"),
+    ) or f"account-{getattr(account, 'id', 'unknown')}@unknown.local"
+    plan_raw = _pick_first_text(
+        getattr(account, "subscription_type", None),
+        _get_nested(id_claims, ["https://api.openai.com/auth", "chatgpt_plan_type"]),
+        _get_nested(access_claims, ["https://api.openai.com/auth", "chatgpt_plan_type"]),
+    )
+    account_id = _pick_first_text(
+        getattr(account, "account_id", None),
+        _get_nested(id_claims, ["https://api.openai.com/auth", "account_id"]),
+        _get_nested(id_claims, ["https://api.openai.com/auth", "chatgpt_account_id"]),
+        _get_nested(access_claims, ["https://api.openai.com/auth", "account_id"]),
+        _get_nested(access_claims, ["https://api.openai.com/auth", "chatgpt_account_id"]),
+    )
+    organization_id = _pick_first_text(
+        getattr(account, "workspace_id", None),
+        getattr(account, "organization_id", None),
+        _get_nested(id_claims, ["https://api.openai.com/auth", "organization_id"]),
+        _get_nested(access_claims, ["https://api.openai.com/auth", "organization_id"]),
+    )
+    created_at = getattr(account, "created_at", None) or getattr(account, "registered_at", None)
+    last_used = (
+        getattr(account, "last_used_at", None)
+        or getattr(account, "last_refresh", None)
+        or getattr(account, "updated_at", None)
+        or created_at
+    )
+    extra_data = getattr(account, "extra_data", None)
+    tags = extra_data.get("tags") if isinstance(extra_data, dict) else None
+    cockpit_id = account_id or organization_id or f"codex-console-{getattr(account, 'id', 'unknown')}"
+    tokens = _build_cockpit_tokens(account)
+    payload: Dict[str, Any] = {
+        "id": cockpit_id,
+        "email": email,
+        "auth_mode": "oauth",
+        "user_id": _pick_claim(*auth_paths),
+        "plan_type": _normalize_plan_type(plan_raw) if plan_raw else None,
+        "account_id": account_id,
+        "organization_id": organization_id,
+        "tokens": tokens,
+        "tags": tags if isinstance(tags, list) else None,
+        "created_at": _datetime_to_unix_timestamp(created_at),
+        "last_used": _datetime_to_unix_timestamp(last_used, fallback=created_at),
+        # Flat token mirrors make the export consumable by tools that only read top-level fields.
+        "id_token": tokens["id_token"],
+        "access_token": tokens["access_token"],
+    }
+    refresh_token = tokens.get("refresh_token")
+    if refresh_token is not None:
+        payload["refresh_token"] = refresh_token
+    return payload
 
 
 def _get_account_overview_data(
@@ -1424,6 +3236,316 @@ async def get_account_tokens(account_id: int):
         }
 
 
+@router.post("/{account_id}/oauth/manual/start")
+async def start_manual_oauth_for_account(account_id: int, request: ManualOAuthStartRequest, http_request: Request):
+    """为指定账号启动浏览器手动 OAuth 授权流程"""
+    with get_db() as db:
+        account = crud.get_account_by_id(db, account_id)
+        if not account:
+            raise HTTPException(status_code=404, detail="璐﹀彿涓嶅瓨鍦?")
+
+        proxy = _get_proxy(request.proxy)
+        try:
+            _ensure_manual_oauth_listener()
+            oauth_manager = _build_oauth_manager(proxy=proxy)
+            oauth_start = oauth_manager.start_oauth()
+            session_data = _store_manual_oauth_session(account_id, oauth_start, proxy=proxy)
+            browser_worker_result = {"started": False, "error": None}
+            browser_mode = "external"
+            if bool(request.use_desktop_automation):
+                browser_mode = "desktop"
+                _update_manual_oauth_session(account_id, browser_mode=browser_mode, browser_status="queued")
+                browser_worker_result = _start_manual_oauth_desktop_worker(
+                    account_id=account_id,
+                    auth_url=session_data["auth_url"],
+                    redirect_uri=session_data["redirect_uri"],
+                    proxy=proxy,
+                    headless=bool(request.headless),
+                    launch_browser=not bool(request.use_current_browser_window),
+                )
+                if not browser_worker_result.get("started"):
+                    browser_mode = "external"
+                    _update_manual_oauth_session(
+                        account_id,
+                        browser_mode="external",
+                        browser_status="failed",
+                        browser_error=browser_worker_result.get("error"),
+                    )
+            elif bool(request.use_edge_attach):
+                browser_mode = "edge_cdp"
+                _update_manual_oauth_session(account_id, browser_mode=browser_mode, browser_status="queued")
+                browser_worker_result = _start_manual_oauth_edge_attach_worker(
+                    account_id=account_id,
+                    auth_url=session_data["auth_url"],
+                    redirect_uri=session_data["redirect_uri"],
+                    proxy=proxy,
+                    headless=bool(request.headless),
+                )
+                if not browser_worker_result.get("started"):
+                    browser_mode = "external"
+                    _update_manual_oauth_session(
+                        account_id,
+                        browser_mode="external",
+                        browser_status="failed",
+                        browser_error=browser_worker_result.get("error"),
+                    )
+            elif bool(request.use_playwright):
+                browser_mode = "playwright"
+                _update_manual_oauth_session(account_id, browser_mode=browser_mode, browser_status="queued")
+                browser_worker_result = _start_manual_oauth_playwright_worker(
+                    account_id=account_id,
+                    auth_url=session_data["auth_url"],
+                    redirect_uri=session_data["redirect_uri"],
+                    proxy=proxy,
+                    headless=bool(request.headless),
+                )
+                if not browser_worker_result.get("started"):
+                    browser_mode = "external"
+                    _update_manual_oauth_session(
+                        account_id,
+                        browser_mode="external",
+                        browser_status="failed",
+                        browser_error=browser_worker_result.get("error"),
+                    )
+            else:
+                _update_manual_oauth_session(
+                    account_id,
+                    browser_mode="external",
+                    browser_status="awaiting_browser",
+                    browser_error=None,
+                )
+            expires_at = session_data["created_at"] + timedelta(seconds=_MANUAL_OAUTH_SESSION_TTL_SECONDS)
+            return {
+                "success": True,
+                "account_id": account.id,
+                "email": account.email,
+                "auth_url": session_data["auth_url"],
+                "redirect_uri": session_data["redirect_uri"],
+                "expires_at": expires_at.isoformat(),
+                "use_desktop_automation": bool(request.use_desktop_automation),
+                "use_current_browser_window": bool(request.use_current_browser_window),
+                "use_edge_attach": bool(request.use_edge_attach),
+                "playwright_requested": bool(request.use_playwright),
+                "browser_mode": browser_mode,
+                "browser_worker_started": bool(browser_worker_result.get("started")),
+                "browser_worker_error": browser_worker_result.get("error"),
+                "playwright_started": bool(browser_worker_result.get("started")) if browser_mode in {"playwright", "edge_cdp"} else False,
+                "playwright_error": browser_worker_result.get("error"),
+            }
+        except Exception as exc:
+            logger.warning(
+                "启动手动 OAuth 失败: account_id=%s email=%s error=%s",
+                account.id,
+                account.email,
+                exc,
+            )
+            raise HTTPException(status_code=500, detail=f"启动手动 OAuth 失败: {exc}")
+
+
+@router.get("/{account_id}/oauth/manual/status")
+async def get_manual_oauth_status(account_id: int):
+    """鏌ヨ鎵嬪姩 OAuth 浼氳瘽鐘舵€?"""
+    session_data = _get_manual_oauth_session(account_id)
+    if not session_data:
+        return {
+            "success": False,
+            "status": "missing",
+            "last_error": "OAuth session not found or expired",
+            "result": None,
+        }
+
+    created_at = session_data.get("created_at")
+    completed_at = session_data.get("completed_at")
+    browser_started_at = session_data.get("browser_started_at")
+    browser_closed_at = session_data.get("browser_closed_at")
+    return {
+        "success": True,
+        "status": str(session_data.get("status") or "pending"),
+        "last_error": session_data.get("last_error"),
+        "result": session_data.get("result"),
+        "redirect_uri": session_data.get("redirect_uri"),
+        "browser_mode": session_data.get("browser_mode"),
+        "browser_status": session_data.get("browser_status"),
+        "browser_error": session_data.get("browser_error"),
+        "browser_current_url": session_data.get("browser_current_url"),
+        "browser_binary": session_data.get("browser_binary"),
+        "created_at": created_at.isoformat() if isinstance(created_at, datetime) else None,
+        "completed_at": completed_at.isoformat() if isinstance(completed_at, datetime) else None,
+        "browser_started_at": browser_started_at.isoformat() if isinstance(browser_started_at, datetime) else None,
+        "browser_closed_at": browser_closed_at.isoformat() if isinstance(browser_closed_at, datetime) else None,
+    }
+
+
+@router.get("/{account_id}/oauth/manual/callback", response_class=HTMLResponse, name="manual_oauth_callback_landing")
+async def manual_oauth_callback_landing(account_id: int, http_request: Request):
+    """娴忚鍣ㄦ巿鏉冨悗鐨勮嚜鍔ㄥ洖璋冮〉"""
+    callback_url = str(http_request.url)
+    try:
+        payload = _complete_manual_oauth_session(account_id, callback_url)
+        title = "OAuth Completed"
+        status_line = "OAuth tokens saved. You can return to the console."
+        detail = f"Account: {payload.get('email') or ''}"
+        status_value = "completed"
+    except LookupError:
+        _update_manual_oauth_session(
+            account_id,
+            status="failed",
+            last_error="Account not found",
+            completed_at=datetime.now(timezone.utc),
+        )
+        title = "OAuth Failed"
+        status_line = "The target account no longer exists."
+        detail = "Return to the console and restart Browser OAuth Repair."
+        status_value = "failed"
+    except Exception as exc:
+        _update_manual_oauth_session(
+            account_id,
+            status="failed",
+            last_error=str(exc),
+            completed_at=datetime.now(timezone.utc),
+        )
+        title = "OAuth Failed"
+        status_line = "Automatic callback processing failed."
+        detail = str(exc)
+        status_value = "failed"
+
+    safe_title = html.escape(title)
+    safe_status = html.escape(status_line)
+    safe_detail = html.escape(detail)
+    badge_bg = "#e8f7ee" if status_value == "completed" else "#fff1f0"
+    badge_fg = "#0f7b3b" if status_value == "completed" else "#c0392b"
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f7fb; color: #172033; margin: 0; }}
+    .wrap {{ max-width: 560px; margin: 10vh auto; background: white; border-radius: 16px; padding: 24px; box-shadow: 0 18px 50px rgba(18, 38, 63, 0.12); }}
+    .badge {{ display: inline-block; padding: 6px 10px; border-radius: 999px; background: {badge_bg}; color: {badge_fg}; font-size: 12px; font-weight: 600; }}
+    h1 {{ font-size: 24px; margin: 14px 0 10px; }}
+    p {{ line-height: 1.6; margin: 8px 0; word-break: break-word; }}
+    button {{ margin-top: 16px; padding: 10px 16px; border: 0; border-radius: 10px; background: #1663ff; color: white; cursor: pointer; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <span class="badge">{html.escape(status_value.upper())}</span>
+    <h1>{safe_title}</h1>
+    <p>{safe_status}</p>
+    <p>{safe_detail}</p>
+    <button type="button" onclick="window.close()">Close Window</button>
+  </div>
+  <script>
+    try {{
+      if (window.opener && !window.opener.closed) {{
+        window.opener.postMessage({{ type: 'codex-manual-oauth', accountId: {account_id}, status: '{status_value}' }}, window.location.origin);
+      }}
+    }} catch (e) {{}}
+    if ('{status_value}' === 'completed') {{
+      setTimeout(() => {{
+        try {{
+          window.close();
+        }} catch (e) {{}}
+      }}, 900);
+    }}
+  </script>
+</body>
+</html>"""
+    )
+
+
+@router.post("/{account_id}/oauth/manual/complete")
+async def complete_manual_oauth_for_account(account_id: int, request: ManualOAuthCallbackRequest):
+    """提交浏览器 OAuth 回调地址，并将真实 OAuth tokens 回填到账号"""
+    callback_url = str(request.callback_url or "").strip()
+    if not callback_url:
+        raise HTTPException(status_code=400, detail="callback_url 不可为空")
+    try:
+        payload = _complete_manual_oauth_session(account_id, callback_url)
+        return {
+            "success": True,
+            "message": "真实 OAuth tokens 已回填到账号",
+            **payload,
+        }
+    except LookupError:
+        _update_manual_oauth_session(
+            account_id,
+            status="failed",
+            last_error="Account not found",
+            completed_at=datetime.now(timezone.utc),
+        )
+        raise HTTPException(status_code=404, detail="账号不存在")
+    except ValueError as exc:
+        _update_manual_oauth_session(
+            account_id,
+            status="failed",
+            last_error=str(exc),
+            completed_at=datetime.now(timezone.utc),
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        _update_manual_oauth_session(
+            account_id,
+            status="failed",
+            last_error=str(exc),
+            completed_at=datetime.now(timezone.utc),
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        _update_manual_oauth_session(
+            account_id,
+            status="failed",
+            last_error=str(exc),
+            completed_at=datetime.now(timezone.utc),
+        )
+        logger.warning("提交手动 OAuth 回调失败: account_id=%s error=%s", account_id, exc)
+        raise HTTPException(status_code=500, detail=f"提交 OAuth 回调失败: {exc}")
+
+    session_data = _get_manual_oauth_session(account_id)
+    if not session_data:
+        raise HTTPException(status_code=400, detail="当前账号没有可用的 OAuth 会话，需重新点击“浏览器 OAuth 补齐”")
+
+    with get_db() as db:
+        account = crud.get_account_by_id(db, account_id)
+        if not account:
+            raise HTTPException(status_code=404, detail="璐﹀彿涓嶅瓨鍦?")
+
+        try:
+            oauth_manager = _build_oauth_manager(proxy=session_data.get("proxy"))
+            token_info = oauth_manager.handle_callback(
+                callback_url=callback_url,
+                expected_state=str(session_data.get("state") or ""),
+                code_verifier=str(session_data.get("code_verifier") or ""),
+            )
+            persisted = _save_manual_oauth_tokens_to_account(db, account, token_info)
+            _clear_manual_oauth_session(account_id)
+            return {
+                "success": True,
+                "message": "真实 OAuth tokens 已回填到账号",
+                "account": persisted,
+                "has_refresh_token": bool(account.refresh_token),
+                "has_id_token": bool(account.id_token),
+            }
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            db.rollback()
+            logger.warning(
+                "提交手动 OAuth 回调失败: account_id=%s email=%s error=%s",
+                account.id,
+                account.email,
+                exc,
+            )
+            raise HTTPException(status_code=500, detail=f"提交 OAuth 回调失败: {exc}")
+
+
 @router.patch("/{account_id}", response_model=AccountResponse)
 async def update_account(account_id: int, request: AccountUpdateRequest):
     """更新账号状态"""
@@ -1538,6 +3660,16 @@ class BatchExportRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+
+
+class ManualOAuthStartRequest(BaseModel):
+    """手动浏览器 OAuth 启动请求"""
+    proxy: Optional[str] = None
+
+
+class ManualOAuthCallbackRequest(BaseModel):
+    """手动浏览器 OAuth 回调提交请求"""
+    callback_url: str
 
 
 @router.post("/export/json")
@@ -1736,6 +3868,65 @@ async def export_accounts_codex(request: BatchExportRequest):
             iter([content]),
             media_type="application/x-ndjson",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+
+@router.post("/export/cockpit")
+async def export_accounts_cockpit(request: BatchExportRequest):
+    """导出账号为 Cockpit Tools 兼容 JSON 数组。"""
+    with get_db() as db:
+        ids = resolve_account_ids(
+            db, request.ids, request.select_all,
+            request.status_filter, request.email_service_filter, request.search_filter
+        )
+        accounts = db.query(Account).filter(Account.id.in_(ids)).all()
+        unresolved: List[str] = []
+        exportable_accounts: List[Account] = []
+        runtime_proxy = _get_proxy()
+
+        for acc in accounts:
+            has_real_id = bool(str(acc.id_token or "").strip())
+            has_refresh = bool(str(acc.refresh_token or "").strip())
+            if has_real_id and has_refresh:
+                exportable_accounts.append(acc)
+                continue
+
+            ok, message = _backfill_real_oauth_tokens_for_account(db, acc, proxy=runtime_proxy)
+            if not ok:
+                unresolved.append(f"{acc.email}: {message}")
+                continue
+            exportable_accounts.append(acc)
+
+        if not exportable_accounts:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "以下账号仍缺少可用于 Cockpit/官方 Codex 登录的真实 OAuth tokens，请先补齐后再导出: "
+                    + " | ".join(unresolved)
+                ),
+            )
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_data = [_build_cockpit_account_export(acc) for acc in exportable_accounts]
+        content = json.dumps(export_data, ensure_ascii=False, indent=2)
+
+        if len(exportable_accounts) == 1:
+            filename = f"{exportable_accounts[0].email}_cockpit.json"
+        else:
+            filename = f"cockpit_codex_accounts_{timestamp}.json"
+
+        headers = {"Content-Disposition": f"attachment; filename={filename}"}
+        if unresolved:
+            warning_prefix = f"已跳过 {len(unresolved)} 个账号，仅导出 {len(exportable_accounts)} 个可用账号: "
+            warning_body = " | ".join(unresolved[:5])
+            if len(unresolved) > 5:
+                warning_body += f" | 还有 {len(unresolved) - 5} 个账号未导出"
+            headers["X-Export-Warning"] = warning_prefix + warning_body
+
+        return StreamingResponse(
+            iter([content]),
+            media_type="application/json",
+            headers=headers
         )
 
 

@@ -7,12 +7,13 @@ import re
 import time
 import json
 import logging
-from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any, List, Tuple
 from urllib.parse import urljoin
 
 from .base import BaseEmailService, EmailServiceError, EmailServiceType
 from ..core.http_client import HTTPClient, RequestConfig
-from ..config.constants import OTP_CODE_PATTERN
+from ..config.constants import OTP_CODE_PATTERN, OTP_CODE_SEMANTIC_PATTERN
 
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ class MeoMailEmailService(BaseEmailService):
 
         # 状态变量
         self._emails_cache: Dict[str, Dict[str, Any]] = {}
+        self._last_used_message_ids: Dict[str, str] = {}
         self._last_config_check: float = 0
         self._cached_config: Optional[Dict[str, Any]] = None
 
@@ -255,6 +257,69 @@ class MeoMailEmailService(BaseEmailService):
                 raise
             raise EmailServiceError(f"创建邮箱失败: {e}")
 
+    def _parse_message_timestamp(self, message: Dict[str, Any]) -> Optional[float]:
+        """灏嗛偖浠朵腑甯歌鐨勬椂闂存埑瀛楁瑙ｆ瀽涓?Unix 鏃堕棿鎴炽€?"""
+        candidate_keys = (
+            "created_at",
+            "createdAt",
+            "received_at",
+            "receivedAt",
+            "updated_at",
+            "updatedAt",
+            "date",
+            "sent_at",
+            "sentAt",
+        )
+        for key in candidate_keys:
+            value = message.get(key)
+            if value in (None, ""):
+                continue
+
+            if isinstance(value, (int, float)):
+                ts = float(value)
+                if ts > 1e12:
+                    ts /= 1000.0
+                return ts
+
+            text = str(value).strip()
+            if not text:
+                continue
+
+            try:
+                numeric = float(text)
+                if numeric > 1e12:
+                    numeric /= 1000.0
+                return numeric
+            except Exception:
+                pass
+
+            normalized = text.replace("Z", "+00:00")
+            try:
+                dt = datetime.fromisoformat(normalized)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.timestamp()
+            except Exception:
+                continue
+
+        return None
+
+    def _extract_otp_code(self, content: str, pattern: str) -> Tuple[Optional[str], bool]:
+        """浼樺厛鎸夎涔夋彁鍙?OTP锛屽啀鍥為€€鍒版櫘閫?6 浣嶆暟瀛楀尮閰嶃€?"""
+        text = str(content or "")
+        if not text:
+            return None, False
+
+        semantic_match = re.search(OTP_CODE_SEMANTIC_PATTERN, text, re.IGNORECASE)
+        if semantic_match:
+            return semantic_match.group(1), True
+
+        simple_match = re.search(pattern, text)
+        if simple_match:
+            return simple_match.group(1), False
+
+        return None, False
+
     def get_verification_code(
         self,
         email: str,
@@ -342,6 +407,144 @@ class MeoMailEmailService(BaseEmailService):
             time.sleep(3)
 
         logger.warning(f"等待验证码超时: {email}")
+        return None
+
+    def get_verification_code(
+        self,
+        email: str,
+        email_id: str = None,
+        timeout: int = 120,
+        pattern: str = OTP_CODE_PATTERN,
+        otp_sent_at: Optional[float] = None,
+    ) -> Optional[str]:
+        """
+        浠庤嚜瀹氫箟鍩熷悕閭鑾峰彇楠岃瘉鐮?
+
+        Args:
+            email: 閭鍦板潃
+            email_id: 閭 ID锛堝鏋滀笉鎻愪緵锛屼粠缂撳瓨涓煡鎵撅級
+            timeout: 瓒呮椂鏃堕棿锛堢锛?
+            pattern: 楠岃瘉鐮佹鍒欒〃杈惧紡
+            otp_sent_at: OTP 鍙戦€佹椂闂存埑锛岀敤浜庤繃婊ゆ棫閭欢
+
+        Returns:
+            楠岃瘉鐮佸瓧绗︿覆锛屽鏋滆秴鏃舵垨鏈壘鍒拌繑鍥?None
+        """
+        target_email_id = email_id
+        if not target_email_id:
+            for eid, info in self._emails_cache.items():
+                if info.get("email") == email:
+                    target_email_id = eid
+                    break
+
+        if not target_email_id:
+            logger.warning(f"鏈壘鍒伴偖绠?{email} 鐨?ID锛屾棤娉曡幏鍙栭獙璇佺爜")
+            return None
+
+        logger.info(f"姝ｅ湪浠庤嚜瀹氫箟鍩熷悕閭 {email} 鑾峰彇楠岃瘉鐮?..")
+
+        start_time = time.time()
+        seen_message_ids = set()
+        last_used_message_id = self._last_used_message_ids.get(email)
+        unknown_ts_grace_seconds = 15
+
+        while time.time() - start_time < timeout:
+            try:
+                response = self._make_request("GET", f"/api/emails/{target_email_id}")
+                messages = response.get("messages", [])
+                if not isinstance(messages, list):
+                    time.sleep(3)
+                    continue
+
+                candidates: List[Dict[str, Any]] = []
+                unknown_ts_candidates: List[Dict[str, Any]] = []
+
+                for message in messages:
+                    message_id = str(message.get("id") or "").strip()
+                    if not message_id or message_id in seen_message_ids:
+                        continue
+                    if last_used_message_id and message_id == last_used_message_id:
+                        continue
+
+                    seen_message_ids.add(message_id)
+
+                    sender = str(
+                        message.get("from_address")
+                        or message.get("fromAddress")
+                        or message.get("from")
+                        or ""
+                    ).lower()
+                    subject = str(message.get("subject", ""))
+                    message_ts = self._parse_message_timestamp(message)
+
+                    if otp_sent_at and message_ts is not None and message_ts + 2 < otp_sent_at:
+                        continue
+
+                    message_content = self._get_message_content(target_email_id, message_id)
+                    if not message_content:
+                        continue
+
+                    content = f"{sender}\n{subject}\n{message_content}"
+                    content_lower = content.lower()
+                    if "openai" not in sender and "openai" not in content_lower:
+                        continue
+
+                    email_pattern = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+                    sanitized = re.sub(email_pattern, "", content)
+                    code, semantic_hit = self._extract_otp_code(sanitized, pattern)
+                    if not code:
+                        continue
+
+                    candidate = {
+                        "message_id": message_id,
+                        "code": code,
+                        "message_ts": message_ts,
+                        "semantic_hit": bool(semantic_hit),
+                        "is_recent": bool(
+                            otp_sent_at and (message_ts is not None) and (message_ts + 2 >= otp_sent_at)
+                        ),
+                    }
+                    if otp_sent_at and message_ts is None:
+                        unknown_ts_candidates.append(candidate)
+                    else:
+                        candidates.append(candidate)
+
+                elapsed = time.time() - start_time
+                if otp_sent_at and (not candidates) and unknown_ts_candidates and elapsed < unknown_ts_grace_seconds:
+                    time.sleep(3)
+                    continue
+
+                all_candidates = candidates + unknown_ts_candidates
+                if all_candidates:
+                    best = sorted(
+                        all_candidates,
+                        key=lambda item: (
+                            1 if item.get("is_recent") else 0,
+                            1 if item.get("message_ts") is not None else 0,
+                            float(item.get("message_ts") or 0.0),
+                            1 if item.get("semantic_hit") else 0,
+                        ),
+                        reverse=True,
+                    )[0]
+                    code = str(best["code"])
+                    self._last_used_message_ids[email] = str(best["message_id"])
+                    logger.info(
+                        "浠庤嚜瀹氫箟鍩熷悕閭 %s 鎵惧埌楠岃瘉鐮? %s (message_id=%s ts=%s semantic=%s)",
+                        email,
+                        code,
+                        best["message_id"],
+                        best.get("message_ts"),
+                        best.get("semantic_hit"),
+                    )
+                    self.update_status(True)
+                    return code
+
+            except Exception as e:
+                logger.debug(f"妫€鏌ラ偖浠舵椂鍑洪敊: {e}")
+
+            time.sleep(3)
+
+        logger.warning(f"绛夊緟楠岃瘉鐮佽秴鏃? {email}")
         return None
 
     def _get_message_content(self, email_id: str, message_id: str) -> Optional[str]:

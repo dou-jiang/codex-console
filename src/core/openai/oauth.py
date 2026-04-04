@@ -190,7 +190,9 @@ def generate_oauth_url(
     *,
     redirect_uri: str = OAUTH_REDIRECT_URI,
     scope: str = OAUTH_SCOPE,
-    client_id: str = OAUTH_CLIENT_ID
+    client_id: str = OAUTH_CLIENT_ID,
+    originator: Optional[str] = "codex_vscode",
+    prompt: Optional[str] = None,
 ) -> OAuthStart:
     """
     生成 OAuth 授权 URL
@@ -215,10 +217,13 @@ def generate_oauth_url(
         "state": state,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "prompt": "login",
         "id_token_add_organizations": "true",
         "codex_cli_simplified_flow": "true",
     }
+    if originator:
+        params["originator"] = str(originator).strip()
+    if prompt:
+        params["prompt"] = str(prompt).strip()
     auth_url = f"{OAUTH_AUTH_URL}?{urllib.parse.urlencode(params)}"
     return OAuthStart(
         auth_url=auth_url,
@@ -321,7 +326,9 @@ class OAuthManager:
         token_url: str = OAUTH_TOKEN_URL,
         redirect_uri: str = OAUTH_REDIRECT_URI,
         scope: str = OAUTH_SCOPE,
-        proxy_url: Optional[str] = None
+        proxy_url: Optional[str] = None,
+        originator: Optional[str] = "codex_vscode",
+        prompt: Optional[str] = None,
     ):
         self.client_id = client_id
         self.auth_url = auth_url
@@ -329,13 +336,17 @@ class OAuthManager:
         self.redirect_uri = redirect_uri
         self.scope = scope
         self.proxy_url = proxy_url
+        self.originator = originator
+        self.prompt = prompt
 
     def start_oauth(self) -> OAuthStart:
         """开始 OAuth 流程"""
         return generate_oauth_url(
             redirect_uri=self.redirect_uri,
             scope=self.scope,
-            client_id=self.client_id
+            client_id=self.client_id,
+            originator=self.originator,
+            prompt=self.prompt,
         )
 
     def handle_callback(

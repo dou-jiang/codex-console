@@ -358,10 +358,29 @@ class ApiClient {
                     }
 
                     const response = await fetch(url, { ...finalOptions, signal: controller.signal });
-                    const data = await response.json().catch(() => ({}));
+                    const responseText = await response.text();
+                    let data = {};
+                    if (responseText) {
+                        try {
+                            data = JSON.parse(responseText);
+                        } catch (_parseError) {
+                            data = {
+                                raw_text: responseText,
+                                non_json: true,
+                            };
+                        }
+                    }
 
                     if (!response.ok) {
-                        const error = new Error(data.detail || `HTTP ${response.status}`);
+                        const htmlHint = data?.non_json ? 'Non-JSON response returned by server' : '';
+                        const error = new Error(data.detail || htmlHint || `HTTP ${response.status}`);
+                        error.response = response;
+                        error.data = data;
+                        throw error;
+                    }
+
+                    if (data?.non_json) {
+                        const error = new Error('Server returned non-JSON response');
                         error.response = response;
                         error.data = data;
                         throw error;
