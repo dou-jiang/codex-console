@@ -107,6 +107,31 @@ jobs:
           git checkout --detach "refs/tags/${{ steps.resolve.outputs.upstream_tag }}"
           cp "$LIGHTWEIGHT_DOCKERFILE" "$GITHUB_WORKSPACE/Dockerfile"
 
+          python - <<'PY'
+          from pathlib import Path
+
+          file_path = Path("src/web/routes/registration.py")
+          text = file_path.read_text()
+
+          signature_old = """async def run_outlook_batch_registration(\n    batch_id: str,\n    service_ids: List[int],\n    skip_registered: bool,\n    proxy: Optional[str],\n    interval_min: int,\n    interval_max: int,\n    concurrency: int = 1,\n    mode: str = \"pipeline\",\n    auto_upload_cpa: bool = False,\n    cpa_service_ids: List[int] = None,\n    auto_upload_sub2api: bool = False,\n    sub2api_service_ids: List[int] = None,\n    auto_upload_tm: bool = False,\n    tm_service_ids: List[int] = None,\n    auto_upload_new_api: bool = False,\n    new_api_service_ids: List[int] = None,\n):"""
+          signature_new = """async def run_outlook_batch_registration(\n    batch_id: str,\n    service_ids: List[int],\n    skip_registered: bool,\n    proxy: Optional[str],\n    interval_min: int,\n    interval_max: int,\n    concurrency: int = 1,\n    mode: str = \"pipeline\",\n    auto_upload_cpa: bool = False,\n    cpa_service_ids: List[int] = None,\n    auto_upload_sub2api: bool = False,\n    sub2api_service_ids: List[int] = None,\n    auto_upload_tm: bool = False,\n    tm_service_ids: List[int] = None,\n    auto_upload_new_api: bool = False,\n    new_api_service_ids: List[int] = None,\n    registration_type: str = RoleTag.CHILD.value,\n):"""
+          call_old = """        auto_upload_tm=auto_upload_tm,\n        tm_service_ids=tm_service_ids,\n        auto_upload_new_api=auto_upload_new_api,\n        new_api_service_ids=new_api_service_ids,\n    )"""
+          call_new = """        auto_upload_tm=auto_upload_tm,\n        tm_service_ids=tm_service_ids,\n        auto_upload_new_api=auto_upload_new_api,\n        new_api_service_ids=new_api_service_ids,\n        registration_type=registration_type,\n    )"""
+
+          if "request.registration_type" in text:
+              if "registration_type: str = RoleTag.CHILD.value" not in text:
+                  if signature_old not in text:
+                      raise SystemExit("Outlook batch signature patch target not found")
+                  text = text.replace(signature_old, signature_new, 1)
+              if "registration_type=registration_type" not in text:
+                  if call_old not in text:
+                      raise SystemExit("Outlook batch run_batch_registration patch target not found")
+                  text = text.replace(call_old, call_new, 1)
+              file_path.write_text(text)
+          PY
+
+          python -m py_compile src/web/routes/registration.py
+
           echo "build_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
