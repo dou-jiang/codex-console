@@ -394,7 +394,7 @@ class RegistrationEngine:
             return True
 
         except Exception as e:
-            self._log(f"创建邮箱失败: {e}", "error")
+            self._log(f"创建邮箱失败: {type(e).__name__}: {e}", "error")
             return False
 
     def _start_oauth(self) -> bool:

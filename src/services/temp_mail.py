@@ -590,12 +590,12 @@ class TempMailService(BaseEmailService):
             response = self.http_client.request(method, url, **kwargs)
 
             if response.status_code >= 400:
-                error_msg = f"请求失败: {response.status_code}"
+                error_msg = f"请求失败: method={method} path={path} status={response.status_code}"
                 try:
                     error_data = response.json()
-                    error_msg = f"{error_msg} - {error_data}"
+                    error_msg = f"{error_msg} detail={error_data}"
                 except Exception:
-                    error_msg = f"{error_msg} - {response.text[:200]}"
+                    error_msg = f"{error_msg} detail={response.text[:200]}"
                 self.update_status(False, EmailServiceError(error_msg))
                 raise EmailServiceError(error_msg)
 
@@ -608,7 +608,7 @@ class TempMailService(BaseEmailService):
             self.update_status(False, e)
             if isinstance(e, EmailServiceError):
                 raise
-            raise EmailServiceError(f"请求失败: {method} {path} - {e}")
+            raise EmailServiceError(f"请求失败: method={method} path={path} error={e}")
 
     def create_email(self, config: Dict[str, Any] = None) -> Dict[str, Any]:
         """

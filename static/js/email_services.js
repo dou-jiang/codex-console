@@ -25,6 +25,7 @@ const elements = {
     outlookImportBtn: document.getElementById('outlook-import-btn'),
     clearImportBtn: document.getElementById('clear-import-btn'),
     importResult: document.getElementById('import-result'),
+    probeCustomServiceBtn: document.getElementById('probe-custom-service-btn'),
 
     // Outlook 列表
     outlookTable: document.getElementById('outlook-accounts-table'),
@@ -157,6 +158,7 @@ function initEventListeners() {
     elements.closeCustomModal.addEventListener('click', () => elements.addCustomModal.classList.remove('active'));
     elements.cancelAddCustom.addEventListener('click', () => elements.addCustomModal.classList.remove('active'));
     elements.addCustomForm.addEventListener('submit', handleAddCustom);
+    elements.probeCustomServiceBtn.addEventListener('click', handleProbeCustomService);
 
     // 类型切换（添加表单）
     elements.customSubType.addEventListener('change', (e) => switchAddSubType(e.target.value));
@@ -556,6 +558,9 @@ async function handleAddCustom(e) {
             domain: formData.get('tm_domain'),
             enable_prefix: true
         };
+        if (subType === 'cloudmail') {
+            config.admin_email = formData.get('tm_admin_email');
+        }
     } else if (subType === 'duckmail') {
         serviceType = 'duck_mail';
         config = {
@@ -608,6 +613,102 @@ async function handleAddCustom(e) {
         loadStats();
     } catch (error) {
         toast.error('添加失败: ' + error.message);
+    }
+}
+
+async function handleProbeCustomService() {
+    const form = elements.addCustomForm;
+    const formData = new FormData(form);
+    const subType = formData.get('sub_type');
+
+    let serviceType, config;
+    if (subType === 'moemail') {
+        serviceType = 'moe_mail';
+        config = {
+            base_url: formData.get('api_url'),
+            api_key: formData.get('api_key'),
+            default_domain: formData.get('domain')
+        };
+    } else if (subType === 'tempmail_builtin') {
+        serviceType = 'tempmail';
+        config = {
+            base_url: formData.get('tpo_base_url'),
+            timeout: parseInt(formData.get('tpo_timeout'), 10) || 30,
+            max_retries: parseInt(formData.get('tpo_max_retries'), 10) || 3
+        };
+    } else if (subType === 'yyds_mail') {
+        serviceType = 'yyds_mail';
+        config = {
+            base_url: formData.get('yyds_base_url'),
+            api_key: formData.get('yyds_api_key'),
+            default_domain: formData.get('yyds_default_domain'),
+            timeout: parseInt(formData.get('yyds_timeout'), 10) || 30,
+            max_retries: parseInt(formData.get('yyds_max_retries'), 10) || 3
+        };
+    } else if (subType === 'tempmail' || subType === 'cloudmail') {
+        serviceType = subType === 'cloudmail' ? 'cloudmail' : 'temp_mail';
+        config = {
+            base_url: formData.get('tm_base_url'),
+            admin_password: formData.get('tm_admin_password'),
+            domain: formData.get('tm_domain'),
+            enable_prefix: true
+        };
+        if (subType === 'cloudmail') {
+            config.admin_email = formData.get('tm_admin_email');
+        }
+    } else if (subType === 'duckmail') {
+        serviceType = 'duck_mail';
+        config = {
+            base_url: formData.get('dm_base_url'),
+            api_key: formData.get('dm_api_key'),
+            default_domain: formData.get('dm_domain'),
+            password_length: parseInt(formData.get('dm_password_length'), 10) || 12
+        };
+    } else if (subType === 'luckmail') {
+        serviceType = 'luckmail';
+        config = {
+            base_url: formData.get('lm_base_url'),
+            api_key: formData.get('lm_api_key'),
+            project_code: formData.get('lm_project_code') || 'openai',
+            email_type: formData.get('lm_email_type') || 'ms_graph',
+            preferred_domain: formData.get('lm_preferred_domain')
+        };
+    } else if (subType === 'freemail') {
+        serviceType = 'freemail';
+        config = {
+            base_url: formData.get('fm_base_url'),
+            admin_token: formData.get('fm_admin_token'),
+            domain: formData.get('fm_domain')
+        };
+    } else {
+        serviceType = 'imap_mail';
+        config = {
+            host: formData.get('imap_host'),
+            port: parseInt(formData.get('imap_port'), 10) || 993,
+            use_ssl: formData.get('imap_use_ssl') !== 'false',
+            email: formData.get('imap_email'),
+            password: formData.get('imap_password')
+        };
+    }
+
+    elements.probeCustomServiceBtn.disabled = true;
+    elements.probeCustomServiceBtn.textContent = '校验中...';
+    try {
+        const result = await api.post('/email-services/probe', {
+            service_type: serviceType,
+            config
+        });
+        if (result.success) {
+            const createdEmail = result.details?.created_email;
+            toast.success(createdEmail ? `注册校验成功，测试邮箱: ${createdEmail}` : '注册校验成功');
+        } else {
+            toast.error(result.message || '注册校验失败');
+        }
+    } catch (error) {
+        toast.error('注册校验失败: ' + error.message);
+    } finally {
+        elements.probeCustomServiceBtn.disabled = false;
+        elements.probeCustomServiceBtn.textContent = '注册校验';
     }
 }
 
@@ -800,6 +901,7 @@ async function editCustomService(id, subType) {
             document.getElementById('edit-yyds-max-retries').value = service.config?.max_retries || 3;
         } else if (resolvedSubType === 'tempmail' || resolvedSubType === 'cloudmail') {
             document.getElementById('edit-tm-base-url').value = service.config?.base_url || '';
+            document.getElementById('edit-tm-admin-email').value = service.config?.admin_email || '';
             document.getElementById('edit-tm-admin-password').value = '';
             document.getElementById('edit-tm-admin-password').placeholder = service.config?.admin_password ? '已设置，留空保持不变' : '请输入 Admin 密码';
             document.getElementById('edit-tm-domain').value = service.config?.domain || '';
@@ -872,6 +974,9 @@ async function handleEditCustom(e) {
             domain: formData.get('tm_domain'),
             enable_prefix: true
         };
+        if (subType === 'cloudmail') {
+            config.admin_email = formData.get('tm_admin_email');
+        }
         const pwd = formData.get('tm_admin_password');
         if (pwd && pwd.trim()) config.admin_password = pwd.trim();
     } else if (subType === 'duckmail') {

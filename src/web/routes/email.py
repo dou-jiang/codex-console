@@ -69,6 +69,12 @@ class ServiceTestResult(BaseModel):
     details: Optional[Dict[str, Any]] = None
 
 
+class EmailServiceProbeRequest(BaseModel):
+    """服务探测请求"""
+    service_type: str
+    config: Dict[str, Any]
+
+
 class OutlookBatchImportRequest(BaseModel):
     """Outlook 批量导入请求"""
     data: str  # 多行数据，每行格式: 邮箱----密码 或 邮箱----密码----client_id----refresh_token
@@ -108,6 +114,8 @@ def normalize_email_service_config(service_type: str, config: Optional[Dict[str,
 
     if service_type == "cloudmail" and normalized.get("api_key") and not normalized.get("admin_password"):
         normalized["admin_password"] = normalized.pop("api_key")
+    if service_type == "cloudmail" and normalized.get("email") and not normalized.get("admin_email"):
+        normalized["admin_email"] = normalized.pop("email")
 
     return normalized
 
@@ -435,6 +443,54 @@ async def create_email_service(request: EmailServiceCreate):
         db.refresh(service)
 
         return service_to_response(service)
+
+
+@router.post("/probe", response_model=ServiceTestResult)
+async def probe_email_service(request: EmailServiceProbeRequest):
+    """在保存前探测邮箱服务配置是否可用，并验证能否创建邮箱。"""
+    try:
+        service_type = EmailServiceType(request.service_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"无效的服务类型: {request.service_type}")
+
+    normalized_config = normalize_email_service_config(service_type.value, request.config)
+
+    try:
+        email_service = EmailServiceFactory.create(service_type, normalized_config, name=f"probe_{service_type.value}")
+        health = email_service.check_health()
+        if not health:
+            return ServiceTestResult(success=False, message="服务健康检查失败")
+
+        created_email = None
+        create_supported_types = {
+            "moe_mail",
+            "temp_mail",
+            "cloudmail",
+            "duck_mail",
+            "luckmail",
+            "freemail",
+            "yyds_mail",
+            "tempmail",
+        }
+        if service_type.value in create_supported_types:
+            created = email_service.create_email()
+            created_email = str((created or {}).get("email") or "").strip() or None
+
+        details = {"service_type": service_type.value}
+        if created_email:
+            details["created_email"] = created_email
+
+        return ServiceTestResult(
+            success=True,
+            message="服务探测成功",
+            details=details,
+        )
+    except Exception as e:
+        logger.error(f"探测邮箱服务失败: service_type={request.service_type} error={e}")
+        return ServiceTestResult(
+            success=False,
+            message=f"探测失败: {e}",
+        )
 
 
 @router.patch("/{service_id}", response_model=EmailServiceResponse)

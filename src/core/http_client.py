@@ -5,6 +5,7 @@ HTTP 客户端封装
 
 import time
 import json
+import re
 from typing import Optional, Dict, Any, Union, Tuple
 from dataclasses import dataclass
 import logging
@@ -34,6 +35,19 @@ class RequestConfig:
 class HTTPClientError(Exception):
     """HTTP 客户端异常"""
     pass
+
+
+def _summarize_http_error_body(response: Response, limit: int = 300) -> str:
+    """压缩错误响应体，便于任务日志直接展示关键信息。"""
+    try:
+        payload = response.json()
+        text = json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        text = str(response.text or "")
+    text = re.sub(r"\s+", " ", text).strip() if 're' in globals() else " ".join(text.split())
+    if len(text) > limit:
+        text = text[:limit] + "..."
+    return text
 
 
 class HTTPClient:
@@ -117,9 +131,11 @@ class HTTPClient:
 
                 # 检查响应状态码
                 if response.status_code >= 400:
+                    body_summary = _summarize_http_error_body(response)
                     logger.warning(
                         f"HTTP {response.status_code} for {method} {url}"
                         f" (attempt {attempt + 1}/{self.config.max_retries})"
+                        f" body={body_summary}"
                     )
 
                     # 如果是服务器错误，重试
