@@ -3,6 +3,8 @@ version: '3.8'
 services:
   webui:
     build: .
+    image: codex-console-commission
+    container_name: codex-console-commission
     shm_size: "1gb"
     ports:
       - "1455:1455"
