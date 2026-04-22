@@ -1,6 +1,6 @@
 # Any Auto Register
 
-<a href="https://bestproxy.com/?keyword=l85nsbgw" target="_blank"><img src="assets/bestproxy.gif" alt="BestProxy - 高纯度住宅IP资源，支持一号一IP独享模式，全链路防关联，显著提升账号通过率与长期存活率" width="100%"></a>
+<a href="https://bestproxy.com/?keyword=l85nsbgw" target="_blank"><img src="docs/assets/bestproxy.gif" alt="BestProxy - 高纯度住宅IP资源，支持一号一IP独享模式，全链路防关联，显著提升账号通过率与长期存活率" width="100%"></a>
 
 # codex-console
 
