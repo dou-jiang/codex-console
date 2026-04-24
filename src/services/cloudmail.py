@@ -16,6 +16,7 @@ from .base import BaseEmailService, EmailServiceError, EmailServiceType
 from ..config.constants import OTP_CODE_PATTERN, OTP_CODE_SEMANTIC_PATTERN
 from ..core.http_client import HTTPClient, RequestConfig
 
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
