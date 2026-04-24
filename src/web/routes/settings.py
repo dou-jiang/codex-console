@@ -2,11 +2,15 @@
 设置 API 路由
 """
 
+import json
 import logging
 import os
-from typing import Optional
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Optional, Dict, Any, List
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel
 
 from ...config.settings import get_settings, update_settings
@@ -23,6 +27,67 @@ router = APIRouter()
 
 
 # ============== Pydantic Models ==============
+
+def _build_proxy_test_failure_message(status_code: int, response_text: str) -> str:
+    response_text = str(response_text or "").strip()
+    if response_text:
+        compact_text = " ".join(response_text.split())
+        if len(compact_text) > 160:
+            compact_text = compact_text[:157] + "..."
+        return f"代理返回错误状态码: {status_code}，响应: {compact_text}"
+    return f"代理返回错误状态码: {status_code}"
+
+
+def _roxy_request(api_host: str, token: str, method: str, path: str, payload: Optional[Dict[str, Any]] = None, timeout: int = 20) -> Dict[str, Any]:
+    base = str(api_host or "http://127.0.0.1:50000").rstrip("/")
+    url = f"{base}{path}"
+    filtered_payload = {k: v for k, v in (payload or {}).items() if v not in (None, "", [], {})}
+    headers = {
+        "Accept": "application/json",
+        "token": str(token or "").strip(),
+    }
+    data = None
+    upper_method = str(method or "GET").upper()
+    if upper_method == "GET" and filtered_payload:
+        url = f"{url}?{urllib.parse.urlencode(filtered_payload, doseq=True)}"
+    elif upper_method != "GET":
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(filtered_payload, ensure_ascii=False).encode("utf-8")
+
+    request = urllib.request.Request(url, data=data, headers=headers, method=upper_method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=502, detail=f"Roxy API {upper_method} {path} HTTP {exc.code}: {detail[:200]}") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Roxy API {upper_method} {path} connect failed: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Roxy API {upper_method} {path} failed: {exc}") from exc
+
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Roxy API {upper_method} {path} returned non-JSON") from exc
+
+    if parsed.get("code") not in (None, 0, "0"):
+        raise HTTPException(status_code=502, detail=f"Roxy API {upper_method} {path} returned code={parsed.get('code')}")
+    return parsed
+
+
+def _coerce_roxy_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    data = payload.get("data")
+    if isinstance(data, dict):
+        rows = data.get("rows")
+        if isinstance(rows, list):
+            return [item for item in rows if isinstance(item, dict)]
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    rows = payload.get("rows")
+    if isinstance(rows, list):
+        return [item for item in rows if isinstance(item, dict)]
+    return []
 
 class SettingItem(BaseModel):
     """设置项"""
@@ -76,9 +141,21 @@ class WebUISettings(BaseModel):
     access_password: Optional[str] = None
 
 
+class BrowserSettings(BaseModel):
+    """浏览器设置"""
+    provider: str = "playwright"
+    headless: bool = False
+    roxy_api_url: Optional[str] = None
+    roxy_api_key: Optional[str] = None
+    roxy_workspace_id: int = 0
+    roxy_dir_id: Optional[str] = None
+    roxy_force_open: bool = True
+
+
 class AllSettings(BaseModel):
     """所有设置"""
     proxy: ProxySettings
+    browser: BrowserSettings
     registration: RegistrationSettings
     webui: WebUISettings
 
@@ -114,6 +191,15 @@ async def get_all_settings():
             "dynamic_result_field": settings.proxy_dynamic_result_field,
             "has_dynamic_api_key": bool(settings.proxy_dynamic_api_key and settings.proxy_dynamic_api_key.get_secret_value()),
         },
+        "browser": {
+            "provider": settings.browser_provider,
+            "headless": settings.browser_headless,
+            "roxy_api_url": settings.browser_roxy_api_url,
+            "has_roxy_api_key": bool(settings.browser_roxy_api_key and settings.browser_roxy_api_key.get_secret_value()),
+            "roxy_workspace_id": settings.browser_roxy_workspace_id,
+            "roxy_dir_id": settings.browser_roxy_dir_id,
+            "roxy_force_open": settings.browser_roxy_force_open,
+        },
         "registration": {
             "max_retries": settings.registration_max_retries,
             "timeout": settings.registration_timeout,
@@ -121,6 +207,7 @@ async def get_all_settings():
             "sleep_min": settings.registration_sleep_min,
             "sleep_max": settings.registration_sleep_max,
             "entry_flow": entry_flow,
+            "anyauto_browser_mode": str(getattr(settings, "registration_anyauto_browser_mode", "protocol") or "protocol"),
             "auto_enabled": settings.registration_auto_enabled,
             "auto_check_interval": settings.registration_auto_check_interval,
             "auto_min_ready_auth_files": settings.registration_auto_min_ready_auth_files,
@@ -318,6 +405,7 @@ async def get_registration_settings():
         "sleep_min": settings.registration_sleep_min,
         "sleep_max": settings.registration_sleep_max,
         "entry_flow": entry_flow,
+        "anyauto_browser_mode": str(getattr(settings, "registration_anyauto_browser_mode", "protocol") or "protocol"),
         "auto_enabled": settings.registration_auto_enabled,
         "auto_check_interval": settings.registration_auto_check_interval,
         "auto_min_ready_auth_files": settings.registration_auto_min_ready_auth_files,
@@ -400,6 +488,7 @@ async def update_registration_settings(request: RegistrationSettings):
         registration_sleep_min=request.sleep_min,
         registration_sleep_max=request.sleep_max,
         registration_entry_flow=flow,
+        registration_anyauto_browser_mode=("headed" if not get_settings().browser_headless else "headless") if get_settings().browser_provider == "playwright" else "protocol",
         registration_auto_enabled=request.auto_enabled,
         registration_auto_check_interval=request.auto_check_interval,
         registration_auto_min_ready_auth_files=request.auto_min_ready_auth_files,
@@ -449,6 +538,81 @@ async def update_webui_settings(request: WebUISettings):
 
     update_settings(**update_dict)
     return {"success": True, "message": "Web UI 设置已更新"}
+
+
+@router.get("/browser")
+async def get_browser_settings():
+    """获取浏览器设置"""
+    settings = get_settings()
+    return {
+        "provider": settings.browser_provider,
+        "headless": settings.browser_headless,
+        "roxy_api_url": settings.browser_roxy_api_url,
+        "has_roxy_api_key": bool(settings.browser_roxy_api_key and settings.browser_roxy_api_key.get_secret_value()),
+        "roxy_workspace_id": settings.browser_roxy_workspace_id,
+        "roxy_dir_id": settings.browser_roxy_dir_id,
+        "roxy_force_open": settings.browser_roxy_force_open,
+    }
+
+
+@router.get("/browser/roxy/workspaces")
+async def list_roxy_workspaces(api_url: Optional[str] = Query(None), api_key: Optional[str] = Query(None)):
+    settings = get_settings()
+    target_api = str(api_url or settings.browser_roxy_api_url or "http://127.0.0.1:50000").strip()
+    token = str(api_key or (settings.browser_roxy_api_key.get_secret_value() if settings.browser_roxy_api_key else "") or "").strip()
+    payload = _roxy_request(target_api, token, "GET", "/browser/workspace", {"page_index": 1, "page_size": 200})
+    rows = _coerce_roxy_rows(payload)
+    items = []
+    for row in rows:
+        workspace_id = row.get("id") or row.get("workspaceId")
+        if workspace_id in (None, ""):
+            continue
+        items.append({
+            "value": int(workspace_id),
+            "label": str(row.get("workspaceName") or row.get("name") or f"项目 {workspace_id}"),
+        })
+    return {"success": True, "items": items}
+
+
+@router.get("/browser/roxy/browsers")
+async def list_roxy_browsers(workspace_id: int = Query(...), api_url: Optional[str] = Query(None), api_key: Optional[str] = Query(None)):
+    settings = get_settings()
+    target_api = str(api_url or settings.browser_roxy_api_url or "http://127.0.0.1:50000").strip()
+    token = str(api_key or (settings.browser_roxy_api_key.get_secret_value() if settings.browser_roxy_api_key else "") or "").strip()
+    payload = _roxy_request(target_api, token, "GET", "/browser/list_v3", {"workspaceId": int(workspace_id), "page_index": 1, "page_size": 200})
+    rows = _coerce_roxy_rows(payload)
+    items = []
+    for row in rows:
+        dir_id = str(row.get("dirId") or "").strip()
+        if not dir_id:
+            continue
+        items.append({
+            "value": dir_id,
+            "label": str(row.get("windowName") or row.get("dirName") or dir_id),
+        })
+    return {"success": True, "items": items}
+
+
+@router.post("/browser")
+async def update_browser_settings(request: BrowserSettings):
+    """更新浏览器设置"""
+    provider = str(request.provider or "playwright").strip().lower()
+    if provider not in {"playwright", "roxy"}:
+        raise HTTPException(status_code=400, detail="browser provider 仅支持 playwright / roxy")
+
+    update_dict = {
+        "browser_provider": provider,
+        "browser_headless": bool(request.headless),
+        "browser_roxy_api_url": str(request.roxy_api_url or "").strip() or "http://127.0.0.1:50000",
+        "browser_roxy_workspace_id": max(0, int(request.roxy_workspace_id or 0)),
+        "browser_roxy_dir_id": str(request.roxy_dir_id or "").strip(),
+        "browser_roxy_force_open": bool(request.roxy_force_open),
+    }
+    if request.roxy_api_key:
+        update_dict["browser_roxy_api_key"] = request.roxy_api_key
+
+    update_settings(**update_dict)
+    return {"success": True, "message": "浏览器设置已更新"}
 
 
 @router.get("/database")
@@ -922,7 +1086,7 @@ async def test_proxy_item(proxy_id: int):
             else:
                 return {
                     "success": False,
-                    "message": f"代理返回错误状态码: {response.status_code}"
+                    "message": _build_proxy_test_failure_message(response.status_code, response.text)
                 }
 
         except Exception as e:
@@ -976,7 +1140,7 @@ async def test_all_proxies():
                         "id": proxy.id,
                         "name": proxy.name,
                         "success": False,
-                        "message": f"状态码: {response.status_code}"
+                        "message": _build_proxy_test_failure_message(response.status_code, response.text)
                     })
 
             except Exception as e:

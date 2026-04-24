@@ -242,6 +242,7 @@
                             <option value="yyds_mail">YYDS Mail（官方渠道）</option>
                             <option value="tempmail">TempMail（自部署 Cloudflare Worker）</option>
                             <option value="cloudmail">CloudMail（自部署 Cloudflare Worker）</option>
+                            <option value="yahoo">Yahoo Mail（无头登录/创建）</option>
                             <option value="duckmail">DuckMail（DuckMail API）</option>
                             <option value="luckmail">LuckMail（接码平台）</option>
                             <option value="freemail">Freemail（自部署 Cloudflare Worker）</option>
@@ -379,6 +380,124 @@
                         <div class="form-group">
                             <label for="custom-fm-domain">邮箱域名 (可选)</label>
                             <input type="text" id="custom-fm-domain" name="fm_domain" placeholder="example.com">
+                        </div>
+                    </div>
+                    <!-- Yahoo Mail 字段 -->
+                    <div id="add-yahoo-fields" style="display:none;">
+                        <div class="form-group">
+                            <label style="font-weight: 600;">母号 Yahoo 信息</label>
+                            <small style="color: var(--text-muted); display:block;">母号用于接收 Yahoo 自身的注册验证码。推荐至少填写母号邮箱与 IMAP 授权码，便于自动完成子邮箱创建。</small>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="custom-yh-parent-email">母号 Yahoo 邮箱</label>
+                                <input type="email" id="custom-yh-parent-email" name="yh_parent_email" placeholder="parent@yahoo.com">
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-parent-password">母号登录密码（可选）</label>
+                                <input type="password" id="custom-yh-parent-password" name="yh_parent_password" placeholder="无 IMAP 时可回退浏览器登录">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="custom-yh-parent-app-password">母号 IMAP 授权码（推荐）</label>
+                            <input type="password" id="custom-yh-parent-app-password" name="yh_parent_app_password" placeholder="推荐填写，用于自动读取 Yahoo 注册验证码">
+                        </div>
+                        <div class="form-group">
+                            <label style="font-weight: 600;">固定子邮箱配置（可选）</label>
+                            <small style="color: var(--text-muted); display:block;">如果这里填写了固定子邮箱地址，则直接复用该 Yahoo 子邮箱；留空则改为“母号自动创建子邮箱”模式。</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="custom-yh-email">固定子邮箱地址（可选）</label>
+                            <input type="email" id="custom-yh-email" name="yh_email" placeholder="留空则由母号自动创建 Yahoo 子邮箱">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="custom-yh-password">固定子邮箱密码（可选）</label>
+                                <input type="password" id="custom-yh-password" name="yh_password" placeholder="填写后直接复用固定子邮箱；留空则自动生成">
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-app-password">固定子邮箱 IMAP 授权码（可选）</label>
+                                <input type="password" id="custom-yh-app-password" name="yh_app_password" placeholder="固定子邮箱已启用 App Password 时推荐填写">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="custom-yh-recovery-email">子邮箱备用恢复邮箱（可选）</label>
+                                <input type="email" id="custom-yh-recovery-email" name="yh_recovery_email" placeholder="backup@example.com">
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-phone-number">注册手机号（可选）</label>
+                                <input type="text" id="custom-yh-phone-number" name="yh_phone_number" placeholder="+1xxxxxxxxxx">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="custom-yh-first-name">名字</label>
+                                <input type="text" id="custom-yh-first-name" name="yh_first_name" placeholder="留空则自动生成拟人资料">
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-last-name">姓氏</label>
+                                <input type="text" id="custom-yh-last-name" name="yh_last_name" placeholder="留空则自动生成拟人资料">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="custom-yh-username-prefix">用户名/前缀（兼容）</label>
+                                <input type="text" id="custom-yh-username-prefix" name="yh_username_prefix" placeholder="默认 monster">
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-alias-prefix">alias 前缀</label>
+                                <input type="text" id="custom-yh-alias-prefix" name="yh_alias_prefix" placeholder="monster">
+                                <small style="color: var(--text-muted); display:block;">生成格式：monster + 随机字符 + 自增数字@yahoo.com</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-domain">邮箱域名</label>
+                                <select id="custom-yh-domain" name="yh_domain">
+                                    <option value="yahoo.com">yahoo.com</option>
+                                    <option value="ymail.com">ymail.com</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="custom-yh-alias-random-length">随机字符长度</label>
+                                <input type="number" id="custom-yh-alias-random-length" name="yh_alias_random_length" min="1" value="4">
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-alias-start-counter">自增起始值</label>
+                                <input type="number" id="custom-yh-alias-start-counter" name="yh_alias_start_counter" min="0" value="1">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="custom-yh-birth-month">出生月份</label>
+                                <input type="number" id="custom-yh-birth-month" name="yh_birth_month" min="1" max="12" placeholder="留空则自动生成">
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-birth-day">出生日期</label>
+                                <input type="number" id="custom-yh-birth-day" name="yh_birth_day" min="1" max="31" placeholder="留空则自动生成">
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-birth-year">出生年份</label>
+                                <input type="number" id="custom-yh-birth-year" name="yh_birth_year" min="1960" max="2008" placeholder="留空则自动生成">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="custom-yh-timeout">超时时间（秒）</label>
+                                <input type="number" id="custom-yh-timeout" name="yh_timeout" min="10" value="30">
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-poll-interval">轮询间隔（秒）</label>
+                                <input type="number" id="custom-yh-poll-interval" name="yh_poll_interval" min="2" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label for="custom-yh-headless">浏览器模式</label>
+                                <select id="custom-yh-headless" name="yh_headless">
+                                    <option value="true">无头浏览器</option>
+                                    <option value="false">有头浏览器</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
                     <!-- IMAP 字段 -->
@@ -589,6 +708,128 @@
                         <div class="form-group">
                             <label for="edit-fm-domain">邮箱域名 (可选)</label>
                             <input type="text" id="edit-fm-domain" name="fm_domain" placeholder="example.com">
+                        </div>
+                    </div>
+                    <!-- Yahoo Mail 字段 -->
+                    <div id="edit-yahoo-fields" style="display:none;">
+                        <div class="form-group">
+                            <label style="font-weight: 600;">母号 Yahoo 信息</label>
+                            <small style="color: var(--text-muted); display:block;">母号用于接收 Yahoo 自身的注册验证码。推荐至少填写母号邮箱与 IMAP 授权码，便于自动完成子邮箱创建。</small>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="edit-yh-parent-email">母号 Yahoo 邮箱</label>
+                                <input type="email" id="edit-yh-parent-email" name="yh_parent_email" placeholder="parent@yahoo.com">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-parent-password">母号登录密码（可选）</label>
+                                <input type="password" id="edit-yh-parent-password" name="yh_parent_password" placeholder="留空则保持不变">
+                                <small style="color: var(--text-muted);">留空则保持原值不变</small>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-yh-parent-app-password">母号 IMAP 授权码（推荐）</label>
+                            <input type="password" id="edit-yh-parent-app-password" name="yh_parent_app_password" placeholder="留空则保持不变">
+                            <small style="color: var(--text-muted);">留空则保持原值不变</small>
+                        </div>
+                        <div class="form-group">
+                            <label style="font-weight: 600;">固定子邮箱配置（可选）</label>
+                            <small style="color: var(--text-muted); display:block;">如果这里填写了固定子邮箱地址，则直接复用该 Yahoo 子邮箱；留空则改为“母号自动创建子邮箱”模式。</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-yh-email">固定子邮箱地址（可选）</label>
+                            <input type="email" id="edit-yh-email" name="yh_email" placeholder="留空则由母号自动创建 Yahoo 子邮箱">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="edit-yh-password">固定子邮箱密码（可选）</label>
+                                <input type="password" id="edit-yh-password" name="yh_password" placeholder="留空则保持不变">
+                                <small style="color: var(--text-muted);">留空则保持原值不变</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-app-password">固定子邮箱 IMAP 授权码（可选）</label>
+                                <input type="password" id="edit-yh-app-password" name="yh_app_password" placeholder="留空则保持不变">
+                                <small style="color: var(--text-muted);">留空则保持原值不变</small>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="edit-yh-recovery-email">子邮箱备用恢复邮箱（可选）</label>
+                                <input type="email" id="edit-yh-recovery-email" name="yh_recovery_email" placeholder="backup@example.com">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-phone-number">注册手机号（可选）</label>
+                                <input type="text" id="edit-yh-phone-number" name="yh_phone_number" placeholder="+1xxxxxxxxxx">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="edit-yh-first-name">名字</label>
+                                <input type="text" id="edit-yh-first-name" name="yh_first_name" placeholder="留空则自动生成拟人资料">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-last-name">姓氏</label>
+                                <input type="text" id="edit-yh-last-name" name="yh_last_name" placeholder="留空则自动生成拟人资料">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="edit-yh-username-prefix">用户名/前缀（兼容）</label>
+                                <input type="text" id="edit-yh-username-prefix" name="yh_username_prefix" placeholder="默认 monster">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-alias-prefix">alias 前缀</label>
+                                <input type="text" id="edit-yh-alias-prefix" name="yh_alias_prefix" placeholder="monster">
+                                <small style="color: var(--text-muted); display:block;">生成格式：monster + 随机字符 + 自增数字@yahoo.com</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-domain">邮箱域名</label>
+                                <select id="edit-yh-domain" name="yh_domain">
+                                    <option value="yahoo.com">yahoo.com</option>
+                                    <option value="ymail.com">ymail.com</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="edit-yh-alias-random-length">随机字符长度</label>
+                                <input type="number" id="edit-yh-alias-random-length" name="yh_alias_random_length" min="1" value="4">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-alias-start-counter">自增起始值</label>
+                                <input type="number" id="edit-yh-alias-start-counter" name="yh_alias_start_counter" min="0" value="1">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="edit-yh-birth-month">出生月份</label>
+                                <input type="number" id="edit-yh-birth-month" name="yh_birth_month" min="1" max="12" placeholder="留空则自动生成">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-birth-day">出生日期</label>
+                                <input type="number" id="edit-yh-birth-day" name="yh_birth_day" min="1" max="31" placeholder="留空则自动生成">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-birth-year">出生年份</label>
+                                <input type="number" id="edit-yh-birth-year" name="yh_birth_year" min="1960" max="2008" placeholder="留空则自动生成">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="edit-yh-timeout">超时时间（秒）</label>
+                                <input type="number" id="edit-yh-timeout" name="yh_timeout" min="10" value="30">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-poll-interval">轮询间隔（秒）</label>
+                                <input type="number" id="edit-yh-poll-interval" name="yh_poll_interval" min="2" value="5">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-yh-headless">浏览器模式</label>
+                                <select id="edit-yh-headless" name="yh_headless">
+                                    <option value="true">无头浏览器</option>
+                                    <option value="false">有头浏览器</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
                     <!-- IMAP 字段 -->

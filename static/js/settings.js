@@ -87,6 +87,8 @@ const elements = {
     emailCodeForm: document.getElementById('email-code-form'),
     // Outlook 设置
     outlookSettingsForm: document.getElementById('outlook-settings-form'),
+    // 浏览器设置
+    browserSettingsForm: document.getElementById('browser-settings-form'),
     // 系统设置（端口 + 访问控制）
     systemSettingsForm: document.getElementById('system-settings-form')
 };
@@ -289,6 +291,25 @@ function initEventListeners() {
         elements.outlookSettingsForm.addEventListener('submit', handleSaveOutlookSettings);
     }
 
+    if (elements.browserSettingsForm) {
+        elements.browserSettingsForm.addEventListener('submit', handleSaveBrowserSettings);
+    }
+    const browserProviderSelect = document.getElementById('browser-provider');
+    if (browserProviderSelect) {
+        browserProviderSelect.addEventListener('change', async () => {
+            toggleBrowserProviderFields();
+            await loadRoxyProjects();
+        });
+    }
+    const browserRoxyWorkspaceId = document.getElementById('browser-roxy-workspace-id');
+    if (browserRoxyWorkspaceId) {
+        browserRoxyWorkspaceId.addEventListener('change', loadRoxyBrowsers);
+    }
+    const browserRoxyApiUrlInput = document.getElementById('browser-roxy-api-url');
+    if (browserRoxyApiUrlInput) {
+        browserRoxyApiUrlInput.addEventListener('change', loadRoxyProjects);
+    }
+
     if (elements.systemSettingsForm) {
         elements.systemSettingsForm.addEventListener('submit', handleSaveSystemSettings);
     }
@@ -397,6 +418,8 @@ async function loadSettings() {
         const entryFlowRaw = String(data.registration?.entry_flow || 'native').toLowerCase();
         const entryFlow = entryFlowRaw === 'abcard' ? 'abcard' : 'native';
         document.getElementById('registration-entry-flow').value = entryFlow;
+        const anyautoBrowserModeInput = document.getElementById('registration-anyauto-browser-mode');
+        if (anyautoBrowserModeInput) anyautoBrowserModeInput.value = data.registration?.anyauto_browser_mode || 'protocol';
         document.getElementById('sleep-min').value = data.registration?.sleep_min || 5;
         document.getElementById('sleep-max').value = data.registration?.sleep_max || 30;
 
@@ -408,6 +431,27 @@ async function loadSettings() {
 
         // 加载 Outlook 设置
         loadOutlookSettings();
+
+        // 浏览器设置
+        const browser = data.browser || {};
+        const browserProviderInput = document.getElementById('browser-provider');
+        if (browserProviderInput) browserProviderInput.value = browser.provider || 'playwright';
+        const browserHeadlessInput = document.getElementById('browser-headless');
+        if (browserHeadlessInput) browserHeadlessInput.value = browser.headless ? 'true' : 'false';
+        const browserRoxyApiUrl = document.getElementById('browser-roxy-api-url');
+        if (browserRoxyApiUrl) browserRoxyApiUrl.value = browser.roxy_api_url || 'http://127.0.0.1:50000';
+        const browserRoxyApiKey = document.getElementById('browser-roxy-api-key');
+        if (browserRoxyApiKey) {
+            browserRoxyApiKey.value = '';
+            browserRoxyApiKey.placeholder = browser.has_roxy_api_key ? '已配置，留空保持不变' : '留空表示不修改';
+        }
+        const browserRoxyWorkspaceId = document.getElementById('browser-roxy-workspace-id');
+        if (browserRoxyWorkspaceId) browserRoxyWorkspaceId.dataset.currentValue = String(browser.roxy_workspace_id || 0);
+        const browserRoxyDirId = document.getElementById('browser-roxy-dir-id');
+        if (browserRoxyDirId) browserRoxyDirId.dataset.currentValue = browser.roxy_dir_id || '';
+        const browserRoxyForceOpen = document.getElementById('browser-roxy-force-open');
+        if (browserRoxyForceOpen) browserRoxyForceOpen.checked = browser.roxy_force_open !== false;
+        toggleBrowserProviderFields();
 
         // 系统设置（端口 + 访问密码）
         const webuiPortInput = document.getElementById('webui-port');
@@ -428,6 +472,86 @@ async function loadSettings() {
     } catch (error) {
         console.error('加载设置失败:', error);
         toast.error('加载设置失败');
+    }
+}
+
+function toggleBrowserProviderFields() {
+    const provider = document.getElementById('browser-provider')?.value || 'playwright';
+    const roxyFields = document.getElementById('roxy-browser-fields');
+    if (roxyFields) {
+        roxyFields.style.display = provider === 'roxy' ? '' : 'none';
+    }
+}
+
+async function loadRoxyProjects() {
+    const provider = document.getElementById('browser-provider')?.value || 'playwright';
+    if (provider !== 'roxy') return;
+    const projectSelect = document.getElementById('browser-roxy-workspace-id');
+    if (!projectSelect) return;
+    const apiUrl = document.getElementById('browser-roxy-api-url')?.value?.trim() || '';
+    const apiKey = document.getElementById('browser-roxy-api-key')?.value || '';
+    try {
+        const query = new URLSearchParams();
+        if (apiUrl) query.set('api_url', apiUrl);
+        if (apiKey) query.set('api_key', apiKey);
+        const data = await api.get(`/settings/browser/roxy/workspaces${query.toString() ? `?${query.toString()}` : ''}`);
+        const items = Array.isArray(data.items) ? data.items : [];
+        const currentValue = projectSelect.dataset.currentValue || projectSelect.value || '0';
+        projectSelect.innerHTML = '<option value="0">请选择所属项目</option>' + items.map(item => `<option value="${item.value}">${escapeHtml(item.label)}</option>`).join('');
+        projectSelect.value = items.some(item => String(item.value) === String(currentValue)) ? String(currentValue) : '0';
+        await loadRoxyBrowsers();
+    } catch (error) {
+        projectSelect.innerHTML = '<option value="0">加载所属项目失败</option>';
+        const browserSelect = document.getElementById('browser-roxy-dir-id');
+        if (browserSelect) browserSelect.innerHTML = '<option value="">加载浏览器失败</option>';
+    }
+}
+
+async function loadRoxyBrowsers() {
+    const browserSelect = document.getElementById('browser-roxy-dir-id');
+    const projectSelect = document.getElementById('browser-roxy-workspace-id');
+    if (!browserSelect || !projectSelect) return;
+    const workspaceId = parseInt(projectSelect.value || '0', 10) || 0;
+    if (workspaceId <= 0) {
+        browserSelect.innerHTML = '<option value="">请先选择所属项目</option>';
+        return;
+    }
+    const apiUrl = document.getElementById('browser-roxy-api-url')?.value?.trim() || '';
+    const apiKey = document.getElementById('browser-roxy-api-key')?.value || '';
+    try {
+        const query = new URLSearchParams({ workspace_id: String(workspaceId) });
+        if (apiUrl) query.set('api_url', apiUrl);
+        if (apiKey) query.set('api_key', apiKey);
+        const data = await api.get(`/settings/browser/roxy/browsers?${query.toString()}`);
+        const items = Array.isArray(data.items) ? data.items : [];
+        const currentValue = browserSelect.dataset.currentValue || browserSelect.value || '';
+        browserSelect.innerHTML = '<option value="">请选择浏览器</option>' + items.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join('');
+        browserSelect.value = items.some(item => String(item.value) === String(currentValue)) ? String(currentValue) : '';
+    } catch (error) {
+        browserSelect.innerHTML = '<option value="">加载浏览器失败</option>';
+    }
+}
+
+async function handleSaveBrowserSettings(e) {
+    e.preventDefault();
+    const payload = {
+        provider: document.getElementById('browser-provider')?.value || 'playwright',
+        headless: (document.getElementById('browser-headless')?.value || 'false') === 'true',
+        roxy_api_url: document.getElementById('browser-roxy-api-url')?.value?.trim() || '',
+        roxy_api_key: document.getElementById('browser-roxy-api-key')?.value || null,
+        roxy_workspace_id: parseInt(document.getElementById('browser-roxy-workspace-id')?.value || '0', 10) || 0,
+        roxy_dir_id: document.getElementById('browser-roxy-dir-id')?.value?.trim() || '',
+        roxy_force_open: !!document.getElementById('browser-roxy-force-open')?.checked,
+    };
+    try {
+        await api.post('/settings/browser', payload);
+        const apiKeyInput = document.getElementById('browser-roxy-api-key');
+        if (apiKeyInput) apiKeyInput.value = '';
+        toast.success('浏览器设置已更新');
+        await loadSettings();
+    } catch (error) {
+        console.error('保存浏览器设置失败:', error);
+        toast.error('保存浏览器设置失败');
     }
 }
 
@@ -985,6 +1109,7 @@ function openProxyModal(proxy = null) {
     elements.proxyItemForm.reset();
 
     document.getElementById('proxy-item-id').value = proxy ? proxy.id : '';
+    const passwordInput = document.getElementById('proxy-item-password');
 
     if (proxy) {
         document.getElementById('proxy-item-name').value = proxy.name || '';
@@ -992,7 +1117,11 @@ function openProxyModal(proxy = null) {
         document.getElementById('proxy-item-host').value = proxy.host || '';
         document.getElementById('proxy-item-port').value = proxy.port || '';
         document.getElementById('proxy-item-username').value = proxy.username || '';
-        document.getElementById('proxy-item-password').value = '';
+        passwordInput.value = '';
+        passwordInput.placeholder = proxy.has_password ? '已配置，留空保持不变' : '';
+    } else if (passwordInput) {
+        passwordInput.value = '';
+        passwordInput.placeholder = '';
     }
 
     elements.addProxyModal.classList.add('active');
@@ -1086,15 +1215,22 @@ async function handleSaveProxyItem(e) {
     e.preventDefault();
 
     const proxyId = document.getElementById('proxy-item-id').value;
+    const passwordValue = document.getElementById('proxy-item-password').value;
     const data = {
         name: document.getElementById('proxy-item-name').value,
         type: document.getElementById('proxy-item-type').value,
         host: document.getElementById('proxy-item-host').value,
         port: parseInt(document.getElementById('proxy-item-port').value),
-        username: document.getElementById('proxy-item-username').value || null,
-        password: document.getElementById('proxy-item-password').value || null,
-        enabled: true
+        username: document.getElementById('proxy-item-username').value || null
     };
+    if (proxyId) {
+        if (passwordValue) {
+            data.password = passwordValue;
+        }
+    } else {
+        data.enabled = true;
+        data.password = passwordValue || null;
+    }
 
     try {
         if (proxyId) {

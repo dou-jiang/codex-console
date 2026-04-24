@@ -350,11 +350,48 @@ def _normalize_email_service_config(
     elif service_type == EmailServiceType.LUCKMAIL:
         if 'domain' in normalized and 'preferred_domain' not in normalized:
             normalized['preferred_domain'] = normalized.pop('domain')
+    elif service_type == EmailServiceType.YAHOO_MAIL:
+        if 'login_email' in normalized and 'email' not in normalized:
+            normalized['email'] = normalized.pop('login_email')
+        if 'login_password' in normalized and 'password' not in normalized:
+            normalized['password'] = normalized.pop('login_password')
+        if 'mother_email' in normalized and 'parent_email' not in normalized:
+            normalized['parent_email'] = normalized.pop('mother_email')
+        if 'mother_password' in normalized and 'parent_password' not in normalized:
+            normalized['parent_password'] = normalized.pop('mother_password')
+        if 'mother_app_password' in normalized and 'parent_app_password' not in normalized:
+            normalized['parent_app_password'] = normalized.pop('mother_app_password')
+        if normalized.get('recovery_email') and 'parent_email' not in normalized and not normalized.get('email'):
+            normalized['parent_email'] = normalized.get('recovery_email')
+        if normalized.get('alias_prefix') and 'username_prefix' not in normalized:
+            normalized['username_prefix'] = normalized.get('alias_prefix')
+        if normalized.get('username_prefix') and 'alias_prefix' not in normalized:
+            normalized['alias_prefix'] = normalized.get('username_prefix')
 
     if proxy_url and 'proxy_url' not in normalized:
         normalized['proxy_url'] = proxy_url
 
     return normalized
+
+
+def _validate_yahoo_mail_config(config: Optional[dict]) -> None:
+    """统一 Yahoo 配置约束，默认主流程必须能真实创建 alias。"""
+    normalized = _normalize_email_service_config(EmailServiceType.YAHOO_MAIL, config or {})
+    fixed_email = str(normalized.get("email") or "").strip().lower()
+    fixed_password = str(normalized.get("password") or "").strip()
+    fixed_app_password = str(normalized.get("app_password") or "").strip()
+    parent_email = str(normalized.get("parent_email") or "").strip().lower()
+    parent_password = str(normalized.get("parent_password") or "").strip()
+
+    if fixed_email:
+        if fixed_password or fixed_app_password:
+            return
+        raise ValueError("Yahoo 固定收件箱模式至少需要 password 或 app_password 之一")
+
+    if not parent_email:
+        raise ValueError("Yahoo alias 模式需要先在邮箱服务页面配置母号邮箱")
+    if not parent_password:
+        raise ValueError("Yahoo alias 模式需要母号登录密码来创建临时子地址 alias")
 
 
 def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, auto_upload_new_api: bool = False, new_api_service_ids: List[int] = None, registration_type: str = RoleTag.CHILD.value):
@@ -582,6 +619,42 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                         logger.info(f"使用数据库 IMAP 邮箱服务: {db_service.name}")
                     else:
                         raise ValueError("没有可用的 IMAP 邮箱服务，请先在邮箱服务中添加")
+                elif service_type == EmailServiceType.YAHOO_MAIL:
+                    from ...database.models import EmailService as EmailServiceModel
+
+                    db_service = db.query(EmailServiceModel).filter(
+                        EmailServiceModel.service_type == "yahoo_mail",
+                        EmailServiceModel.enabled == True
+                    ).order_by(EmailServiceModel.priority.asc()).first()
+
+                    if db_service and db_service.config:
+                        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
+                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+                        logger.info(f"使用数据库 Yahoo 邮箱服务: {db_service.name}")
+                    else:
+                        config = _normalize_email_service_config(service_type, email_service_config or {}, actual_proxy_url)
+
+                    browser_settings = get_settings()
+                    config['headless'] = bool(getattr(browser_settings, 'browser_headless', config.get('headless', False)))
+                    if getattr(browser_settings, 'browser_provider', 'playwright') == 'roxy':
+                        roxy_api_url = str(getattr(browser_settings, 'browser_roxy_api_url', '') or '').strip()
+                        roxy_api_key = ''
+                        try:
+                            roxy_secret = getattr(browser_settings, 'browser_roxy_api_key', None)
+                            roxy_api_key = roxy_secret.get_secret_value() if roxy_secret else ''
+                        except Exception:
+                            roxy_api_key = ''
+                        config['browser_provider'] = 'roxy'
+                        if roxy_api_url:
+                            config['roxy_api_host'] = roxy_api_url
+                        if roxy_api_key:
+                            config['roxy_token'] = roxy_api_key
+                        if int(getattr(browser_settings, 'browser_roxy_workspace_id', 0) or 0) > 0:
+                            config['roxy_workspace_id'] = int(getattr(browser_settings, 'browser_roxy_workspace_id', 0) or 0)
+                        if str(getattr(browser_settings, 'browser_roxy_dir_id', '') or '').strip():
+                            config['roxy_dir_id'] = str(getattr(browser_settings, 'browser_roxy_dir_id', '') or '').strip()
+                        config['roxy_force_open'] = bool(getattr(browser_settings, 'browser_roxy_force_open', True))
+                    _validate_yahoo_mail_config(config)
                 elif service_type == EmailServiceType.LUCKMAIL:
                     from ...database.models import EmailService as EmailServiceModel
 
@@ -1799,6 +1872,11 @@ async def get_available_email_services():
             "count": 0,
             "services": []
         },
+        "yahoo_mail": {
+            "available": False,
+            "count": 0,
+            "services": []
+        },
         "luckmail": {
             "available": False,
             "count": 0,
@@ -1978,6 +2056,30 @@ async def get_available_email_services():
 
         result["imap_mail"]["count"] = len(imap_mail_services)
         result["imap_mail"]["available"] = len(imap_mail_services) > 0
+
+        yahoo_mail_services = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "yahoo_mail",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).all()
+
+        for service in yahoo_mail_services:
+            config = service.config or {}
+            result["yahoo_mail"]["services"].append({
+                "id": service.id,
+                "name": service.name,
+                "type": "yahoo_mail",
+                "email": config.get("email"),
+                "parent_email": config.get("parent_email"),
+                "domain": config.get("domain") or "yahoo.com",
+                "alias_prefix": config.get("alias_prefix") or config.get("username_prefix") or 'monster',
+                "alias_random_length": config.get("alias_random_length") or 4,
+                "alias_start_counter": config.get("alias_start_counter") or 1,
+                "auto_create": not bool(config.get("email")),
+                "priority": service.priority
+            })
+
+        result["yahoo_mail"]["count"] = len(yahoo_mail_services)
+        result["yahoo_mail"]["available"] = len(yahoo_mail_services) > 0
 
         luckmail_services = db.query(EmailServiceModel).filter(
             EmailServiceModel.service_type == "luckmail",

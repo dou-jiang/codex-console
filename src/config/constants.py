@@ -55,6 +55,7 @@ class EmailServiceType(str, Enum):
     TEMPMAIL = "tempmail"
     YYDS_MAIL = "yyds_mail"
     OUTLOOK = "outlook"
+    YAHOO_MAIL = "yahoo_mail"
     MOE_MAIL = "moe_mail"
     TEMP_MAIL = "temp_mail"
     DUCK_MAIL = "duck_mail"
@@ -185,6 +186,40 @@ EMAIL_SERVICE_DEFAULTS = {
         "smtp_server": "smtp.office365.com",
         "smtp_port": 587,
         "timeout": 30,
+    },
+    "yahoo_mail": {
+        "parent_email": "",
+        "parent_password": "",
+        "parent_app_password": "",
+        "roxy_ws_endpoint": "",
+        "prefer_roxy_otp": True,
+        "email": "",
+        "password": "",
+        "app_password": "",
+        "recovery_email": "",
+        "phone_number": "",
+        "first_name": "",
+        "last_name": "",
+        "birth_month": 0,
+        "birth_day": 0,
+        "birth_year": 0,
+        "username_prefix": "monster",
+        "alias_prefix": "monster",
+        "alias_random_length": 4,
+        "alias_start_counter": 1,
+        "domain": "yahoo.com",
+        "locale": "en-US",
+        "timezone_id": "America/New_York",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "headless": True,
+        "timeout": 30,
+        "poll_interval": 5,
+        "max_retries": 3,
+        "otp_fetch_timeout": 300,
+        "otp_max_attempts": 6,
+        "otp_retry_delay": 5,
+        "imap_socket_timeout": 12,
+        "roxy_mailbox_dump_on_fail": True,
     },
     "moe_mail": {
         "base_url": "",  # 需要用户配置

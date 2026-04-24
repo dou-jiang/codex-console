@@ -86,11 +86,14 @@ pip install -r requirements.txt
 ## 快速开始
 
 ```bash
+# 激活环境
+conda activate codex-console-commission
+
 # 默认启动
 python webui.py
 
 # 指定监听地址和端口
-python webui.py --host 0.0.0.0 --port 8080
+python webui.py --host 0.0.0.0 --port 8083 --debug
 
 # 调试模式
 python webui.py --debug
@@ -102,6 +105,214 @@ python webui.py --access-password your_password
 启动后访问：
 
 - [http://127.0.0.1:8000](http://127.0.0.1:8000)
+
+## 启动管理脚本
+
+项目内置了统一启动脚本，支持：
+
+- `start` / `restart` / `stop` / `status` / `logs`
+- 指定端口启动
+- 端口占用检测与推荐新端口
+- **默认端口冲突时自动切换到下一个可用端口并继续启动**
+- debug 模式启动
+- 启动前自动 `git pull/fetch+merge` 更新代码
+- 启动前自动构建/依赖同步
+- 启动前自动校验运行依赖，避免启动后才因缺包崩溃
+- 自动打开浏览器
+- 后台守护 + 健康检查失败自动重启
+- 可选择使用 **conda 环境** 启动；若系统未安装 conda，会提示后直接停止
+
+### 本次调整整理（2026-04-21）
+
+本次围绕 `scripts/manage_webui.py`、`scripts/manage-webui.ps1`、`scripts/manage-webui.bat` 做了以下增强：
+
+1. **修复 Windows `.bat` 参数透传问题**
+   - 之前 `manage-webui.bat` 直接把参数透传给 `.ps1`，会导致 `--use-conda` 这类 GNU 风格参数被 PowerShell 误解析。
+   - 现在 `.bat` 入口已改为**直接调用 Python 驱动**，因此以下写法可以正常使用：
+     ```bat
+     .\scripts\manage-webui.bat start --use-conda --conda-env codex-console-commission --open-browser
+     ```
+
+2. **新增可选 conda 启动模式**
+   - 支持通过 `--use-conda --conda-env <env>` 指定使用 conda 环境启动。
+   - 若系统未安装 conda，会直接提示安装 Miniconda/Anaconda 后退出。
+   - 若指定环境不存在，也会直接报错退出。
+   - 当前实现会**直接使用目标 conda 环境内的 Python 可执行文件**启动，而不是依赖 `conda run ... python` 的间接方式，进程状态更稳定，PID 跟踪更准确。
+
+3. **补充运行依赖校验**
+   - 即使使用了 `--skip-build`，脚本也会先校验目标运行环境中是否存在核心依赖（如 `sqlalchemy`、`fastapi`、`uvicorn`、`jinja2`、`aiosqlite`、`curl_cffi` 等）。
+   - 如果依赖缺失，会在启动前直接报错，而不是等 WebUI 起到一半才在日志里崩溃。
+
+4. **新增自动换端口启动**
+   - 若指定端口已被占用，脚本会自动在后续端口中寻找空闲端口并继续启动。
+   - 例如占用 `8000` 时，脚本会提示：
+     ```text
+     [WARN] Port 8000 is occupied by PID xxxx; automatically switching to available port 8001.
+     ```
+
+5. **新增 `logs` 子命令**
+   - 可直接输出某个端口对应的最近 `stdout/stderr` 日志，快速排错。
+   - 示例：
+     ```bat
+     .\scripts\manage-webui.bat logs --port 8000 --lines 120
+     ```
+   - 同时修复了 Windows 控制台下某些日志字符导致的 `UnicodeEncodeError`。
+
+6. **清理并兼容历史残留状态**
+   - 启动前会自动清理对应端口的陈旧 PID/状态文件。
+   - 遇到历史启动残留时，能更平滑地恢复，而不是直接卡在旧 PID 状态上。
+
+### Windows
+
+PowerShell：
+
+```powershell
+# 默认启动
+.\scripts\manage-webui.ps1 start
+
+# 指定端口 + debug
+.\scripts\manage-webui.ps1 start -Port 8083 -DebugMode
+
+# 重启
+.\scripts\manage-webui.ps1 restart -Port 8083
+
+# 停止
+.\scripts\manage-webui.ps1 stop -Port 8083
+
+# 查看状态
+.\scripts\manage-webui.ps1 status -Port 8083
+
+# 查看最近日志
+.\scripts\manage-webui.ps1 logs -Port 8083 -Lines 120
+
+# 启动后自动打开浏览器
+.\scripts\manage-webui.ps1 start -Port 8083 -OpenBrowser
+
+# 开启守护模式（健康检查失败自动重启）
+.\scripts\manage-webui.ps1 start -Port 8083 -Guard -OpenBrowser
+
+# 指定以 conda 环境启动
+.\scripts\manage-webui.ps1 start -Port 8083 -UseConda -CondaEnv codex-console-commission
+```
+
+批处理入口：
+
+```bat
+.\scripts\manage-webui.bat start --port 8083 --open-browser --guard --use-conda --conda-env codex-console-commission
+```
+
+### Linux
+
+先赋权：
+
+```bash
+chmod +x ./scripts/manage-webui.sh
+```
+
+示例：
+
+```bash
+# 默认启动
+./scripts/manage-webui.sh start
+
+# 指定端口 + debug
+./scripts/manage-webui.sh start --port 8083 --debug
+
+# 重启
+./scripts/manage-webui.sh restart --port 8083
+
+# 停止
+./scripts/manage-webui.sh stop --port 8083
+
+# 查看状态
+./scripts/manage-webui.sh status --port 8083
+
+# 查看最近日志
+./scripts/manage-webui.sh logs --port 8083 --lines 120
+
+# 启动后自动打开浏览器
+./scripts/manage-webui.sh start --port 8083 --open-browser
+
+# 开启守护模式（健康检查失败自动重启）
+./scripts/manage-webui.sh start --port 8083 --guard --open-browser
+
+# 指定以 conda 环境启动
+./scripts/manage-webui.sh start --port 8083 --use-conda --conda-env codex-console-commission
+```
+
+### 常用参数
+
+```text
+--port <端口>                   指定监听端口，默认 8000
+--host <地址>                   指定监听地址，默认 0.0.0.0
+--debug                         debug 模式启动
+--skip-update                   跳过 git 更新
+--skip-build                    跳过构建/依赖同步
+--open-browser                  启动成功后自动打开浏览器
+--guard                         启用后台守护与健康检查失败自动重启
+--use-conda                     使用 conda 环境启动
+--conda-env <环境名>            指定 conda 环境名；默认使用项目目录名
+--health-url <URL模板>          自定义健康检查地址，默认 http://{host}:{port}/login
+--health-interval <秒>          健康检查间隔，默认 15
+--health-timeout <秒>           健康检查超时，默认 5
+--health-fail-threshold <次数>  连续失败多少次后自动重启，默认 3
+--remote <远程名> --branch <分支>
+                               指定从哪个远程/分支更新代码
+--python <解释器路径>           指定 Python 可执行文件
+--lines <行数>                  logs 子命令读取的日志行数，默认 80
+```
+
+### Conda 启动说明
+
+如果使用 `--use-conda`：
+
+- 脚本会先检查本机是否已安装 conda
+- 若 **未安装 conda**，会直接提示安装 Miniconda/Anaconda 后退出
+- 若 conda 已安装，但指定环境不存在，也会提示后退出
+- 构建和运行都会切到对应 conda 环境中执行
+
+例如：
+
+```bash
+./scripts/manage-webui.sh start --use-conda --conda-env codex-console-commission
+```
+
+```powershell
+.\scripts\manage-webui.ps1 start -UseConda -CondaEnv codex-console-commission
+```
+
+### 运行状态文件
+
+脚本会把 PID、状态和日志写到：
+
+```text
+logs/runtime/webui-<port>.pid
+logs/runtime/webui-<port>.json
+logs/runtime/webui-<port>.stdout.log
+logs/runtime/webui-<port>.stderr.log
+```
+
+### 守护模式说明
+
+开启 `--guard` 后：
+
+- 管理脚本会后台拉起一个 watchdog 进程
+- watchdog 周期性请求健康检查 URL
+- 若服务进程退出，或连续多次健康检查失败，会自动重启 WebUI
+- `status` 可查看当前 watchdog / webui PID、最近健康状态、重启次数
+- `logs` 可直接查看当前端口最近 stdout/stderr 输出，便于快速排错
+
+默认健康检查地址为：
+
+```text
+http://127.0.0.1:<port>/login
+```
+
+也可自定义，例如：
+
+```bash
+./scripts/manage-webui.sh start --port 8083 --guard --health-url "http://{host}:{port}/api/settings"
+```
 
 ## 常用环境变量
 

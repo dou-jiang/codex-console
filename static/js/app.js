@@ -28,6 +28,7 @@ let availableServices = {
     tempmail: { available: true, services: [] },
     yyds_mail: { available: false, services: [] },
     outlook: { available: false, services: [] },
+    yahoo_mail: { available: false, services: [] },
     moe_mail: { available: false, services: [] },
     temp_mail: { available: false, services: [] },
     cloudmail: { available: false, services: [] },
@@ -400,6 +401,27 @@ function updateEmailServiceOptions() {
         select.appendChild(optgroup);
     }
 
+    // Yahoo Mail
+    if (availableServices.yahoo_mail && availableServices.yahoo_mail.available) {
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = `📬 Yahoo Mail (${availableServices.yahoo_mail.count} 个服务)`;
+
+        availableServices.yahoo_mail.services.forEach(service => {
+            const option = document.createElement('option');
+            option.value = `yahoo_mail:${service.id}`;
+            option.textContent = service.name + (
+                service.email
+                    ? ` (${service.email})`
+                    : (service.parent_email ? ` (母号: ${service.parent_email})` : ' (自动创建)')
+            );
+            option.dataset.type = 'yahoo_mail';
+            option.dataset.serviceId = service.id;
+            optgroup.appendChild(option);
+        });
+
+        select.appendChild(optgroup);
+    }
+
     // 自定义域名
     if (availableServices.moe_mail.available) {
         const optgroup = document.createElement('optgroup');
@@ -561,6 +583,14 @@ function handleServiceChange(e) {
         if (service) {
             addLog('info', `[系统] 已选择 Outlook 账户: ${service.name}`);
         }
+    } else if (type === 'yahoo_mail') {
+        const service = availableServices.yahoo_mail.services.find(s => s.id == id);
+        if (service) {
+            const suffix = service.email
+                ? service.email
+                : (service.parent_email ? `母号 ${service.parent_email} 自动创建 alias` : '注册时自动创建 alias');
+            addLog('info', `[系统] 已选择 Yahoo 邮箱服务: ${service.name} (${suffix})`);
+        }
     } else if (type === 'yyds_mail') {
         const service = availableServices.yyds_mail.services.find(s => (s.id || 'default') == id);
         if (service) {
@@ -672,7 +702,7 @@ function buildCurrentRegistrationConfig() {
     const [emailServiceType, serviceId] = selectedValue.split(':');
     const baseConfig = {
         email_service_type: emailServiceType,
-        registration_type: elements.registrationType ? elements.registrationType.value : 'child',
+        registration_type: elements.registrationType ? elements.registrationType.value : 'none',
         reg_mode: isOutlookBatchMode ? 'outlook_batch' : (isBatchMode ? 'batch' : 'single'),
         auto_upload_cpa: elements.autoUploadCpa ? elements.autoUploadCpa.checked : false,
         cpa_service_ids: elements.autoUploadCpa && elements.autoUploadCpa.checked ? getSelectedServiceIds(elements.cpaServiceSelect) : [],
@@ -2160,7 +2190,7 @@ async function handleOutlookBatchRegistration() {
     const requestData = {
         service_ids: selectedIds,
         skip_registered: skipRegistered,
-        registration_type: elements.registrationType ? elements.registrationType.value : 'child',
+        registration_type: elements.registrationType ? elements.registrationType.value : 'none',
         interval_min: intervalMin,
         interval_max: intervalMax,
         concurrency: Math.min(50, Math.max(1, concurrency)),

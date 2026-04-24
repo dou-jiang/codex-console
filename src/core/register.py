@@ -83,6 +83,7 @@ class SignupFormResult:
     success: bool
     page_type: str = ""  # 响应中的 page.type 字段
     is_existing_account: bool = False  # 是否为已注册账号
+    requires_login_password: bool = False  # 是否需要走登录密码分支
     response_data: Dict[str, Any] = None  # 完整的响应数据
     error_message: str = ""
 
@@ -113,6 +114,11 @@ class RegistrationEngine:
         self.proxy_url = proxy_url
         self.callback_logger = callback_logger or (lambda msg: logger.info(msg))
         self.task_uuid = task_uuid
+        try:
+            if hasattr(email_service, "config") and isinstance(getattr(email_service, "config"), dict):
+                email_service.config["_debug_logger"] = self._log
+        except Exception:
+            pass
 
         # 创建 HTTP 客户端
         self.http_client = OpenAIHTTPClient(proxy_url=proxy_url)
@@ -154,6 +160,7 @@ class RegistrationEngine:
         self._last_otp_validation_code: Optional[str] = None
         self._last_otp_validation_status_code: Optional[int] = None
         self._last_otp_validation_outcome: str = ""  # success/http_non_200/network_timeout/network_error
+        self._last_create_user_account_error: Optional[str] = None
 
     def _log(self, message: str, level: str = "info"):
         """记录日志"""
@@ -589,20 +596,31 @@ class RegistrationEngine:
                     page_type = response_data.get("page", {}).get("type", "")
                     self._log(f"响应页面类型: {page_type}")
 
-                    is_existing = page_type == OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]
+                    is_existing = page_type in {
+                        OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"],
+                        OPENAI_PAGE_TYPES["LOGIN_PASSWORD"],
+                    }
+                    requires_login_password = page_type == OPENAI_PAGE_TYPES["LOGIN_PASSWORD"]
 
                     if is_existing:
-                        self._otp_sent_at = time.time()
                         if record_existing_account:
                             self._log(f"检测到已注册账号，将自动切换到登录流程")
                             self._is_existing_account = True
-                        else:
+                        if page_type == OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]:
+                            self._otp_sent_at = time.time()
+                            if not record_existing_account:
+                                self._log("登录流程已触发，等待系统自动发送的验证码")
+                        elif requires_login_password:
+                            self._log("当前入口返回登录密码页，下一步转入登录密码验证流程")
+                    elif not record_existing_account:
+                        if page_type == OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]:
                             self._log("登录流程已触发，等待系统自动发送的验证码")
 
                     return SignupFormResult(
                         success=True,
                         page_type=page_type,
                         is_existing_account=is_existing,
+                        requires_login_password=requires_login_password,
                         response_data=response_data
                     )
 
@@ -743,6 +761,34 @@ class RegistrationEngine:
                 return SignupFormResult(success=False, error_message=str(e))
 
         return SignupFormResult(success=False, error_message="提交登录密码失败: 超过最大重试次数")
+
+    def _handle_existing_account_login_password(self, result: RegistrationResult) -> bool:
+        """
+        当“注册入口”直接返回 login_password 时，说明该邮箱已存在，
+        需要立刻转入登录密码 -> 邮箱 OTP 分支，而不是继续走注册密码接口。
+        """
+        self._is_existing_account = True
+        if not self.password:
+            self.password = str(
+                self.email_info.get("password")
+                if isinstance(self.email_info, dict)
+                else ""
+            ).strip()
+        self._log("检测到当前邮箱已存在且需要登录密码验证，切换到登录密码分支继续推进...")
+        password_result = self._submit_login_password()
+        if not password_result.success:
+            result.error_message = f"登录密码验证失败: {password_result.error_message}"
+            return False
+
+        page_type = str(password_result.page_type or "").strip()
+        if page_type != OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]:
+            result.error_message = f"登录密码验证后未进入邮箱验证码页面: {page_type or 'unknown'}"
+            self._log(result.error_message, "error")
+            return False
+
+        self._otp_sent_at = time.time()
+        self._log("登录密码验证通过，已进入邮箱验证码页面，继续后续 OTP / token 收尾")
+        return True
 
     def _reset_auth_flow(self) -> None:
         """重置会话，准备重新发起 OAuth 流程。"""
@@ -2174,6 +2220,32 @@ class RegistrationEngine:
             self._log(f"获取验证码失败: {e}", "error")
             return None
 
+    def _resolve_otp_strategy(
+        self,
+        *,
+        default_attempts: int,
+        requested_fetch_timeout: Optional[int],
+        default_retry_delay: int = 2,
+    ) -> Tuple[int, int, int]:
+        config = getattr(self.email_service, "config", {}) or {}
+
+        fetch_timeout = int(requested_fetch_timeout) if requested_fetch_timeout and int(requested_fetch_timeout) > 0 else 120
+        configured_fetch_timeout = int(config.get("otp_fetch_timeout") or 0) if str(config.get("otp_fetch_timeout") or "").strip() else 0
+        if configured_fetch_timeout > 0:
+            fetch_timeout = max(fetch_timeout, configured_fetch_timeout)
+
+        max_attempts = max(int(default_attempts or 1), 1)
+        configured_attempts = int(config.get("otp_max_attempts") or 0) if str(config.get("otp_max_attempts") or "").strip() else 0
+        if configured_attempts > 0:
+            max_attempts = max(max_attempts, configured_attempts)
+
+        retry_delay = max(int(default_retry_delay or 1), 1)
+        configured_retry_delay = int(config.get("otp_retry_delay") or 0) if str(config.get("otp_retry_delay") or "").strip() else 0
+        if configured_retry_delay > 0:
+            retry_delay = max(retry_delay, configured_retry_delay)
+
+        return fetch_timeout, max_attempts, retry_delay
+
     def _validate_verification_code(self, code: str) -> bool:
         """验证验证码"""
         try:
@@ -2272,21 +2344,24 @@ class RegistrationEngine:
         # 每轮验证码阶段开始前，清理上轮 OTP 校验缓存，避免 continue_url/workspace 被旧阶段污染。
         self._last_validate_otp_continue_url = None
         self._last_validate_otp_workspace_id = None
+        fetch_timeout, max_attempts, retry_delay = self._resolve_otp_strategy(
+            default_attempts=max_attempts,
+            requested_fetch_timeout=fetch_timeout,
+        )
+        self._log(
+            f"{stage_label}轮询策略: timeout={fetch_timeout}s, max_attempts={max_attempts}, retry_delay={retry_delay}s"
+        )
         if attempted_codes is None:
             attempted_codes = set()
         for attempt in range(1, max_attempts + 1):
-            code = (
-                self._get_verification_code(timeout=fetch_timeout)
-                if fetch_timeout
-                else self._get_verification_code()
-            )
+            code = self._get_verification_code(timeout=fetch_timeout)
             if not code:
                 if attempt < max_attempts:
                     self._log(
                         f"{stage_label}第 {attempt}/{max_attempts} 次未取到验证码，稍后重试...",
                         "warning",
                     )
-                    time.sleep(2)
+                    time.sleep(retry_delay)
                     continue
                 return False
 
@@ -2304,7 +2379,7 @@ class RegistrationEngine:
                     if self._validate_verification_code(code):
                         return True
                     if attempt < max_attempts:
-                        time.sleep(2)
+                        time.sleep(retry_delay)
                         continue
                     return False
 
@@ -2313,7 +2388,7 @@ class RegistrationEngine:
                         f"{stage_label}第 {attempt}/{max_attempts} 次命中重复验证码 {code}，等待新邮件...",
                         "warning",
                     )
-                    time.sleep(2)
+                    time.sleep(retry_delay)
                     continue
                 return False
 
@@ -2327,12 +2402,13 @@ class RegistrationEngine:
                     f"{stage_label}第 {attempt}/{max_attempts} 次校验未通过，疑似旧验证码，自动重试下一封...",
                     "warning",
                 )
-                time.sleep(2)
+                time.sleep(retry_delay)
 
         return False
 
     def _create_user_account(self) -> bool:
         """创建用户账户"""
+        self._last_create_user_account_error = None
         try:
             user_info = generate_random_user_info()
             self._log(f"生成用户信息: {user_info['name']}, 生日: {user_info['birthdate']}")
@@ -2351,7 +2427,11 @@ class RegistrationEngine:
             self._log(f"账户创建状态: {response.status_code}")
 
             if response.status_code != 200:
-                self._log(f"账户创建失败: {response.text[:200]}", "warning")
+                response_text = str(response.text or "")
+                self._last_create_user_account_error = (
+                    f"创建用户账户失败: HTTP {response.status_code}: {response_text[:200]}"
+                )
+                self._log(f"账户创建失败: {response_text[:200]}", "warning")
                 return False
 
             try:
@@ -2390,6 +2470,7 @@ class RegistrationEngine:
             return True
 
         except Exception as e:
+            self._last_create_user_account_error = f"创建用户账户异常: {e}"
             self._log(f"创建账户失败: {e}", "error")
             return False
 
@@ -2685,6 +2766,7 @@ class RegistrationEngine:
             self._create_account_refresh_token = None
             self._last_validate_otp_continue_url = None
             self._last_validate_otp_workspace_id = None
+            self._last_create_user_account_error = None
 
             self._log("=" * 60)
             self._log("注册流程启动，开始替你敲门")
@@ -2736,7 +2818,11 @@ class RegistrationEngine:
                 result.error_message = f"提交注册表单失败: {signup_result.error_message}"
                 return result
 
-            if self._is_existing_account:
+            if signup_result.requires_login_password:
+                if not self._handle_existing_account_login_password(result):
+                    return result
+                self._log("已完成登录密码分支切换，后续按老朋友登录收尾")
+            elif self._is_existing_account:
                 self._log("检测到这是老朋友账号，直接切去登录拿 token，不走弯路")
             else:
                 self._log("5. 设置密码，别让小偷偷笑...")
@@ -2756,9 +2842,18 @@ class RegistrationEngine:
                     result.error_message = "验证验证码失败"
                     return result
 
+                otp_continue_url = str(self._last_validate_otp_continue_url or "").strip().lower()
+                if "auth.openai.com/add-phone" in otp_continue_url or "/add-phone" in otp_continue_url:
+                    self._log(
+                        "注册验证码通过后直接命中 add-phone，原生链路切到 anyauto V2 回退继续补全...",
+                        "warning",
+                    )
+                    result.error_message = "add_phone_required_after_email_otp"
+                    return result
+
                 self._log("9. 给账号办个正式户口，名字写档案里...")
                 if not self._create_user_account():
-                    result.error_message = "创建用户账户失败"
+                    result.error_message = self._last_create_user_account_error or "创建用户账户失败"
                     return result
 
                 if effective_entry_flow in {"native", "outlook"}:
@@ -2906,6 +3001,8 @@ class RegistrationEngine:
             browser_mode=browser_mode or "protocol",
             extra_config=None,
         )
+        if self.password:
+            flow_engine.password = str(self.password or "").strip() or None
         flow_result = flow_engine.run()
 
         self.email_info = flow_engine.email_info

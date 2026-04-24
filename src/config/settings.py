@@ -19,6 +19,7 @@ class SettingCategory(str, Enum):
     LOG = "log"
     OPENAI = "openai"
     PROXY = "proxy"
+    BROWSER = "browser"
     REGISTRATION = "registration"
     EMAIL = "email"
     TEMPMAIL = "tempmail"
@@ -277,6 +278,51 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         description="从 JSON 响应中提取代理 URL 的字段路径（留空则使用响应原文）"
     ),
 
+    # 浏览器配置
+    "browser_provider": SettingDefinition(
+        db_key="browser.provider",
+        default_value="playwright",
+        category=SettingCategory.BROWSER,
+        description="浏览器提供方（playwright / roxy）"
+    ),
+    "browser_headless": SettingDefinition(
+        db_key="browser.headless",
+        default_value=False,
+        category=SettingCategory.BROWSER,
+        description="浏览器是否使用无头模式"
+    ),
+    "browser_roxy_api_url": SettingDefinition(
+        db_key="browser.roxy_api_url",
+        default_value="http://127.0.0.1:50000",
+        category=SettingCategory.BROWSER,
+        description="RoxyBrowser API 地址"
+    ),
+    "browser_roxy_api_key": SettingDefinition(
+        db_key="browser.roxy_api_key",
+        default_value="",
+        category=SettingCategory.BROWSER,
+        description="RoxyBrowser API 密钥",
+        is_secret=True
+    ),
+    "browser_roxy_workspace_id": SettingDefinition(
+        db_key="browser.roxy_workspace_id",
+        default_value=0,
+        category=SettingCategory.BROWSER,
+        description="RoxyBrowser 默认 workspaceId（可选）"
+    ),
+    "browser_roxy_dir_id": SettingDefinition(
+        db_key="browser.roxy_dir_id",
+        default_value="",
+        category=SettingCategory.BROWSER,
+        description="RoxyBrowser 默认 dirId（可选）"
+    ),
+    "browser_roxy_force_open": SettingDefinition(
+        db_key="browser.roxy_force_open",
+        default_value=True,
+        category=SettingCategory.BROWSER,
+        description="RoxyBrowser 打开窗口时是否强制接管"
+    ),
+
     # 注册配置
     "registration_max_retries": SettingDefinition(
         db_key="registration.max_retries",
@@ -313,6 +359,12 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         default_value="native",
         category=SettingCategory.REGISTRATION,
         description="注册入口链路（native=原本链路, abcard=ABCard入口链路；Outlook 邮箱会自动走 Outlook 链路）"
+    ),
+    "registration_anyauto_browser_mode": SettingDefinition(
+        db_key="registration.anyauto_browser_mode",
+        default_value="protocol",
+        category=SettingCategory.REGISTRATION,
+        description="anyauto 浏览器模式（protocol / headed / headless）"
     ),
 
     # 邮箱服务配置
@@ -570,6 +622,12 @@ SETTING_TYPES: Dict[str, Type] = {
     "proxy_enabled": bool,
     "proxy_port": int,
     "proxy_dynamic_enabled": bool,
+    "browser_provider": str,
+    "browser_headless": bool,
+    "browser_roxy_api_url": str,
+    "browser_roxy_workspace_id": int,
+    "browser_roxy_dir_id": str,
+    "browser_roxy_force_open": bool,
     "auto_quick_refresh_enabled": bool,
     "auto_quick_refresh_interval_minutes": int,
     "auto_quick_refresh_retry_limit": int,
@@ -586,6 +644,7 @@ SETTING_TYPES: Dict[str, Type] = {
     "registration_sleep_min": int,
     "registration_sleep_max": int,
     "registration_entry_flow": str,
+    "registration_anyauto_browser_mode": str,
     "registration_auto_enabled": bool,
     "registration_auto_check_interval": int,
     "registration_auto_min_ready_auth_files": int,
@@ -849,6 +908,21 @@ class Settings(BaseModel):
     proxy_dynamic_api_key_header: str = "X-API-Key"
     proxy_dynamic_result_field: str = ""
 
+    # 浏览器配置
+    browser_provider: str = "playwright"
+    browser_headless: bool = False
+    browser_roxy_api_url: str = "http://127.0.0.1:50000"
+    browser_roxy_api_key: Optional[SecretStr] = None
+    browser_roxy_workspace_id: int = 0
+    browser_roxy_dir_id: str = ""
+    browser_roxy_force_open: bool = True
+
+    @field_validator('browser_provider', mode='before')
+    @classmethod
+    def validate_browser_provider(cls, v):
+        value = str(v or "playwright").strip().lower()
+        return value if value in {"playwright", "roxy"} else "playwright"
+
     @property
     def proxy_url(self) -> Optional[str]:
         """获取完整的代理 URL"""
@@ -875,6 +949,7 @@ class Settings(BaseModel):
     registration_sleep_min: int = 5
     registration_sleep_max: int = 30
     registration_entry_flow: str = "native"
+    registration_anyauto_browser_mode: str = "protocol"
     registration_auto_enabled: bool = False
     registration_auto_check_interval: int = 60
     registration_auto_min_ready_auth_files: int = 1

@@ -96,12 +96,17 @@ class OutlookBatchImportResponse(BaseModel):
 # 敏感字段列表，返回响应时需要过滤
 SENSITIVE_FIELDS = {
     'password',
+    'app_password',
+    'parent_password',
+    'parent_app_password',
     'api_key',
     'refresh_token',
     'access_token',
     'admin_token',
     'admin_password',
     'custom_auth',
+    'phone_number',
+    'recovery_email',
 }
 
 def normalize_email_service_config(service_type: str, config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -116,6 +121,22 @@ def normalize_email_service_config(service_type: str, config: Optional[Dict[str,
         normalized["admin_password"] = normalized.pop("api_key")
     if service_type == "cloudmail" and normalized.get("email") and not normalized.get("admin_email"):
         normalized["admin_email"] = normalized.pop("email")
+    if service_type == "yahoo_mail" and normalized.get("login_email") and not normalized.get("email"):
+        normalized["email"] = normalized.pop("login_email")
+    if service_type == "yahoo_mail" and normalized.get("login_password") and not normalized.get("password"):
+        normalized["password"] = normalized.pop("login_password")
+    if service_type == "yahoo_mail" and normalized.get("mother_email") and not normalized.get("parent_email"):
+        normalized["parent_email"] = normalized.pop("mother_email")
+    if service_type == "yahoo_mail" and normalized.get("mother_password") and not normalized.get("parent_password"):
+        normalized["parent_password"] = normalized.pop("mother_password")
+    if service_type == "yahoo_mail" and normalized.get("mother_app_password") and not normalized.get("parent_app_password"):
+        normalized["parent_app_password"] = normalized.pop("mother_app_password")
+    if service_type == "yahoo_mail" and normalized.get("recovery_email") and not normalized.get("parent_email") and not normalized.get("email"):
+        normalized["parent_email"] = normalized.get("recovery_email")
+    if service_type == "yahoo_mail" and normalized.get("alias_prefix") and not normalized.get("username_prefix"):
+        normalized["username_prefix"] = normalized.get("alias_prefix")
+    if service_type == "yahoo_mail" and normalized.get("username_prefix") and not normalized.get("alias_prefix"):
+        normalized["alias_prefix"] = normalized.get("username_prefix")
 
     return normalized
 
@@ -212,6 +233,7 @@ async def get_email_services_stats():
             'imap_mail_count': 0,
             'cloudmail_count': 0,
             'luckmail_count': 0,
+            'yahoo_mail_count': 0,
             'tempmail_available': tempmail_enabled or yyds_enabled,
             'yyds_mail_available': yyds_enabled,
             'enabled_count': enabled_count
@@ -238,6 +260,8 @@ async def get_email_services_stats():
                 stats['cloudmail_count'] = count
             elif service_type == 'luckmail':
                 stats['luckmail_count'] = count
+            elif service_type == 'yahoo_mail':
+                stats['yahoo_mail_count'] = count
 
         return stats
 
@@ -276,6 +300,33 @@ async def get_service_types():
                     {"name": "password", "label": "密码", "required": True},
                     {"name": "client_id", "label": "OAuth Client ID", "required": False},
                     {"name": "refresh_token", "label": "OAuth Refresh Token", "required": False},
+                ]
+            },
+            {
+                "value": "yahoo_mail",
+                "label": "Yahoo Mail",
+                "description": "Yahoo 母号模式：用母号创建临时子地址 alias，再由母号收件箱按 alias 过滤 OpenAI 验证码，不依赖自动转发",
+                "config_fields": [
+                    {"name": "parent_email", "label": "母号 Yahoo 邮箱", "required": False, "placeholder": "alias 主流程必填，用于接收并过滤验证码"},
+                    {"name": "parent_password", "label": "母号登录密码", "required": False, "secret": True},
+                    {"name": "parent_app_password", "label": "母号 IMAP App Password", "required": False, "secret": True},
+                    {"name": "email", "label": "固定 Yahoo 收件箱（兼容，可选）", "required": False, "placeholder": "填写后直接复用该 Yahoo 邮箱；留空则由母号创建 alias"},
+                    {"name": "password", "label": "固定 Yahoo 收件箱密码（可选）", "required": False, "secret": True},
+                    {"name": "app_password", "label": "固定 Yahoo 收件箱 IMAP App Password（可选）", "required": False, "secret": True},
+                    {"name": "recovery_email", "label": "备用恢复邮箱（可选）", "required": False, "secret": True},
+                    {"name": "phone_number", "label": "注册手机号（可选）", "required": False, "secret": True},
+                    {"name": "first_name", "label": "名字（可留空）", "required": False, "placeholder": "留空则自动生成拟人资料"},
+                    {"name": "last_name", "label": "姓氏（可留空）", "required": False, "placeholder": "留空则自动生成拟人资料"},
+                    {"name": "username_prefix", "label": "用户名/前缀（兼容）", "required": False, "placeholder": "默认 monster；留空则回退默认"},
+                    {"name": "alias_prefix", "label": "alias 前缀", "required": False, "default": "monster", "placeholder": "如 monster，最终格式 monster+随机字符+自增数字@yahoo.com"},
+                    {"name": "alias_random_length", "label": "随机字符长度", "required": False, "default": 4},
+                    {"name": "alias_start_counter", "label": "自增起始值", "required": False, "default": 1},
+                    {"name": "domain", "label": "邮箱域名", "required": False, "default": "yahoo.com"},
+                    {"name": "birth_month", "label": "出生月份（可留空）", "required": False, "placeholder": "留空则自动生成"},
+                    {"name": "birth_day", "label": "出生日期（可留空）", "required": False, "placeholder": "留空则自动生成"},
+                    {"name": "birth_year", "label": "出生年份（可留空）", "required": False, "placeholder": "留空则自动生成"},
+                    {"name": "headless", "label": "无头浏览器", "required": False, "default": True},
+                    {"name": "timeout", "label": "超时时间", "required": False, "default": 30},
                 ]
             },
             {
@@ -471,6 +522,7 @@ async def probe_email_service(request: EmailServiceProbeRequest):
             "freemail",
             "yyds_mail",
             "tempmail",
+            "yahoo_mail",
         }
         if service_type.value in create_supported_types:
             created = email_service.create_email()

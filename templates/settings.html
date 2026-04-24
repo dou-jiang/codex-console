@@ -49,6 +49,7 @@
             <!-- 设置标签页 -->
             <div class="tabs">
                 <button class="tab-btn active" data-tab="proxy">🌐 代理设置</button>
+                <button class="tab-btn" data-tab="browser">🧭 浏览器设置</button>
                 <button class="tab-btn" data-tab="system">🖥️ 系统设置</button>
                 <button class="tab-btn" data-tab="upload">☁️ 上传</button>
                 <button class="tab-btn" data-tab="outlook">📮 Outlook配置</button>
@@ -139,6 +140,69 @@
                                 </tbody>
                             </table>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 浏览器设置 -->
+            <div class="tab-content" id="browser-tab">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>浏览器设置</h3>
+                        <span class="hint">配置注册流程使用 Playwright 或 RoxyBrowser</span>
+                    </div>
+                    <div class="card-body">
+                        <form id="browser-settings-form">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="browser-provider">浏览器模式</label>
+                                    <select id="browser-provider" name="provider">
+                                        <option value="playwright">Playwright（默认）</option>
+                                        <option value="roxy">RoxyBrowser</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="browser-headless">浏览器窗口模式</label>
+                                    <select id="browser-headless" name="headless">
+                                        <option value="false">有头浏览器</option>
+                                        <option value="true">无头浏览器</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div id="roxy-browser-fields">
+                                <div class="form-group">
+                                    <label for="browser-roxy-api-url">Roxy API 地址</label>
+                                    <input type="text" id="browser-roxy-api-url" name="roxy_api_url" placeholder="http://127.0.0.1:50000">
+                                </div>
+                                <div class="form-group">
+                                    <label for="browser-roxy-api-key">Roxy API 密钥</label>
+                                    <input type="password" id="browser-roxy-api-key" name="roxy_api_key" placeholder="留空保持不变" autocomplete="new-password">
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="browser-roxy-workspace-id">所属项目</label>
+                                        <select id="browser-roxy-workspace-id" name="roxy_workspace_id">
+                                            <option value="0">请选择所属项目</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="browser-roxy-dir-id">浏览器</label>
+                                        <select id="browser-roxy-dir-id" name="roxy_dir_id">
+                                            <option value="">请先选择所属项目</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label style="display:flex;align-items:center;gap:8px;">
+                                        <input type="checkbox" id="browser-roxy-force-open" name="roxy_force_open" checked>
+                                        打开 Roxy 窗口时强制接管
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">💾 保存浏览器设置</button>
+                            </div>
+                        </form>
                     </div>
                 </div>
             </div>
@@ -631,6 +695,15 @@ user:pass@127.0.0.1:7890
                                         <option value="abcard">ABCard 入口链路</option>
                                     </select>
                                     <span class="hint">切换后将影响后续新建注册任务的入口流程；Outlook 邮箱会自动使用 Outlook 链路，无需手动设置</span>
+                                </div>
+                                <div class="form-group">
+                                    <label for="registration-anyauto-browser-mode">Playwright 请求模式</label>
+                                    <select id="registration-anyauto-browser-mode" name="anyauto_browser_mode" disabled>
+                                        <option value="protocol">protocol</option>
+                                        <option value="headed">headed</option>
+                                        <option value="headless">headless</option>
+                                    </select>
+                                    <span class="hint">由“浏览器设置”自动映射；Roxy 模式下固定走 protocol</span>
                                 </div>
                             </div>
 

@@ -4,7 +4,7 @@
 
 // 状态
 let outlookServices = [];
-let customServices = [];  // 合并 moe_mail + temp_mail + cloudmail + duck_mail + freemail + imap_mail
+let customServices = [];  // 合并 moe_mail + temp_mail + cloudmail + yahoo_mail + duck_mail + freemail + imap_mail
 let selectedOutlook = new Set();
 let selectedCustom = new Set();
 
@@ -58,6 +58,7 @@ const elements = {
     addTempmailBuiltinFields: document.getElementById('add-tempmail-builtin-fields'),
     addYydsFields: document.getElementById('add-yyds-fields'),
     addTempmailFields: document.getElementById('add-tempmail-fields'),
+    addYahooFields: document.getElementById('add-yahoo-fields'),
     addDuckmailFields: document.getElementById('add-duckmail-fields'),
     addLuckmailFields: document.getElementById('add-luckmail-fields'),
     addFreemailFields: document.getElementById('add-freemail-fields'),
@@ -72,6 +73,7 @@ const elements = {
     editTempmailBuiltinFields: document.getElementById('edit-tempmail-builtin-fields'),
     editYydsFields: document.getElementById('edit-yyds-fields'),
     editTempmailFields: document.getElementById('edit-tempmail-fields'),
+    editYahooFields: document.getElementById('edit-yahoo-fields'),
     editDuckmailFields: document.getElementById('edit-duckmail-fields'),
     editLuckmailFields: document.getElementById('edit-luckmail-fields'),
     editFreemailFields: document.getElementById('edit-freemail-fields'),
@@ -95,6 +97,7 @@ const CUSTOM_SUBTYPE_LABELS = {
     duckmail: '🦆 DuckMail（DuckMail API）',
     luckmail: 'LuckMail（接码平台）',
     freemail: 'Freemail（自部署 Cloudflare Worker）',
+    yahoo: 'Yahoo Mail（无头登录/创建）',
     imap: '📧 IMAP 邮箱（Gmail/QQ/163等）'
 };
 
@@ -203,6 +206,7 @@ function switchAddSubType(subType) {
     elements.addTempmailBuiltinFields.style.display = subType === 'tempmail_builtin' ? '' : 'none';
     elements.addYydsFields.style.display = subType === 'yyds_mail' ? '' : 'none';
     elements.addTempmailFields.style.display = (subType === 'tempmail' || subType === 'cloudmail') ? '' : 'none';
+    elements.addYahooFields.style.display = subType === 'yahoo' ? '' : 'none';
     elements.addDuckmailFields.style.display = subType === 'duckmail' ? '' : 'none';
     elements.addLuckmailFields.style.display = subType === 'luckmail' ? '' : 'none';
     elements.addFreemailFields.style.display = subType === 'freemail' ? '' : 'none';
@@ -216,6 +220,7 @@ function switchEditSubType(subType) {
     elements.editTempmailBuiltinFields.style.display = subType === 'tempmail_builtin' ? '' : 'none';
     elements.editYydsFields.style.display = subType === 'yyds_mail' ? '' : 'none';
     elements.editTempmailFields.style.display = (subType === 'tempmail' || subType === 'cloudmail') ? '' : 'none';
+    elements.editYahooFields.style.display = subType === 'yahoo' ? '' : 'none';
     elements.editDuckmailFields.style.display = subType === 'duckmail' ? '' : 'none';
     elements.editLuckmailFields.style.display = subType === 'luckmail' ? '' : 'none';
     elements.editFreemailFields.style.display = subType === 'freemail' ? '' : 'none';
@@ -228,7 +233,7 @@ async function loadStats() {
     try {
         const data = await api.get('/email-services/stats');
         elements.outlookCount.textContent = data.outlook_count || 0;
-        elements.customCount.textContent = (data.custom_count || 0) + (data.tempmail_builtin_count || 0) + (data.yyds_mail_count || 0) + (data.temp_mail_count || 0) + (data.cloudmail_count || 0) + (data.duck_mail_count || 0) + (data.luckmail_count || 0) + (data.freemail_count || 0) + (data.imap_mail_count || 0);
+        elements.customCount.textContent = (data.custom_count || 0) + (data.tempmail_builtin_count || 0) + (data.yyds_mail_count || 0) + (data.temp_mail_count || 0) + (data.cloudmail_count || 0) + (data.yahoo_mail_count || 0) + (data.duck_mail_count || 0) + (data.luckmail_count || 0) + (data.freemail_count || 0) + (data.imap_mail_count || 0);
         elements.tempmailStatus.textContent = data.tempmail_available ? '可用' : '不可用';
         elements.totalEnabled.textContent = data.enabled_count || 0;
     } catch (error) {
@@ -333,6 +338,9 @@ function getCustomServiceTypeBadge(subType) {
     if (subType === 'cloudmail') {
         return '<span class="status-badge info">CloudMail</span>';
     }
+    if (subType === 'yahoo') {
+        return '<span class="status-badge" style="background-color:#6c5ce7;color:white;">Yahoo</span>';
+    }
     if (subType === 'duckmail') {
         return '<span class="status-badge success">DuckMail</span>';
     }
@@ -373,6 +381,16 @@ function getCustomServiceAddress(service) {
             : `项目：${escapeHtml(projectCode)}`;
         return `${escapeHtml(baseUrl)}<div style="color: var(--text-muted); margin-top: 4px;">${detail}</div>`;
     }
+    if (service._subType === 'yahoo') {
+        const emailAddr = service.config?.email || '';
+        const parentEmail = service.config?.parent_email || '';
+        const domain = service.config?.domain || 'yahoo.com';
+        const modeText = emailAddr
+            ? `固定邮箱：${escapeHtml(emailAddr)}`
+            : `母号自动创建 @${escapeHtml(domain)} 子邮箱`;
+        const parentText = parentEmail ? `母号：${escapeHtml(parentEmail)}` : '未配置母号';
+        return `${modeText}<div style="color: var(--text-muted); margin-top: 4px;">${parentText} | 无头登录 ${service.config?.headless === false ? '已关闭' : '已启用'}</div>`;
+    }
     const baseUrl = service.config?.base_url || '-';
     const domain = service.config?.default_domain || service.config?.domain;
     if (!domain) {
@@ -384,12 +402,13 @@ function getCustomServiceAddress(service) {
 // 加载自定义邮箱服务（moe_mail + temp_mail + cloudmail + duck_mail + freemail + imap_mail 合并）
 async function loadCustomServices() {
     try {
-        const [r1, r2, r3, r4, r5, r6, r7, r8, r9] = await Promise.all([
+        const [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10] = await Promise.all([
             api.get('/email-services?service_type=moe_mail'),
             api.get('/email-services?service_type=tempmail'),
             api.get('/email-services?service_type=yyds_mail'),
             api.get('/email-services?service_type=temp_mail'),
             api.get('/email-services?service_type=cloudmail'),
+            api.get('/email-services?service_type=yahoo_mail'),
             api.get('/email-services?service_type=duck_mail'),
             api.get('/email-services?service_type=luckmail'),
             api.get('/email-services?service_type=freemail'),
@@ -401,10 +420,11 @@ async function loadCustomServices() {
             ...(r3.services || []).map(s => ({ ...s, _subType: 'yyds_mail' })),
             ...(r4.services || []).map(s => ({ ...s, _subType: 'tempmail' })),
             ...(r5.services || []).map(s => ({ ...s, _subType: 'cloudmail' })),
-            ...(r6.services || []).map(s => ({ ...s, _subType: 'duckmail' })),
-            ...(r7.services || []).map(s => ({ ...s, _subType: 'luckmail' })),
-            ...(r8.services || []).map(s => ({ ...s, _subType: 'freemail' })),
-            ...(r9.services || []).map(s => ({ ...s, _subType: 'imap' }))
+            ...(r6.services || []).map(s => ({ ...s, _subType: 'yahoo' })),
+            ...(r7.services || []).map(s => ({ ...s, _subType: 'duckmail' })),
+            ...(r8.services || []).map(s => ({ ...s, _subType: 'luckmail' })),
+            ...(r9.services || []).map(s => ({ ...s, _subType: 'freemail' })),
+            ...(r10.services || []).map(s => ({ ...s, _subType: 'imap' }))
         ];
 
         if (customServices.length === 0) {
@@ -561,6 +581,9 @@ async function handleAddCustom(e) {
         if (subType === 'cloudmail') {
             config.admin_email = formData.get('tm_admin_email');
         }
+    } else if (subType === 'yahoo') {
+        serviceType = 'yahoo_mail';
+        config = buildYahooConfig(formData);
     } else if (subType === 'duckmail') {
         serviceType = 'duck_mail';
         config = {
@@ -656,6 +679,9 @@ async function handleProbeCustomService() {
         if (subType === 'cloudmail') {
             config.admin_email = formData.get('tm_admin_email');
         }
+    } else if (subType === 'yahoo') {
+        serviceType = 'yahoo_mail';
+        config = buildYahooConfig(formData);
     } else if (subType === 'duckmail') {
         serviceType = 'duck_mail';
         config = {
@@ -843,6 +869,54 @@ function updateBatchButtons() {
 }
 
 // HTML 转义
+function parseOptionalInt(value) {
+    const trimmed = String(value ?? '').trim();
+    if (!trimmed) return null;
+    const parsed = parseInt(trimmed, 10);
+    return Number.isNaN(parsed) ? null : parsed;
+}
+
+function buildYahooConfig(formData, preserveBlankForPatch = false) {
+    const usernamePrefix = String(formData.get('yh_username_prefix') || '').trim() || 'monster';
+    const aliasPrefix = String(formData.get('yh_alias_prefix') || '').trim() || usernamePrefix || 'monster';
+    const config = {
+        parent_email: formData.get('yh_parent_email'),
+        recovery_email: formData.get('yh_recovery_email'),
+        phone_number: formData.get('yh_phone_number'),
+        first_name: formData.get('yh_first_name'),
+        last_name: formData.get('yh_last_name'),
+        username_prefix: usernamePrefix,
+        alias_prefix: aliasPrefix,
+        alias_random_length: parseInt(formData.get('yh_alias_random_length'), 10) || 4,
+        alias_start_counter: parseInt(formData.get('yh_alias_start_counter'), 10) || 1,
+        domain: formData.get('yh_domain') || 'yahoo.com',
+        timeout: parseInt(formData.get('yh_timeout'), 10) || 30,
+        poll_interval: parseInt(formData.get('yh_poll_interval'), 10) || 5,
+        headless: formData.get('yh_headless') !== 'false'
+    };
+
+    const birthMonth = parseOptionalInt(formData.get('yh_birth_month'));
+    const birthDay = parseOptionalInt(formData.get('yh_birth_day'));
+    const birthYear = parseOptionalInt(formData.get('yh_birth_year'));
+    if (birthMonth !== null) config.birth_month = birthMonth;
+    if (birthDay !== null) config.birth_day = birthDay;
+    if (birthYear !== null) config.birth_year = birthYear;
+
+    const parentPassword = String(formData.get('yh_parent_password') || '').trim();
+    const parentAppPassword = String(formData.get('yh_parent_app_password') || '').trim();
+    const email = String(formData.get('yh_email') || '').trim();
+    const password = String(formData.get('yh_password') || '').trim();
+    const appPassword = String(formData.get('yh_app_password') || '').trim();
+
+    if (preserveBlankForPatch || parentPassword) config.parent_password = parentPassword;
+    if (preserveBlankForPatch || parentAppPassword) config.parent_app_password = parentAppPassword;
+    if (preserveBlankForPatch || email) config.email = email;
+    if (preserveBlankForPatch || password) config.password = password;
+    if (preserveBlankForPatch || appPassword) config.app_password = appPassword;
+
+    return config;
+}
+
 function escapeHtml(text) {
     if (!text) return '';
     const div = document.createElement('div');
@@ -865,6 +939,8 @@ async function editCustomService(id, subType) {
                 ? 'tempmail'
                 : service.service_type === 'cloudmail'
                     ? 'cloudmail'
+                : service.service_type === 'yahoo_mail'
+                    ? 'yahoo'
                 : service.service_type === 'duck_mail'
                     ? 'duckmail'
                     : service.service_type === 'luckmail'
@@ -905,6 +981,32 @@ async function editCustomService(id, subType) {
             document.getElementById('edit-tm-admin-password').value = '';
             document.getElementById('edit-tm-admin-password').placeholder = service.config?.admin_password ? '已设置，留空保持不变' : '请输入 Admin 密码';
             document.getElementById('edit-tm-domain').value = service.config?.domain || '';
+        } else if (resolvedSubType === 'yahoo') {
+            document.getElementById('edit-yh-parent-email').value = service.config?.parent_email || '';
+            document.getElementById('edit-yh-parent-password').value = '';
+            document.getElementById('edit-yh-parent-password').placeholder = service.config?.parent_password ? '已设置，留空保持不变' : '无 IMAP 时可回退浏览器登录';
+            document.getElementById('edit-yh-parent-app-password').value = '';
+            document.getElementById('edit-yh-parent-app-password').placeholder = service.config?.parent_app_password ? '已设置，留空保持不变' : '推荐填写，用于读取 Yahoo 注册验证码';
+            document.getElementById('edit-yh-email').value = service.config?.email || '';
+            document.getElementById('edit-yh-password').value = '';
+            document.getElementById('edit-yh-password').placeholder = service.config?.password ? '已设置，留空保持不变' : '留空则自动生成';
+            document.getElementById('edit-yh-app-password').value = '';
+            document.getElementById('edit-yh-app-password').placeholder = service.config?.app_password ? '已设置，留空保持不变' : '可选，用于 IMAP 收码';
+            document.getElementById('edit-yh-recovery-email').value = service.config?.recovery_email || '';
+            document.getElementById('edit-yh-phone-number').value = service.config?.phone_number || '';
+            document.getElementById('edit-yh-first-name').value = service.config?.first_name || '';
+            document.getElementById('edit-yh-last-name').value = service.config?.last_name || '';
+            document.getElementById('edit-yh-username-prefix').value = service.config?.username_prefix || service.config?.alias_prefix || 'monster';
+            document.getElementById('edit-yh-alias-prefix').value = service.config?.alias_prefix || service.config?.username_prefix || 'monster';
+            document.getElementById('edit-yh-alias-random-length').value = service.config?.alias_random_length || 4;
+            document.getElementById('edit-yh-alias-start-counter').value = service.config?.alias_start_counter || 1;
+            document.getElementById('edit-yh-domain').value = service.config?.domain || 'yahoo.com';
+            document.getElementById('edit-yh-birth-month').value = service.config?.birth_month || '';
+            document.getElementById('edit-yh-birth-day').value = service.config?.birth_day || '';
+            document.getElementById('edit-yh-birth-year').value = service.config?.birth_year || '';
+            document.getElementById('edit-yh-timeout').value = service.config?.timeout || 30;
+            document.getElementById('edit-yh-poll-interval').value = service.config?.poll_interval || 5;
+            document.getElementById('edit-yh-headless').value = service.config?.headless === false ? 'false' : 'true';
         } else if (resolvedSubType === 'duckmail') {
             document.getElementById('edit-dm-base-url').value = service.config?.base_url || '';
             document.getElementById('edit-dm-api-key').value = '';
@@ -979,6 +1081,8 @@ async function handleEditCustom(e) {
         }
         const pwd = formData.get('tm_admin_password');
         if (pwd && pwd.trim()) config.admin_password = pwd.trim();
+    } else if (subType === 'yahoo') {
+        config = buildYahooConfig(formData);
     } else if (subType === 'duckmail') {
         config = {
             base_url: formData.get('dm_base_url'),

@@ -294,3 +294,50 @@ def test_existing_account_login_uses_auto_sent_otp_without_manual_send():
     assert len(email_service.otp_requests) == 1
     assert email_service.otp_requests[0]["otp_sent_at"] is not None
     assert result.metadata["token_acquired_via_relogin"] is False
+
+
+def test_signup_flow_that_returns_login_password_switches_to_login_branch():
+    session = QueueSession([
+        ("GET", "https://auth.example.test/flow/1", _response_with_did("did-1")),
+        (
+            "POST",
+            OPENAI_API_ENDPOINTS["signup"],
+            DummyResponse(payload={"page": {"type": OPENAI_PAGE_TYPES["LOGIN_PASSWORD"]}}),
+        ),
+        (
+            "POST",
+            OPENAI_API_ENDPOINTS["password_verify"],
+            DummyResponse(payload={"page": {"type": OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]}}),
+        ),
+        ("POST", OPENAI_API_ENDPOINTS["validate_otp"], _response_with_login_cookies("ws-login-password", "session-login-password")),
+        (
+            "POST",
+            OPENAI_API_ENDPOINTS["select_workspace"],
+            DummyResponse(payload={"continue_url": "https://auth.example.test/continue-login-password"}),
+        ),
+        (
+            "GET",
+            "https://auth.example.test/continue-login-password",
+            DummyResponse(
+                status_code=302,
+                headers={"Location": "http://localhost:1455/auth/callback?code=code-login-password&state=state-1"},
+            ),
+        ),
+    ])
+
+    email_service = FakeEmailService(["135790"])
+    engine = RegistrationEngine(email_service)
+    engine.password = "KnownPass!234"
+    fake_oauth = FakeOAuthManager()
+    engine.http_client = FakeOpenAIClient([session], ["sentinel-1"])
+    engine.oauth_manager = fake_oauth
+
+    result = engine.run()
+
+    assert result.success is True
+    assert result.source == "login"
+    assert sum(1 for call in session.calls if call["url"] == OPENAI_API_ENDPOINTS["register"]) == 0
+    assert sum(1 for call in session.calls if call["url"] == OPENAI_API_ENDPOINTS["send_otp"]) == 0
+    assert sum(1 for call in session.calls if call["url"] == OPENAI_API_ENDPOINTS["password_verify"]) == 1
+    assert len(email_service.otp_requests) == 1
+    assert result.workspace_id == "ws-login-password"

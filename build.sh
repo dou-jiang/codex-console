@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cross-platform build script. Run it on the target OS you want to package for.
+# Packaging script. Run it on the target OS you want to package for.
 
 set -e
 
