@@ -404,6 +404,10 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
             service_type = EmailServiceType(email_service_type)
             settings = get_settings()
 
+            # 批量任务可能已在创建阶段绑定了独立邮箱服务 ID（例如 Outlook 批量注册）。
+            if not email_service_id and getattr(task, "email_service_id", None):
+                email_service_id = int(task.email_service_id)
+
             # 优先使用数据库中配置的邮箱服务
             if email_service_id:
                 from ...database.models import EmailService as EmailServiceModel
@@ -900,6 +904,21 @@ def _make_batch_helpers(batch_id: str):
     return add_batch_log, update_batch_status
 
 
+def _resolve_task_email_service_id(
+    task_uuid: str,
+    fallback_email_service_id: Optional[int],
+) -> Optional[int]:
+    """优先使用任务自身绑定的邮箱服务，缺失时再回退到批量级配置。"""
+    try:
+        with get_db() as db:
+            task = crud.get_registration_task(db, task_uuid)
+            if task and getattr(task, "email_service_id", None):
+                return int(task.email_service_id)
+    except Exception as exc:
+        logger.warning("读取任务绑定邮箱服务失败 %s: %s", task_uuid, exc)
+    return fallback_email_service_id
+
+
 async def run_batch_parallel(
     batch_id: str,
     task_uuids: List[str],
@@ -942,8 +961,9 @@ async def run_batch_parallel(
                 task_manager.cancel_task(uuid)
                 task_manager.update_status(uuid, "cancelled", error="批量任务已取消")
                 return
+            resolved_email_service_id = _resolve_task_email_service_id(uuid, email_service_id)
             await run_registration_task(
-                uuid, email_service_type, proxy, email_service_config, email_service_id,
+                uuid, email_service_type, proxy, email_service_config, resolved_email_service_id,
                 log_prefix=prefix, batch_id=batch_id,
                 auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids or [],
                 auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids or [],
@@ -1025,8 +1045,9 @@ async def run_batch_pipeline(
                 task_manager.cancel_task(uuid)
                 task_manager.update_status(uuid, "cancelled", error="批量任务已取消")
                 return
+            resolved_email_service_id = _resolve_task_email_service_id(uuid, email_service_id)
             await run_registration_task(
-                uuid, email_service_type, proxy, email_service_config, email_service_id,
+                uuid, email_service_type, proxy, email_service_config, resolved_email_service_id,
                 log_prefix=pfx, batch_id=batch_id,
                 auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids or [],
                 auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids or [],
@@ -2112,6 +2133,7 @@ async def run_outlook_batch_registration(
     tm_service_ids: List[int] = None,
     auto_upload_new_api: bool = False,
     new_api_service_ids: List[int] = None,
+    registration_type: str = RoleTag.CHILD.value,
 ):
     """
     异步执行 Outlook 批量注册任务，复用通用并发逻辑
@@ -2157,6 +2179,7 @@ async def run_outlook_batch_registration(
         tm_service_ids=tm_service_ids,
         auto_upload_new_api=auto_upload_new_api,
         new_api_service_ids=new_api_service_ids,
+        registration_type=registration_type,
     )
 
 
@@ -2392,4 +2415,3 @@ async def delete_scheduled_registration_job(job_uuid: str):
             raise HTTPException(status_code=400, detail="无法删除执行中的计划任务")
         crud.delete_scheduled_registration_job(db, job_uuid)
         return {'success': True, 'message': '计划任务已删除'}
-
