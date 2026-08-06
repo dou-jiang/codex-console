@@ -940,11 +940,9 @@ async function handleEditCustom(e) {
             admin_email: formData.get('cm_admin_email'),
             domain: domain
         };
-        // 添加子域配置（如果有）
+        // 始终带上 subdomain，便于后端识别清空操作
         const subdomain = formData.get('cm_subdomain');
-        if (subdomain && subdomain.trim()) {
-            config.subdomain = subdomain.trim();
-        }
+        config.subdomain = (subdomain || '').trim();
         const pwd = formData.get('cm_admin_password');
         if (pwd && pwd.trim()) config.admin_password = pwd.trim();
     } else {

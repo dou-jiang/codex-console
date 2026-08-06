@@ -452,6 +452,9 @@ async def update_email_service(service_id: int, request: EmailServiceUpdate):
             # 合并配置而不是替换
             current_config = normalize_email_service_config(service.service_type, service.config)
             merged_config = {**current_config, **request.config}
+            # 显式清空 CloudMail 子域名
+            if "subdomain" in request.config and not str(request.config.get("subdomain") or "").strip():
+                merged_config.pop("subdomain", None)
             # 移除空值
             merged_config = {k: v for k, v in merged_config.items() if v}
             update_data["config"] = normalize_email_service_config(service.service_type, merged_config)
